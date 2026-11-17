@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package backroom.v1;
+
+import "backroom/v1/types.proto";
+
+// Guilds (Discord-style servers), their members and their channels.
+service GuildService {
+  // Creates a guild owned by the caller.
+  rpc CreateGuild(CreateGuildRequest) returns (CreateGuildResponse);
+  // Lists the guilds the caller is a member of.
+  rpc ListMyGuilds(ListMyGuildsRequest) returns (ListMyGuildsResponse);
+  // Joins the guild identified by an invite code.
+  rpc JoinGuild(JoinGuildRequest) returns (JoinGuildResponse);
+  // Lists the members of a guild the caller belongs to.
+  rpc ListGuildMembers(ListGuildMembersRequest) returns (ListGuildMembersResponse);
+  // Creates a text channel in a guild.
+  rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse);
+  // Lists the channels of a guild the caller belongs to.
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+}
+
+// Request to create a guild.
+message CreateGuildRequest {
+  // Display name of the new guild.
+  string name = 1;
+}
+
+// Result of creating a guild.
+message CreateGuildResponse {
+  // The newly created guild.
+  Guild guild = 1;
+}
+
+// Request to list the caller's guilds.
+message ListMyGuildsRequest {}
+
+// The caller's guilds.
+message ListMyGuildsResponse {
+  // Guilds the caller is a member of.
+  repeated Guild guilds = 1;
+}
+
+// Request to join a guild.
+message JoinGuildRequest {
+  // Invite code of the guild to join.
+  string invite_code = 1;
+}
+
+// Result of joining a guild.
+message JoinGuildResponse {
+  // The guild that was joined.
+  Guild guild = 1;
+}
+
+// Request to list guild members.
+message ListGuildMembersRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+}
+
+// Members of a guild.
+message ListGuildMembersResponse {
+  // Users that are members of the guild.
+  repeated User users = 1;
+}
+
+// Request to create a channel.
+message CreateChannelRequest {
+  // ID of the guild to create the channel in.
+  uint64 guild_id = 1;
+  // Display name of the new channel.
+  string name = 2;
+}
+
+// Result of creating a channel.
+message CreateChannelResponse {
+  // The newly created channel.
+  Channel channel = 1;
+}
+
+// Request to list channels of a guild.
+message ListChannelsRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+}
+
+// Channels of a guild.
+message ListChannelsResponse {
+  // Channels belonging to the guild.
+  repeated Channel channels = 1;
+}

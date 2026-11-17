@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package backroom.v1;
+
+import "backroom/v1/types.proto";
+import "google/protobuf/timestamp.proto";
+
+// Real-time event delivery over a server-streaming RPC.
+service GatewayService {
+  // Opens a long-lived stream of events for every guild the caller belongs
+  // to. The server sends periodic heartbeat events so clients can detect a
+  // dead stream and reconnect.
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
+}
+
+// Request to open an event stream.
+message SubscribeRequest {}
+
+// One item on the event stream.
+message SubscribeResponse {
+  // The event being delivered.
+  Event event = 1;
+}
+
+// A real-time event.
+message Event {
+  // Monotonically increasing sequence number of the event within the stream.
+  uint64 sequence = 1;
+  // The event payload.
+  oneof payload {
+    // A message was posted in a channel.
+    Message message_created = 2;
+    // A channel was created in a guild.
+    Channel channel_created = 3;
+    // A user joined a guild.
+    GuildMemberJoined guild_member_joined = 4;
+    // Keep-alive signal.
+    Heartbeat heartbeat = 5;
+  }
+}
+
+// Payload of a user joining a guild.
+message GuildMemberJoined {
+  // ID of the guild that was joined.
+  uint64 guild_id = 1;
+  // The user who joined.
+  User user = 2;
+}
+
+// Keep-alive payload sent periodically by the server.
+message Heartbeat {
+  // Current server time.
+  google.protobuf.Timestamp server_time = 1;
+}

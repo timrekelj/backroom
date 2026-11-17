@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package backroom.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// A registered Backroom user.
+message User {
+  // Unique Snowflake ID of the user.
+  uint64 id = 1;
+  // Unique, human-readable username.
+  string username = 2;
+  // When the account was created.
+  google.protobuf.Timestamp created_at = 3;
+}
+
+// A guild (a Discord-style server) that groups members and channels.
+message Guild {
+  // Unique Snowflake ID of the guild.
+  uint64 id = 1;
+  // Display name of the guild.
+  string name = 2;
+  // ID of the user who owns the guild.
+  uint64 owner_id = 3;
+  // Code other users can use to join the guild.
+  string invite_code = 4;
+  // When the guild was created.
+  google.protobuf.Timestamp created_at = 5;
+}
+
+// A text channel inside a guild.
+message Channel {
+  // Unique Snowflake ID of the channel.
+  uint64 id = 1;
+  // ID of the guild the channel belongs to.
+  uint64 guild_id = 2;
+  // Display name of the channel.
+  string name = 3;
+  // When the channel was created.
+  google.protobuf.Timestamp created_at = 4;
+}
+
+// A chat message posted in a channel.
+message Message {
+  // Unique Snowflake ID of the message; IDs increase with time.
+  uint64 id = 1;
+  // ID of the channel the message was posted in.
+  uint64 channel_id = 2;
+  // ID of the guild that owns the channel.
+  uint64 guild_id = 3;
+  // ID of the user who wrote the message.
+  uint64 author_id = 4;
+  // Text content of the message.
+  string content = 5;
+  // When the message was created.
+  google.protobuf.Timestamp created_at = 6;
+  // When the message was last edited; unset if never edited.
+  optional google.protobuf.Timestamp edited_at = 7;
+  // Client-supplied nonce echoed back from SendMessage; empty if none was given.
+  string nonce = 8;
+}

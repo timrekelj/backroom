@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package backroom.v1;
+
+import "backroom/v1/types.proto";
+
+// Sending and reading chat messages.
+service MessageService {
+  // Posts a message to a channel as the caller.
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  // Lists messages of a channel, newest first, with cursor pagination.
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+}
+
+// Request to send a message.
+message SendMessageRequest {
+  // ID of the channel to post in.
+  uint64 channel_id = 1;
+  // Text content of the message.
+  string content = 2;
+  // Optional client-generated nonce used for deduplication and for matching
+  // the echoed message to a pending local one.
+  optional string nonce = 3;
+}
+
+// Result of sending a message.
+message SendMessageResponse {
+  // The stored message, including the echoed nonce.
+  Message message = 1;
+}
+
+// Request to list messages.
+message ListMessagesRequest {
+  // ID of the channel to read.
+  uint64 channel_id = 1;
+  // Optional cursor: only messages with an ID lower than this are returned.
+  // Omit to start from the newest message.
+  optional uint64 before = 2;
+  // Maximum number of messages to return; the server caps this at 100.
+  uint32 limit = 3;
+}
+
+// A page of messages.
+message ListMessagesResponse {
+  // Messages ordered newest first.
+  repeated Message messages = 1;
+  // Cursor to pass as `before` to fetch the next (older) page; unset when
+  // there are no more messages.
+  optional uint64 next_before = 2;
+  // Whether older messages remain beyond this page.
+  bool has_more = 3;
+}
