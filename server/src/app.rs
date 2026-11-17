@@ -5,7 +5,7 @@ use axum::Router;
 use axum::http::{HeaderName, Method};
 use axum::routing::get;
 use connectrpc::Router as ConnectRouter;
-use scylla::client::session::Session;
+use scylla::client::caching_session::CachingSession;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::services::{AuthSvc, GatewaySvc, GuildSvc, MessageSvc};
@@ -14,13 +14,13 @@ use crate::snowflake::Snowflake;
 /// Shared application state handed to every service.
 #[derive(Clone)]
 pub struct AppState {
-    pub session: Arc<Session>,
+    pub session: Arc<CachingSession>,
     pub snowflake: Arc<Snowflake>,
     pub keyspace: String,
 }
 
 impl AppState {
-    pub fn new(session: Arc<Session>, snowflake: Arc<Snowflake>, keyspace: String) -> Self {
+    pub fn new(session: Arc<CachingSession>, snowflake: Arc<Snowflake>, keyspace: String) -> Self {
         Self {
             session,
             snowflake,

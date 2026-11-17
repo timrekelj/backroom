@@ -6,14 +6,13 @@ use backroom_server::snowflake::Snowflake;
 use backroom_server::{AppState, build_app, migrations};
 use connectrpc::client::{ClientConfig, HttpClient};
 use rand::Rng;
-use scylla::client::session::Session;
+use scylla::client::caching_session::CachingSession;
 use scylla::client::session_builder::SessionBuilder;
 
 /// A running app backed by a throwaway keyspace.
 pub struct TestApp {
     pub base_url: String,
     pub state: AppState,
-    session: Arc<Session>,
 }
 
 impl TestApp {
@@ -30,8 +29,8 @@ impl TestApp {
             .await
             .expect("run migrations");
 
-        let session = Arc::new(session);
-        let state = AppState::new(session.clone(), Arc::new(Snowflake::new(0)), keyspace);
+        let session = Arc::new(CachingSession::from(session, 64));
+        let state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace);
         let app = build_app(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -43,7 +42,6 @@ impl TestApp {
         Self {
             base_url: format!("http://{addr}"),
             state,
-            session,
         }
     }
 
@@ -64,7 +62,9 @@ impl TestApp {
     /// Drops the test keyspace.
     pub async fn cleanup(self) {
         let _ = self
+            .state
             .session
+            .get_session()
             .query_unpaged(format!("DROP KEYSPACE IF EXISTS {}", self.state.keyspace), ())
             .await;
     }

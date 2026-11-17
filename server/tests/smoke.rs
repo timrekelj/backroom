@@ -15,8 +15,8 @@ async fn health_and_connect_routing() {
     let err = client
         .get_me(GetMeRequest::default())
         .await
-        .expect_err("GetMe is a stub");
-    assert_eq!(err.code, ErrorCode::Unimplemented);
+        .expect_err("GetMe requires a token");
+    assert_eq!(err.code, ErrorCode::Unauthenticated);
 
     app.cleanup().await;
 }

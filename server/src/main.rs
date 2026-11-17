@@ -4,8 +4,12 @@ use anyhow::{Context, Result};
 use backroom_server::config::Config;
 use backroom_server::snowflake::Snowflake;
 use backroom_server::{AppState, build_app, migrations};
+use scylla::client::caching_session::CachingSession;
 use scylla::client::session_builder::SessionBuilder;
 use tracing_subscriber::EnvFilter;
+
+/// Number of prepared statements kept by the session cache.
+const PREPARED_STATEMENT_CACHE_SIZE: usize = 256;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -24,7 +28,7 @@ async fn main() -> Result<()> {
     migrations::run(&session, &config.keyspace).await?;
 
     let state = AppState::new(
-        Arc::new(session),
+        Arc::new(CachingSession::from(session, PREPARED_STATEMENT_CACHE_SIZE)),
         Arc::new(Snowflake::new(config.worker_id)),
         config.keyspace.clone(),
     );
