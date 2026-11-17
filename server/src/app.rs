@@ -8,6 +8,7 @@ use connectrpc::Router as ConnectRouter;
 use scylla::client::caching_session::CachingSession;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use crate::events::EventBus;
 use crate::services::{AuthSvc, GatewaySvc, GuildSvc, MessageSvc};
 use crate::snowflake::Snowflake;
 
@@ -17,14 +18,24 @@ pub struct AppState {
     pub session: Arc<CachingSession>,
     pub snowflake: Arc<Snowflake>,
     pub keyspace: String,
+    pub events: Arc<EventBus>,
+    /// How often the gateway sends a heartbeat on each open stream.
+    pub heartbeat_interval: Duration,
 }
 
 impl AppState {
-    pub fn new(session: Arc<CachingSession>, snowflake: Arc<Snowflake>, keyspace: String) -> Self {
+    pub fn new(
+        session: Arc<CachingSession>,
+        snowflake: Arc<Snowflake>,
+        keyspace: String,
+        heartbeat_interval: Duration,
+    ) -> Self {
         Self {
             session,
             snowflake,
             keyspace,
+            events: Arc::new(EventBus::new()),
+            heartbeat_interval,
         }
     }
 }

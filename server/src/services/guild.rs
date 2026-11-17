@@ -10,6 +10,7 @@ use crate::auth::{authenticate, internal};
 use crate::convert::{
     datetime_to_proto, id_from_db, id_to_db, snowflake_datetime, user_to_proto,
 };
+use crate::events::EventPayload;
 use crate::proto::backroom::v1::*;
 
 const GUILD_NAME_LEN: std::ops::RangeInclusive<usize> = 1..=100;
@@ -91,8 +92,9 @@ impl GuildService for GuildSvc {
             .await
             .map_err(internal)?;
         self.add_member(id, user_id).await?;
-        self.insert_channel(id, DEFAULT_CHANNEL).await?;
-        // TODO(gateway): publish a ChannelCreated event for the default channel.
+        let channel = self.insert_channel(id, DEFAULT_CHANNEL).await?;
+        self.state.events.publish_to_guild(id, EventPayload::ChannelCreated(channel));
+        self.state.events.notify_user_joined_guild(user_id, id);
 
         tracing::info!(guild_id = id, user_id, "guild created");
         Response::ok(CreateGuildResponse {
@@ -158,7 +160,17 @@ impl GuildService for GuildSvc {
 
         if !is_member(&self.state, user_id, guild.id).await? {
             self.add_member(guild.id, user_id).await?;
-            // TODO(gateway): publish a GuildMemberJoined event.
+            if let Some(user) = self.find_user(id_to_db(user_id)).await? {
+                self.state.events.publish_to_guild(
+                    guild.id,
+                    EventPayload::GuildMemberJoined(GuildMemberJoined {
+                        guild_id: guild.id,
+                        user: user.into(),
+                        ..Default::default()
+                    }),
+                );
+            }
+            self.state.events.notify_user_joined_guild(user_id, guild.id);
             tracing::info!(guild_id = guild.id, user_id, "user joined guild");
         }
         Response::ok(JoinGuildResponse {
@@ -217,7 +229,9 @@ impl GuildService for GuildSvc {
         })?;
 
         let channel = self.insert_channel(req.guild_id, &name).await?;
-        // TODO(gateway): publish a ChannelCreated event.
+        self.state
+            .events
+            .publish_to_guild(req.guild_id, EventPayload::ChannelCreated(channel.clone()));
         Response::ok(CreateChannelResponse {
             channel: channel.into(),
             ..Default::default()

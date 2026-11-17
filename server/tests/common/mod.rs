@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use backroom_server::snowflake::Snowflake;
 use backroom_server::{AppState, build_app, migrations};
@@ -19,6 +20,11 @@ impl TestApp {
     /// Connects to Scylla at 127.0.0.1:9042, creates a fresh `test_<random>`
     /// keyspace, runs migrations and serves the app on 127.0.0.1:0.
     pub async fn start() -> Self {
+        Self::start_with_heartbeat(Duration::from_secs(30)).await
+    }
+
+    /// Like `start`, with a custom gateway heartbeat interval.
+    pub async fn start_with_heartbeat(heartbeat_interval: Duration) -> Self {
         let session = SessionBuilder::new()
             .known_node("127.0.0.1:9042")
             .build()
@@ -30,7 +36,7 @@ impl TestApp {
             .expect("run migrations");
 
         let session = Arc::new(CachingSession::from(session, 64));
-        let state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace);
+        let state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, heartbeat_interval);
         let app = build_app(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

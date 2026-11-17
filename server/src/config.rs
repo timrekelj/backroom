@@ -1,7 +1,8 @@
 use std::env;
 use std::net::SocketAddr;
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -9,6 +10,7 @@ pub struct Config {
     pub scylla_nodes: Vec<String>,
     pub keyspace: String,
     pub worker_id: u16,
+    pub heartbeat_interval: Duration,
 }
 
 impl Config {
@@ -25,11 +27,18 @@ impl Config {
         let worker_id = var("BACKROOM_WORKER_ID", "0")
             .parse()
             .context("invalid BACKROOM_WORKER_ID")?;
+        let heartbeat_secs: u64 = var("BACKROOM_HEARTBEAT_SECS", "30")
+            .parse()
+            .context("invalid BACKROOM_HEARTBEAT_SECS")?;
+        if heartbeat_secs == 0 {
+            bail!("BACKROOM_HEARTBEAT_SECS must be at least 1");
+        }
         Ok(Self {
             listen_addr,
             scylla_nodes,
             keyspace,
             worker_id,
+            heartbeat_interval: Duration::from_secs(heartbeat_secs),
         })
     }
 }

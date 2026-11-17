@@ -31,6 +31,7 @@ async fn main() -> Result<()> {
         Arc::new(CachingSession::from(session, PREPARED_STATEMENT_CACHE_SIZE)),
         Arc::new(Snowflake::new(config.worker_id)),
         config.keyspace.clone(),
+        config.heartbeat_interval,
     );
     let app = build_app(state);
 

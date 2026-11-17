@@ -5,6 +5,7 @@ use crate::AppState;
 use crate::access::require_channel_member;
 use crate::auth::{authenticate, internal};
 use crate::convert::{datetime_to_proto, id_from_db, id_to_db, snowflake_datetime};
+use crate::events::EventPayload;
 use crate::proto::backroom::v1::*;
 use crate::snowflake::{bucket_of, current_bucket};
 
@@ -94,7 +95,9 @@ impl MessageService for MessageSvc {
                 None,
             ),
         );
-        // TODO(gateway): publish MessageCreated.
+        self.state
+            .events
+            .publish_to_guild(guild_id, EventPayload::MessageCreated(message.clone()));
         Response::ok(SendMessageResponse {
             message: message.into(),
             ..Default::default()
