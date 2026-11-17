@@ -61,6 +61,16 @@ impl AuthService for AuthSvc {
         let db_id = id_to_db(id);
         let created_at = snowflake_datetime(id);
 
+        // Write the user row before claiming the username: a failure here leaves only an unreachable orphan, never a claimed name without an account.
+        self.state
+            .session
+            .execute_unpaged(
+                "INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                (db_id, &username, &password_hash, created_at),
+            )
+            .await
+            .map_err(internal)?;
+
         // An LWT returns `[applied]` plus the existing row's columns when not applied.
         let (claimed, _, _) = self
             .state
@@ -76,17 +86,17 @@ impl AuthService for AuthSvc {
             .first_row::<(bool, Option<String>, Option<i64>)>()
             .map_err(internal)?;
         if !claimed {
+            if let Err(err) = self
+                .state
+                .session
+                .execute_unpaged("DELETE FROM users WHERE id = ?", (db_id,))
+                .await
+            {
+                tracing::warn!(user_id = id, error = %err, "failed to delete orphaned user row");
+            }
             return Err(ConnectError::already_exists("username is already taken"));
         }
 
-        self.state
-            .session
-            .execute_unpaged(
-                "INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
-                (db_id, &username, &password_hash, created_at),
-            )
-            .await
-            .map_err(internal)?;
         let token = create_session(&self.state, db_id).await?;
 
         tracing::info!(user_id = id, "user signed up");
