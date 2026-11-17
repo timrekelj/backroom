@@ -6,12 +6,12 @@ import "backroom/v1/types.proto";
 
 // Account creation and authentication.
 //
-// Register and Login are the only unauthenticated RPCs in Backroom. Every
+// SignUp and Login are the only unauthenticated RPCs in Backroom. Every
 // other RPC, in every service, requires the session token returned by those
 // calls, sent as the HTTP header `Authorization: Bearer <token>`.
 service AuthService {
   // Creates a new account and returns a session token for it.
-  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc SignUp(SignUpRequest) returns (SignUpResponse);
   // Verifies credentials and returns a new session token.
   rpc Login(LoginRequest) returns (LoginResponse);
   // Returns the user the session token belongs to.
@@ -19,7 +19,7 @@ service AuthService {
 }
 
 // Request to create an account.
-message RegisterRequest {
+message SignUpRequest {
   // Desired username; must be unique.
   string username = 1;
   // Plaintext password (protected by transport encryption).
@@ -27,7 +27,7 @@ message RegisterRequest {
 }
 
 // Result of a successful registration.
-message RegisterResponse {
+message SignUpResponse {
   // Session token to use in the Authorization header.
   string token = 1;
   // The newly created user.
