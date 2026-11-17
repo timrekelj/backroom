@@ -1,5 +1,6 @@
 #![allow(refining_impl_trait_internal, refining_impl_trait_reachable)]
 
+pub mod access;
 pub mod app;
 pub mod auth;
 pub mod config;
