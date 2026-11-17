@@ -88,9 +88,21 @@ pub fn sequence_of(id: u64) -> u16 {
     (id & MAX_SEQUENCE) as u16
 }
 
+/// Builds an ID from its parts; `ms_since_epoch` is relative to [`EPOCH_MS`].
+pub fn make_id(ms_since_epoch: u64, worker: u16, sequence: u16) -> u64 {
+    assert!(worker <= MAX_WORKER_ID, "worker id must fit in 10 bits");
+    assert!(sequence as u64 <= MAX_SEQUENCE, "sequence must fit in 12 bits");
+    (ms_since_epoch << TIMESTAMP_SHIFT) | ((worker as u64) << SEQUENCE_BITS) | sequence as u64
+}
+
 /// Message bucket (10-day window since the epoch) that `id` falls into.
 pub fn bucket_of(id: u64) -> i32 {
     (millis_of(id) / BUCKET_MS) as i32
+}
+
+/// Message bucket of the current wall-clock time, without consuming an ID.
+pub fn current_bucket() -> i32 {
+    (now_ms() / BUCKET_MS) as i32
 }
 
 /// Smallest ID belonging to `bucket`.
@@ -162,6 +174,21 @@ mod tests {
         assert_eq!(bucket_of(max_id_for_bucket(5)), 5);
         assert_eq!(bucket_of(max_id_for_bucket(5) + 1), 6);
         assert_eq!(min_id_for_bucket(0), 0);
+    }
+
+    #[test]
+    fn make_id_round_trips() {
+        let id = make_id(BUCKET_MS * 3 + 17, 5, 99);
+        assert_eq!(millis_of(id), BUCKET_MS * 3 + 17);
+        assert_eq!(worker_of(id), 5);
+        assert_eq!(sequence_of(id), 99);
+        assert_eq!(bucket_of(id), 3);
+    }
+
+    #[test]
+    fn current_bucket_matches_fresh_id() {
+        let id = Snowflake::new(0).next_id();
+        assert_eq!(current_bucket(), bucket_of(id));
     }
 
     #[test]
