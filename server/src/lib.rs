@@ -7,6 +7,7 @@ pub mod config;
 pub mod convert;
 pub mod events;
 pub mod migrations;
+pub mod ratelimit;
 pub mod services;
 pub mod snowflake;
 

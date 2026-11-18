@@ -9,6 +9,7 @@ use scylla::client::caching_session::CachingSession;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::events::EventBus;
+use crate::ratelimit::RateLimiter;
 use crate::services::{AuthSvc, GatewaySvc, GuildSvc, MessageSvc};
 use crate::snowflake::Snowflake;
 
@@ -19,6 +20,7 @@ pub struct AppState {
     pub snowflake: Arc<Snowflake>,
     pub keyspace: String,
     pub events: Arc<EventBus>,
+    pub limiter: Arc<RateLimiter>,
     /// How often the gateway sends a heartbeat on each open stream.
     pub heartbeat_interval: Duration,
 }
@@ -35,6 +37,7 @@ impl AppState {
             snowflake,
             keyspace,
             events: Arc::new(EventBus::new()),
+            limiter: Arc::new(RateLimiter::new()),
             heartbeat_interval,
         }
     }

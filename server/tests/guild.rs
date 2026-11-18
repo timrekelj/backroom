@@ -5,6 +5,7 @@ use backroom_server::proto::backroom::v1::{
     JoinGuildRequest, ListChannelsRequest, ListGuildMembersRequest, ListMyGuildsRequest,
     SignUpRequest,
 };
+use backroom_server::services::guild::{GUILD_CREATE_MAX, JOIN_IP_MAX};
 use common::TestApp;
 use connectrpc::{ConnectError, ErrorCode};
 
@@ -254,6 +255,52 @@ async fn invalid_guild_names_are_rejected() {
     let err = create_guild(&app, &alice, &"g".repeat(101)).await.expect_err("too long");
     assert_eq!(err.code, ErrorCode::InvalidArgument);
     create_guild(&app, &alice, &"g".repeat(100)).await.expect("max length");
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn only_the_owner_can_create_channels() {
+    let app = TestApp::start().await;
+    let alice = sign_up(&app, "alice").await;
+    let bob = sign_up(&app, "bob").await;
+    let guild = create_guild(&app, &alice, "club").await.unwrap();
+    join(&app, &bob, &guild.invite_code).await.expect("join");
+
+    let err = create_channel(&app, &bob, guild.id, "nope").await.expect_err("non-owner");
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    // The owner still can, and nothing was created for bob.
+    create_channel(&app, &alice, guild.id, "yes").await.expect("owner");
+    assert_eq!(list_channels(&app, &alice, guild.id).await.unwrap().len(), 2);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn guild_creation_is_rate_limited_per_user() {
+    let app = TestApp::start().await;
+    let alice = sign_up(&app, "alice").await;
+
+    for i in 0..GUILD_CREATE_MAX {
+        create_guild(&app, &alice, &format!("g{i}")).await.expect("within limit");
+    }
+    let err = create_guild(&app, &alice, "one-too-many").await.expect_err("over the limit");
+    assert_eq!(err.code, ErrorCode::ResourceExhausted);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn join_is_rate_limited_per_ip() {
+    let app = TestApp::start().await;
+    let alice = sign_up(&app, "alice").await;
+
+    for i in 0..JOIN_IP_MAX {
+        let err = join(&app, &alice, &format!("bad{i:05}")).await.expect_err("invalid invite");
+        assert_eq!(err.code, ErrorCode::NotFound, "attempt {i}");
+    }
+    let err = join(&app, &alice, "badzzzzz").await.expect_err("over the limit");
+    assert_eq!(err.code, ErrorCode::ResourceExhausted);
 
     app.cleanup().await;
 }

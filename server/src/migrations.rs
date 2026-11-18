@@ -4,11 +4,18 @@ use anyhow::{Context, Result};
 use scylla::client::session::Session;
 
 /// Embedded migrations, in version order.
-pub const MIGRATIONS: &[(i32, &str, &str)] = &[(
-    1,
-    "init",
-    include_str!("../migrations/0001_init.cql"),
-)];
+pub const MIGRATIONS: &[(i32, &str, &str)] = &[
+    (
+        1,
+        "init",
+        include_str!("../migrations/0001_init.cql"),
+    ),
+    (
+        2,
+        "quotas",
+        include_str!("../migrations/0002_quotas.cql"),
+    ),
+];
 
 /// Creates the keyspace if needed, selects it on the session, and applies any
 /// migrations not yet recorded.

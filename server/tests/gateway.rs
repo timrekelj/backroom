@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use backroom_server::proto::backroom::v1::event::Payload;
 use backroom_server::proto::backroom::v1::{
-    AuthServiceClient, CreateChannelRequest, CreateGuildRequest, Event, GatewayServiceClient, Guild,
-    GuildServiceClient, JoinGuildRequest, ListChannelsRequest, MessageServiceClient,
+    AuthServiceClient, CreateChannelRequest, CreateGuildRequest, Event, GatewayServiceClient, GetMeRequest,
+    Guild, GuildServiceClient, JoinGuildRequest, ListChannelsRequest, MessageServiceClient,
     SendMessageRequest, SignUpRequest, SubscribeRequest,
 };
 use common::TestApp;
@@ -299,6 +299,36 @@ async fn non_members_receive_only_heartbeats() {
     for event in events {
         assert!(matches!(event.payload, Some(Payload::Heartbeat(_))), "unexpected {event:?}");
     }
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn stream_ends_when_the_session_expires() {
+    let app = start().await;
+    let token = sign_up(&app, "alice").await;
+    let mut stream = subscribe!(app, &token);
+    next_event!(stream); // first heartbeat
+
+    // Simulate TTL expiry: delete the session row directly.
+    let token_hash = backroom_server::auth::hash_token(&token);
+    app.state
+        .session
+        .execute_unpaged("DELETE FROM sessions WHERE token_hash = ?", (&token_hash,))
+        .await
+        .expect("delete session");
+
+    // The next heartbeat tick re-checks the session and ends the stream.
+    let err = timeout(WAIT, stream.message())
+        .await
+        .expect("timed out waiting for stream end")
+        .expect_err("stream must fail after session expiry");
+    assert_eq!(err.code, ErrorCode::Unauthenticated);
+
+    // New RPCs with the same token are rejected as well.
+    let client = app.client(AuthServiceClient::new, Some(&token));
+    let err = client.get_me(GetMeRequest::default()).await.expect_err("get me");
+    assert_eq!(err.code, ErrorCode::Unauthenticated);
+
     app.cleanup().await;
 }
 

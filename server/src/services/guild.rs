@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 use futures::future::try_join_all;
@@ -6,7 +8,7 @@ use scylla::statement::batch::{Batch, BatchType};
 
 use crate::AppState;
 use crate::access::{is_member, require_guild_member};
-use crate::auth::{authenticate, internal};
+use crate::auth::{authenticate, internal, peer_key};
 use crate::convert::{
     datetime_to_proto, id_from_db, id_to_db, snowflake_datetime, user_to_proto,
 };
@@ -18,6 +20,19 @@ const CHANNEL_NAME_LEN: std::ops::RangeInclusive<usize> = 1..=100;
 const INVITE_CODE_LEN: usize = 8;
 const INVITE_CODE_ATTEMPTS: usize = 5;
 const DEFAULT_CHANNEL: &str = "general";
+
+/// Guilds one user may be a member of via creation.
+pub const MAX_GUILDS_PER_USER: i64 = 100;
+/// Guild creations allowed per user within [`GUILD_CREATE_WINDOW`].
+pub const GUILD_CREATE_MAX: usize = 10;
+const GUILD_CREATE_WINDOW: Duration = Duration::from_secs(60 * 60);
+
+/// Channels one guild may have.
+pub const MAX_CHANNELS_PER_GUILD: i64 = 500;
+
+/// Guild joins (invite-code lookups) allowed per peer IP within [`JOIN_WINDOW`].
+pub const JOIN_IP_MAX: usize = 30;
+const JOIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 pub struct GuildSvc {
     state: AppState,
@@ -77,6 +92,10 @@ impl GuildService for GuildSvc {
         if !GUILD_NAME_LEN.contains(&name.chars().count()) {
             return Err(ConnectError::invalid_argument("guild name must be 1-100 characters"));
         }
+        self.state
+            .limiter
+            .check(&format!("create_guild:{user_id}"), GUILD_CREATE_MAX, GUILD_CREATE_WINDOW)?;
+        self.reserve_guild_slot(user_id).await?;
 
         let id = self.state.snowflake.next_id();
         let db_id = id_to_db(id);
@@ -141,6 +160,9 @@ impl GuildService for GuildSvc {
         req: ServiceRequest<'_, JoinGuildRequest>,
     ) -> ServiceResult<JoinGuildResponse> {
         let user_id = authenticate(&self.state, &ctx).await?;
+        self.state
+            .limiter
+            .check(&format!("join:ip:{}", peer_key(&ctx)), JOIN_IP_MAX, JOIN_WINDOW)?;
         let invalid = || ConnectError::not_found("invalid invite");
         let (guild_id,) = self
             .state
@@ -222,6 +244,17 @@ impl GuildService for GuildSvc {
     ) -> ServiceResult<CreateChannelResponse> {
         let user_id = authenticate(&self.state, &ctx).await?;
         require_guild_member(&self.state, user_id, req.guild_id).await?;
+        // Only the guild owner may create channels; the schema has no roles.
+        let guild = self
+            .find_guild(id_to_db(req.guild_id))
+            .await?
+            .ok_or_else(|| ConnectError::not_found("guild not found"))?;
+        if guild.owner_id != user_id {
+            return Err(ConnectError::permission_denied(
+                "only the guild owner can create channels",
+            ));
+        }
+        self.reserve_channel_slot(req.guild_id).await?;
         let name = normalize_channel_name(req.name).ok_or_else(|| {
             ConnectError::invalid_argument(
                 "channel name must be 1-100 characters of a-z, 0-9, '_' or '-'",
@@ -332,6 +365,80 @@ impl GuildSvc {
             .await
             .map_err(internal)?;
         Ok(channel_to_proto(guild_id, id, name.to_owned(), created_at))
+    }
+
+    /// Atomically reserves one guild-creation slot for `user_id` via the
+    /// `user_guild_quota` counter and rejects past [`MAX_GUILDS_PER_USER`]. The
+    /// increment is atomic, so concurrent creates cannot all pass the cap; a
+    /// rejected create compensates its increment.
+    async fn reserve_guild_slot(&self, user_id: u64) -> Result<(), ConnectError> {
+        let key = id_to_db(user_id);
+        self.state
+            .session
+            .execute_unpaged(
+                "UPDATE user_guild_quota SET created = created + 1 WHERE user_id = ?",
+                (key,),
+            )
+            .await
+            .map_err(internal)?;
+        let (created,): (scylla::value::Counter,) = self
+            .state
+            .session
+            .execute_unpaged("SELECT created FROM user_guild_quota WHERE user_id = ?", (key,))
+            .await
+            .map_err(internal)?
+            .into_rows_result()
+            .map_err(internal)?
+            .first_row::<(scylla::value::Counter,)>()
+            .map_err(internal)?;
+        if created.0 > MAX_GUILDS_PER_USER {
+            let _ = self
+                .state
+                .session
+                .execute_unpaged(
+                    "UPDATE user_guild_quota SET created = created - 1 WHERE user_id = ?",
+                    (key,),
+                )
+                .await;
+            return Err(ConnectError::resource_exhausted("guild limit reached"));
+        }
+        Ok(())
+    }
+
+    /// Atomically reserves one channel-creation slot for `guild_id` via the
+    /// `guild_channel_quota` counter and rejects past [`MAX_CHANNELS_PER_GUILD`].
+    async fn reserve_channel_slot(&self, guild_id: u64) -> Result<(), ConnectError> {
+        let key = id_to_db(guild_id);
+        self.state
+            .session
+            .execute_unpaged(
+                "UPDATE guild_channel_quota SET created = created + 1 WHERE guild_id = ?",
+                (key,),
+            )
+            .await
+            .map_err(internal)?;
+        let (created,): (scylla::value::Counter,) = self
+            .state
+            .session
+            .execute_unpaged("SELECT created FROM guild_channel_quota WHERE guild_id = ?", (key,))
+            .await
+            .map_err(internal)?
+            .into_rows_result()
+            .map_err(internal)?
+            .first_row::<(scylla::value::Counter,)>()
+            .map_err(internal)?;
+        if created.0 > MAX_CHANNELS_PER_GUILD {
+            let _ = self
+                .state
+                .session
+                .execute_unpaged(
+                    "UPDATE guild_channel_quota SET created = created - 1 WHERE guild_id = ?",
+                    (key,),
+                )
+                .await;
+            return Err(ConnectError::resource_exhausted("channel limit reached"));
+        }
+        Ok(())
     }
 
     async fn find_guild(&self, db_id: i64) -> Result<Option<Guild>, ConnectError> {

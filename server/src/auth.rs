@@ -1,8 +1,11 @@
 //! Password hashing, session tokens and request authentication.
 
+use std::net::SocketAddr;
+
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+use axum::extract::ConnectInfo;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use connectrpc::{ConnectError, RequestContext};
@@ -20,16 +23,33 @@ pub const SESSION_TTL_SECS: i32 = 30 * 24 * 60 * 60;
 pub const DUMMY_PASSWORD_HASH: &str =
     "$argon2id$v=19$m=19456,t=2,p=1$BkC5oC+yWwX2FD0lJH6cOQ$g/hvc4UrZJsrTknSwxPBUY6ZFwTpPhSVD9nmLncBR7U";
 
-/// Verifies the session token in `Authorization: Bearer <token>` and returns the user id.
-pub async fn authenticate(state: &AppState, ctx: &RequestContext) -> Result<u64, ConnectError> {
-    let token = ctx
-        .header("authorization")
+/// Extracts the token from an `Authorization: Bearer <token>` header.
+pub fn bearer_token(ctx: &RequestContext) -> Option<&str> {
+    ctx.header("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim)
         .filter(|t| !t.is_empty())
-        .ok_or_else(|| ConnectError::unauthenticated("missing or malformed authorization header"))?;
+}
 
+/// Best-effort peer IP for rate-limit keys; `"unknown"` when the server is
+/// not served with `into_make_service_with_connect_info`.
+pub fn peer_key(ctx: &RequestContext) -> String {
+    ctx.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+/// Verifies the session token in `Authorization: Bearer <token>` and returns the user id.
+pub async fn authenticate(state: &AppState, ctx: &RequestContext) -> Result<u64, ConnectError> {
+    let token = bearer_token(ctx)
+        .ok_or_else(|| ConnectError::unauthenticated("missing or malformed authorization header"))?;
+    user_id_for_token(state, token).await
+}
+
+/// Returns the user id a session token belongs to, if the session still exists.
+pub async fn user_id_for_token(state: &AppState, token: &str) -> Result<u64, ConnectError> {
     let rows = state
         .session
         .execute_unpaged("SELECT user_id FROM sessions WHERE token_hash = ?", (hash_token(token),))
@@ -43,6 +63,22 @@ pub async fn authenticate(state: &AppState, ctx: &RequestContext) -> Result<u64,
         .map(|(id,)| id_from_db(id))
         .ok_or_else(|| ConnectError::unauthenticated("invalid or expired session token"))?;
     Ok(user_id)
+}
+
+/// Whether a session still exists. Scylla's TTL deletes the row at expiry, so
+/// a missing row means the token is no longer valid; long-lived streams use
+/// this to re-check periodically.
+pub async fn session_exists(state: &AppState, token_hash: &str) -> Result<bool, ConnectError> {
+    Ok(state
+        .session
+        .execute_unpaged("SELECT user_id FROM sessions WHERE token_hash = ?", (token_hash,))
+        .await
+        .map_err(internal)?
+        .into_rows_result()
+        .map_err(internal)?
+        .maybe_first_row::<(i64,)>()
+        .map_err(internal)?
+        .is_some())
 }
 
 /// Creates a session for `user_id` and returns the plaintext token (only its hash is stored).

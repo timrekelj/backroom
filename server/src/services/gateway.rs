@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult, ServiceStream};
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -9,7 +9,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::AppState;
-use crate::auth::{authenticate, internal};
+use crate::auth::{authenticate, bearer_token, hash_token, internal, session_exists};
 use crate::convert::{id_from_db, id_to_db, system_time_to_proto};
 use crate::events::{EventPayload, UserControl};
 use crate::proto::backroom::v1::event::Payload;
@@ -43,6 +43,7 @@ impl GatewayService for GatewaySvc {
         _req: ServiceRequest<'_, SubscribeRequest>,
     ) -> ServiceResult<ServiceStream<SubscribeResponse>> {
         let user_id = authenticate(&self.state, &ctx).await?;
+        let token_hash = hash_token(bearer_token(&ctx).expect("authenticate succeeded"));
         let bus = &self.state.events;
 
         // Subscribe to the control channel before reading memberships so a guild joined in
@@ -78,6 +79,9 @@ impl GatewayService for GatewaySvc {
             guilds,
             heartbeat,
             sequence: 0,
+            token_hash,
+            last_check: Instant::now(),
+            recheck_interval: self.state.heartbeat_interval.min(Duration::from_secs(60)),
         };
         Response::stream_ok(futures::stream::unfold(Some(session), |session| async move {
             let mut session = session?;
@@ -97,6 +101,10 @@ struct EventStream {
     guilds: StreamMap<u64, BroadcastStream<Arc<EventPayload>>>,
     heartbeat: Interval,
     sequence: u64,
+    /// Hash of the token the stream was opened with, re-checked periodically.
+    token_hash: String,
+    last_check: Instant,
+    recheck_interval: Duration,
 }
 
 impl EventStream {
@@ -119,7 +127,17 @@ impl EventStream {
         loop {
             let control = self.control.as_mut().expect("control receiver present while streaming");
             tokio::select! {
-                _ = self.heartbeat.tick() => return Ok(heartbeat_payload()),
+                _ = self.heartbeat.tick() => {
+                    // Re-verify the session so a token that expired (Scylla TTL) or was
+                    // revoked cannot keep an open stream alive past its validity.
+                    if self.last_check.elapsed() >= self.recheck_interval {
+                        self.last_check = Instant::now();
+                        if !session_exists(&self.state, &self.token_hash).await? {
+                            return Err(ConnectError::unauthenticated("session expired"));
+                        }
+                    }
+                    return Ok(heartbeat_payload());
+                }
                 msg = control.recv() => match msg {
                     Ok(UserControl::JoinedGuild(guild_id)) => {
                         let rx = self.state.events.subscribe_guild(guild_id);

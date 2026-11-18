@@ -3,6 +3,7 @@ mod common;
 use backroom_server::proto::backroom::v1::{
     AuthServiceClient, GetMeRequest, LoginRequest, SignUpRequest, User,
 };
+use backroom_server::services::auth::LOGIN_IP_MAX;
 use common::TestApp;
 use connectrpc::ErrorCode;
 
@@ -63,7 +64,9 @@ async fn duplicate_username_is_rejected_case_insensitively() {
             .sign_up(sign_up_req(name, PASSWORD))
             .await
             .expect_err("duplicate must fail");
-        assert_eq!(err.code, ErrorCode::AlreadyExists, "username {name:?}");
+        // Generic error: a distinct "username taken" code would be an account-existence oracle.
+        assert_eq!(err.code, ErrorCode::FailedPrecondition, "username {name:?}");
+        assert!(!err.message.as_deref().unwrap_or("").contains("taken"), "message must not confirm existence");
     }
 
     app.cleanup().await;
@@ -152,6 +155,29 @@ async fn bad_credentials_are_unauthenticated() {
     assert_eq!(wrong_password.code, ErrorCode::Unauthenticated);
     assert_eq!(unknown_user.code, ErrorCode::Unauthenticated);
     assert_eq!(wrong_password.message, unknown_user.message);
+
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn login_is_rate_limited_per_ip() {
+    let app = TestApp::start().await;
+    let client = app.client(AuthServiceClient::new, None);
+
+    // Distinct usernames keep each per-username counter at one attempt (no delay);
+    // the per-IP hard cap is what rejects here.
+    for i in 0..LOGIN_IP_MAX {
+        let err = client
+            .login(login_req(&format!("user{i}"), "wrong password"))
+            .await
+            .expect_err("unknown user");
+        assert_eq!(err.code, ErrorCode::Unauthenticated, "attempt {i}");
+    }
+    let err = client
+        .login(login_req("one-more", "wrong password"))
+        .await
+        .expect_err("over the limit");
+    assert_eq!(err.code, ErrorCode::ResourceExhausted);
 
     app.cleanup().await;
 }

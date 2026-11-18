@@ -1,15 +1,35 @@
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 
 use crate::AppState;
 use crate::auth::{
-    DUMMY_PASSWORD_HASH, authenticate, create_session, hash_password, internal, verify_password,
+    DUMMY_PASSWORD_HASH, authenticate, create_session, hash_password, internal, peer_key,
+    verify_password,
 };
 use crate::convert::{id_from_db, id_to_db, snowflake_datetime, user_to_proto};
 use crate::proto::backroom::v1::*;
 
 const PASSWORD_LEN: std::ops::RangeInclusive<usize> = 8..=128;
 const USERNAME_LEN: std::ops::RangeInclusive<usize> = 2..=32;
+
+/// Hard cap on login attempts per peer IP within [`LOGIN_WINDOW`].
+pub const LOGIN_IP_MAX: usize = 30;
+const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
+/// Per-username login attempts within [`LOGIN_WINDOW`] after which each further
+/// attempt is delayed instead of rejected, so an attacker cannot lock out a
+/// victim's account.
+pub const LOGIN_USER_SOFT: usize = 5;
+
+/// Sign-ups allowed per peer IP within [`SIGNUP_WINDOW`].
+pub const SIGNUP_IP_MAX: usize = 20;
+const SIGNUP_WINDOW: Duration = Duration::from_secs(60 * 60);
+
+/// Bounds a username used inside a rate-limit key so keys stay short.
+fn key_username(username: &str) -> String {
+    username.chars().take(64).collect()
+}
 
 pub struct AuthSvc {
     state: AppState,
@@ -41,10 +61,14 @@ fn invalid_credentials() -> ConnectError {
 impl AuthService for AuthSvc {
     async fn sign_up(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         req: ServiceRequest<'_, SignUpRequest>,
     ) -> ServiceResult<SignUpResponse> {
         let username = normalize_username(req.username);
+        // Throttle before doing any expensive work (argon2 hashing, writes).
+        self.state
+            .limiter
+            .check(&format!("signup:ip:{}", peer_key(&ctx)), SIGNUP_IP_MAX, SIGNUP_WINDOW)?;
         if !valid_username(&username) {
             return Err(ConnectError::invalid_argument(
                 "username must be 2-32 characters of a-z, 0-9, '_' or '.'",
@@ -94,7 +118,11 @@ impl AuthService for AuthSvc {
             {
                 tracing::warn!(user_id = id, error = %err, "failed to delete orphaned user row");
             }
-            return Err(ConnectError::already_exists("username is already taken"));
+            // Generic error on purpose: a distinct "username taken" code would let an
+            // unauthenticated caller probe which usernames have accounts, a signal the
+            // login path deliberately hides. The sign-up rate limit bounds the residual
+            // success/failure oracle.
+            return Err(ConnectError::failed_precondition("could not create the account"));
         }
 
         let token = create_session(&self.state, db_id).await?;
@@ -109,10 +137,23 @@ impl AuthService for AuthSvc {
 
     async fn login(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         req: ServiceRequest<'_, LoginRequest>,
     ) -> ServiceResult<LoginResponse> {
         let username = normalize_username(req.username);
+        // Hard per-IP cap on floods. Per-username attempts are delayed past a soft
+        // threshold, never rejected, so an attacker cannot lock out a victim's
+        // account; the growing delay alone throttles distributed brute force.
+        self.state
+            .limiter
+            .check(&format!("login:ip:{}", peer_key(&ctx)), LOGIN_IP_MAX, LOGIN_WINDOW)?;
+        let attempts = self
+            .state
+            .limiter
+            .record(&format!("login:user:{}", key_username(&username)), LOGIN_WINDOW);
+        if attempts > LOGIN_USER_SOFT {
+            tokio::time::sleep(Duration::from_secs((attempts - LOGIN_USER_SOFT).min(10) as u64)).await;
+        }
         let found = self.find_user_by_username(&username).await?;
 
         let Some((db_id, hash, created_at)) = found else {

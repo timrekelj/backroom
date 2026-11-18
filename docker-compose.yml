@@ -4,7 +4,9 @@ services:
     container_name: backroom-scylla
     command: --smp 1 --memory 1G --overprovisioned 1 --developer-mode 1 --broadcast-rpc-address 127.0.0.1
     ports:
-      - "9042:9042"
+      # Localhost only: Scylla runs with AllowAllAuthenticator (no credentials),
+      # so the CQL port must not be reachable from the network.
+      - "127.0.0.1:9042:9042"
     volumes:
       - scylla-data:/var/lib/scylla
     healthcheck:

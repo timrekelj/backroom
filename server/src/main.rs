@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -39,7 +40,9 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("binding {}", config.listen_addr))?;
     tracing::info!(addr = %config.listen_addr, "listening");
-    axum::serve(listener, app)
+    // ConnectInfo<SocketAddr> is stamped into every request's extensions, which
+    // the auth service reads for per-IP rate limiting.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("shutting down");
