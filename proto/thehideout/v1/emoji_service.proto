@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package thehideout.v1;
+
+import "thehideout/v1/types.proto";
+
+// Custom guild emojis. Every guild member may list; mutations need
+// MANAGE_EMOJIS (owner / ADMINISTRATOR imply it); otherwise PERMISSION_DENIED.
+// Mutations publish `emojis_updated` with the full list.
+//
+// Names match `^[a-z0-9_]{2,32}$` and are unique per guild (ALREADY_EXISTS).
+// At most 200 emojis per guild (RESOURCE_EXHAUSTED). Input: at most 2 MiB of
+// PNG, JPEG, WebP or GIF (INVALID_ARGUMENT if larger or not decodable as the
+// declared type). Output fits within 128x128 keeping the aspect ratio (no
+// crop, never upscaled). Static images are stored as WebP; animated GIF/WebP
+// keep their animation and are stored as GIF (`Emoji.animated = true`).
+service EmojiService {
+  // Lists the guild's emojis, ordered by name.
+  rpc ListEmojis(ListEmojisRequest) returns (ListEmojisResponse);
+  // Creates an emoji.
+  rpc CreateEmoji(CreateEmojiRequest) returns (CreateEmojiResponse);
+  // Renames an emoji.
+  rpc RenameEmoji(RenameEmojiRequest) returns (RenameEmojiResponse);
+  // Deletes an emoji. Existing reactions/messages using it render as text.
+  rpc DeleteEmoji(DeleteEmojiRequest) returns (DeleteEmojiResponse);
+}
+
+// Request to list emojis.
+message ListEmojisRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+}
+
+// The guild's emojis.
+message ListEmojisResponse {
+  // All emojis of the guild.
+  repeated Emoji emojis = 1;
+}
+
+// Request to create an emoji.
+message CreateEmojiRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // Emoji name.
+  string name = 2;
+  // Image bytes.
+  bytes data = 3;
+  // One of image/png, image/jpeg, image/webp, image/gif.
+  string content_type = 4;
+}
+
+// Result of creating an emoji.
+message CreateEmojiResponse {
+  // The new emoji.
+  Emoji emoji = 1;
+}
+
+// Request to rename an emoji.
+message RenameEmojiRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // ID of the emoji.
+  uint64 emoji_id = 2;
+  // New name.
+  string name = 3;
+}
+
+// Result of renaming an emoji.
+message RenameEmojiResponse {
+  // The updated emoji.
+  Emoji emoji = 1;
+}
+
+// Request to delete an emoji.
+message DeleteEmojiRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // ID of the emoji.
+  uint64 emoji_id = 2;
+}
+
+// Result of deleting an emoji.
+message DeleteEmojiResponse {}

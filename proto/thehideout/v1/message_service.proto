@@ -10,17 +10,54 @@ service MessageService {
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
   // Lists messages of a channel, newest first, with cursor pagination.
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+  // Adds the caller's reaction (idempotent). Publishes reaction_added. Max 20
+  // distinct emojis per message (RESOURCE_EXHAUSTED); a custom emoji must
+  // belong to the channel's guild and is invalid in DMs (INVALID_ARGUMENT).
+  rpc AddReaction(AddReactionRequest) returns (AddReactionResponse);
+  // Removes the caller's reaction (idempotent). Publishes reaction_removed.
+  rpc RemoveReaction(RemoveReactionRequest) returns (RemoveReactionResponse);
 }
+
+// Request to add a reaction.
+message AddReactionRequest {
+  // Channel of the message.
+  uint64 channel_id = 1;
+  // The message to react to.
+  uint64 message_id = 2;
+  // The emoji.
+  ReactionEmoji emoji = 3;
+}
+
+// Result of adding a reaction.
+message AddReactionResponse {}
+
+// Request to remove a reaction.
+message RemoveReactionRequest {
+  // Channel of the message.
+  uint64 channel_id = 1;
+  // The message.
+  uint64 message_id = 2;
+  // The emoji.
+  ReactionEmoji emoji = 3;
+}
+
+// Result of removing a reaction.
+message RemoveReactionResponse {}
 
 // Request to send a message.
 message SendMessageRequest {
   // ID of the channel to post in.
   uint64 channel_id = 1;
-  // Text content of the message.
+  // Text content of the message. May be empty when `attachment_ids` is
+  // non-empty. Opaque text; custom emoji tokens are described in README.
   string content = 2;
   // Optional client-generated nonce used for deduplication and for matching
   // the echoed message to a pending local one.
   optional string nonce = 3;
+  // IDs of pending uploads (`PendingAttachment.id`) to attach; at most 10.
+  // Each must be a pending upload of the caller for THIS channel and not
+  // expired, else INVALID_ARGUMENT. Consumed on success.
+  repeated uint64 attachment_ids = 4;
 }
 
 // Result of sending a message.

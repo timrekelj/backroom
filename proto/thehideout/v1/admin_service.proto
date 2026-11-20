@@ -23,6 +23,26 @@ service AdminService {
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
   // Grants or revokes site-admin rights.
   rpc SetAdmin(SetAdminRequest) returns (SetAdminResponse);
+  // Lists stored files, largest first.
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+  // Deletes a stored file and its owner reference; writes an audit entry.
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+  // Lists audit entries, newest first.
+  rpc ListAuditLog(ListAuditLogRequest) returns (ListAuditLogResponse);
+}
+
+// Bytes of stored media per category.
+message StorageBreakdown {
+  // Message attachments (files and their thumbnails).
+  uint64 attachments = 1;
+  // Custom emoji images.
+  uint64 emojis = 2;
+  // Guild icons.
+  uint64 guild_icons = 3;
+  // User avatars.
+  uint64 avatars = 4;
+  // Link-embed thumbnails.
+  uint64 embeds = 5;
 }
 
 // Request for the overview.
@@ -52,6 +72,8 @@ message GetOverviewResponse {
   uint64 signups_today = 10;
   // Distinct users who sent a message or opened a gateway stream today.
   uint64 active_users_today = 11;
+  // Global storage per category (sums to storage_bytes_total).
+  StorageBreakdown storage = 12;
 }
 
 // Request for per-day activity.
@@ -101,6 +123,9 @@ message AdminGuildRow {
   uint64 message_count = 4;
   // Bytes of media owned by the guild (its icon).
   uint64 storage_bytes = 5;
+  // Per-category storage of the guild (`avatars` is always 0 here); embeds
+  // count towards the guild owning the message's channel.
+  StorageBreakdown storage = 6;
 }
 
 // A page of guilds.
@@ -158,4 +183,107 @@ message SetAdminRequest {
 message SetAdminResponse {
   // The user after the change.
   User user = 1;
+}
+
+// Category of a stored file.
+enum AdminFileKind {
+  // Not a kind; as a filter = all kinds.
+  ADMIN_FILE_KIND_UNSPECIFIED = 0;
+  // Message attachment (file or its thumbnail).
+  ADMIN_FILE_KIND_ATTACHMENT = 1;
+  // Custom emoji image.
+  ADMIN_FILE_KIND_EMOJI = 2;
+  // Guild icon.
+  ADMIN_FILE_KIND_GUILD_ICON = 3;
+  // User avatar.
+  ADMIN_FILE_KIND_AVATAR = 4;
+  // Link-embed thumbnail.
+  ADMIN_FILE_KIND_EMBED_THUMBNAIL = 5;
+}
+
+// Request to list stored files.
+message ListFilesRequest {
+  // Only files owned by this guild; unset = all (including avatars).
+  optional uint64 guild_id = 1;
+  // Only this kind; unset or UNSPECIFIED = all.
+  optional AdminFileKind kind = 2;
+  // Token from a previous response; "" for the first page.
+  string page_token = 3;
+  // Maximum rows; 0 = default (50); capped at 200.
+  uint32 limit = 4;
+}
+
+// A stored file with its owner.
+message AdminFileRow {
+  // Media key of the object.
+  string key = 1;
+  // What the file is.
+  AdminFileKind kind = 2;
+  // Original file name (attachments only); "" otherwise.
+  string filename = 3;
+  // Size in bytes.
+  uint64 bytes = 4;
+  // MIME type of the stored object.
+  string content_type = 5;
+  // Owning guild, if any (not for avatars or DMs).
+  optional Guild guild = 6;
+  // Owning user (avatar owner, attachment author, emoji creator).
+  optional User owner = 7;
+  // Channel of the message (attachments and embeds).
+  optional uint64 channel_id = 8;
+  // Message (attachments and embeds).
+  optional uint64 message_id = 9;
+  // When the object was stored.
+  google.protobuf.Timestamp created_at = 10;
+}
+
+// A page of files, sorted by `bytes` descending (ties by key).
+message ListFilesResponse {
+  // File rows.
+  repeated AdminFileRow files = 1;
+  // Token for the next page; "" if last.
+  string next_page_token = 2;
+}
+
+// Request to delete a stored file.
+message DeleteFileRequest {
+  // Media key; NOT_FOUND if unknown.
+  string key = 1;
+  // Free-text reason recorded in the audit log.
+  string reason = 2;
+}
+
+// Result of deleting a file.
+message DeleteFileResponse {}
+
+// Request to list audit entries.
+message ListAuditLogRequest {
+  // Token from a previous response; "" for the first page.
+  string page_token = 1;
+  // Maximum rows; 0 = default (50); capped at 200.
+  uint32 limit = 2;
+}
+
+// One audit record.
+message AuditEntry {
+  // Unique Snowflake ID.
+  uint64 id = 1;
+  // The admin who acted.
+  User actor = 2;
+  // Action name, e.g. "file.delete", "admin.grant", "admin.revoke".
+  string action = 3;
+  // What was acted on (media key, user ID, ...), action-specific.
+  string target = 4;
+  // Free-text reason; "" if none.
+  string reason = 5;
+  // When it happened.
+  google.protobuf.Timestamp created_at = 6;
+}
+
+// A page of audit entries, newest first.
+message ListAuditLogResponse {
+  // Entries.
+  repeated AuditEntry entries = 1;
+  // Token for the next page; "" if last.
+  string next_page_token = 2;
 }

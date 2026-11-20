@@ -55,6 +55,15 @@ message Event {
     // shares at least one guild or DM channel with that user (and the user
     // themself). Not scoped to a guild.
     User user_updated = 12;
+    // A guild's custom emojis changed (full list). Audience: guild members.
+    EmojisUpdated emojis_updated = 13;
+    // A user reacted to a message. Audience: channel audience.
+    ReactionChange reaction_added = 14;
+    // A user removed a reaction. Audience: channel audience.
+    ReactionChange reaction_removed = 15;
+    // A message changed (embeds resolved, attachment removed, ...); carries
+    // the full message. Audience: channel audience.
+    MessageUpdated message_updated = 16;
   }
 }
 
@@ -74,6 +83,32 @@ message RolesUpdated {
   repeated Role roles = 2;
   // Current roles version (see ListRolesResponse.version).
   uint64 version = 3;
+}
+
+// Payload of an emoji list change; always the full list.
+message EmojisUpdated {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // All custom emojis of the guild.
+  repeated Emoji emojis = 2;
+}
+
+// Payload of a reaction being added or removed.
+message ReactionChange {
+  // Channel of the message.
+  uint64 channel_id = 1;
+  // The message.
+  uint64 message_id = 2;
+  // The emoji.
+  ReactionEmoji emoji = 3;
+  // The user who reacted / un-reacted.
+  uint64 user_id = 4;
+}
+
+// Payload of a message change.
+message MessageUpdated {
+  // The full, current message (replace the local copy).
+  Message message = 1;
 }
 
 // Payload of a member change.

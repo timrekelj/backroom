@@ -142,6 +142,22 @@ impl MessageService for MessageSvc {
             ..Default::default()
         })
     }
+
+    async fn add_reaction(
+        &self,
+        _ctx: RequestContext,
+        _req: ServiceRequest<'_, AddReactionRequest>,
+    ) -> ServiceResult<AddReactionResponse> {
+        Err(ConnectError::unimplemented("AddReaction is not implemented yet"))
+    }
+
+    async fn remove_reaction(
+        &self,
+        _ctx: RequestContext,
+        _req: ServiceRequest<'_, RemoveReactionRequest>,
+    ) -> ServiceResult<RemoveReactionResponse> {
+        Err(ConnectError::unimplemented("RemoveReaction is not implemented yet"))
+    }
 }
 
 impl MessageSvc {

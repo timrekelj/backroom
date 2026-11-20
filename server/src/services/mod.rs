@@ -14,4 +14,4 @@ pub use guild::GuildSvc;
 pub use media::MediaSvc;
 pub use message::MessageSvc;
 pub use role::RoleSvc;
-pub use unimplemented::AdminSvc;
+pub use unimplemented::{AdminSvc, EmojiSvc};

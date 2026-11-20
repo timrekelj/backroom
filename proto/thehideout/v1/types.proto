@@ -53,13 +53,115 @@ message Channel {
   // authoritative.
   int32 position = 6;
   // Phosphor icon name, e.g. "game-controller"; "" = default (clients derive
-  // a hash icon from the channel). Validated by the server against
+  // a hash icon from the channel). DEPRECATED mirror of `icon_ref`: set only
+  // when icon_ref is a phosphor icon, "" otherwise. Validated by the server against
   // `^[a-z0-9]+(-[a-z0-9]+)*$`, at most 48 characters.
   string icon = 7;
   // Palette key (see "Colour palette" above Section); "" = none.
   string color = 8;
   // Free-text topic, at most 256 characters; "" = none.
   string topic = 9;
+  // Authoritative three-way icon (Phosphor / Unicode emoji / custom emoji).
+  // Unset = default icon. `icon` above mirrors it for old readers.
+  ChannelIcon icon_ref = 10;
+}
+
+// A channel icon: exactly one of a Phosphor icon, a Unicode emoji or one of
+// the guild's custom emojis. An unset `kind` means "default icon".
+message ChannelIcon {
+  oneof kind {
+    // Phosphor icon name, validated against `^[a-z0-9]+(-[a-z0-9]+)*$`, at
+    // most 48 characters.
+    string phosphor = 1;
+    // A single Unicode emoji grapheme cluster, at most 32 bytes.
+    string unicode = 2;
+    // ID of a custom Emoji of the SAME guild as the channel.
+    uint64 custom_emoji_id = 3;
+  }
+}
+
+// A custom emoji owned by a guild (see emoji_service.proto).
+message Emoji {
+  // Unique Snowflake ID of the emoji.
+  uint64 id = 1;
+  // ID of the guild that owns the emoji.
+  uint64 guild_id = 2;
+  // Name matching `^[a-z0-9_]{2,32}$`, unique per guild.
+  string name = 3;
+  // True if the image is an animation (stored as GIF); false = static (WebP).
+  bool animated = 4;
+  // Opaque media key of the image; fetch `GET {base}/media/{key}`.
+  string image = 5;
+  // ID of the user who created the emoji.
+  uint64 creator_id = 6;
+  // When the emoji was created.
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// The emoji of a reaction: a Unicode emoji or a custom emoji.
+message ReactionEmoji {
+  oneof kind {
+    // A single Unicode emoji grapheme cluster, at most 32 bytes.
+    string unicode = 1;
+    // ID of a custom Emoji of the channel's guild (never valid in DMs).
+    uint64 custom_emoji_id = 2;
+  }
+}
+
+// Aggregated reactions of one emoji on a message.
+message Reaction {
+  // The emoji.
+  ReactionEmoji emoji = 1;
+  // Number of users who reacted with it.
+  uint32 count = 2;
+  // Whether the requesting user is among them. In gateway events (shared
+  // across recipients) this is always false; clients maintain it locally from
+  // reaction_added / reaction_removed events carrying their own user_id.
+  bool me = 3;
+}
+
+// A file attached to a message. Uploaded via `POST /attachments` (see
+// message_service.proto / README) and linked by SendMessage.
+message Attachment {
+  // Unique Snowflake ID.
+  uint64 id = 1;
+  // Original file name (sanitised, no path components).
+  string filename = 2;
+  // MIME type as declared at upload.
+  string content_type = 3;
+  // Size in bytes.
+  uint64 size = 4;
+  // Opaque media key of the file; fetch `GET {base}/media/{key}`. Empty if
+  // `removed`.
+  string file = 5;
+  // Pixel width (images only).
+  optional uint32 width = 6;
+  // Pixel height (images only).
+  optional uint32 height = 7;
+  // Media key of a WebP thumbnail, at most 400 px on the longer side (images
+  // only). Unset otherwise, and empty if `removed`.
+  optional string thumbnail = 8;
+  // True after a site admin deleted the file; `file` and `thumbnail` are then
+  // empty and clients show a "removed" placeholder.
+  bool removed = 9;
+}
+
+// A link preview produced by the server for a URL in a message.
+message Embed {
+  // The URL the embed was built from (http or https).
+  string url = 1;
+  // Page title; "" if none.
+  string title = 2;
+  // Page description; "" if none.
+  string description = 3;
+  // Site name (og:site_name or host); "" if none.
+  string site_name = 4;
+  // Media key of the preview image (WebP, stored in S3).
+  optional string thumbnail = 5;
+  // Pixel width of the thumbnail.
+  optional uint32 thumbnail_width = 6;
+  // Pixel height of the thumbnail.
+  optional uint32 thumbnail_height = 7;
 }
 
 // A direct-message channel between exactly two users. Its `id` is a channel
@@ -91,6 +193,13 @@ message Message {
   optional google.protobuf.Timestamp edited_at = 7;
   // Client-supplied nonce echoed back from SendMessage; empty if none was given.
   string nonce = 8;
+  // Reactions, one entry per distinct emoji, ordered by first use.
+  repeated Reaction reactions = 9;
+  // Attached files (at most 10).
+  repeated Attachment attachments = 10;
+  // Link embeds (at most 3); filled asynchronously after the message is
+  // created, announced by a `message_updated` event.
+  repeated Embed embeds = 11;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +270,8 @@ enum Permission {
   PERMISSION_MANAGE_CHANNELS = 4;
   // Create / update / delete / reorder roles and assign them to members.
   PERMISSION_MANAGE_ROLES = 8;
+  // Create / rename / delete custom emojis.
+  PERMISSION_MANAGE_EMOJIS = 16;
 }
 
 // A role within a guild.

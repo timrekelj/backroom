@@ -11,7 +11,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use crate::events::EventBus;
 use crate::media::{self, MAX_INPUT_BYTES};
 use crate::ratelimit::RateLimiter;
-use crate::services::{AdminSvc, AuthSvc, DmSvc, GatewaySvc, GuildSvc, MediaSvc, MessageSvc, RoleSvc};
+use crate::services::{AdminSvc, AuthSvc, DmSvc, EmojiSvc, GatewaySvc, GuildSvc, MediaSvc, MessageSvc, RoleSvc};
 use crate::snowflake::Snowflake;
 use crate::storage::Storage;
 
@@ -69,6 +69,7 @@ pub fn build_app(state: AppState) -> Router {
         .add_service(Arc::new(DmSvc::new(state.clone())))
         .add_service(Arc::new(RoleSvc::new(state.clone())))
         .add_service(Arc::new(AdminSvc::new(state.clone())))
+        .add_service(Arc::new(EmojiSvc::new(state.clone())))
         .add_service(Arc::new(GatewaySvc::new(state.clone())));
 
     // Media RPCs get their own router so only they accept large bodies; the

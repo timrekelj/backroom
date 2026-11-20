@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package thehideout.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Attachment upload protocol. Files are uploaded over plain HTTP (not
+// Connect) so large bodies stream:
+//
+//   POST {base}/attachments?channel_id=<id>&filename=<urlencoded>
+//   Authorization: Bearer <access token>
+//   Content-Type: <the file's MIME type>
+//   <raw file bytes>
+//
+// The body is limited to THEHIDEOUT_MAX_UPLOAD_BYTES (default 50 MiB).
+// Success: 200 with a JSON body in the protobuf-JSON mapping of
+// `PendingAttachment`. Errors: 401 missing/invalid token; 403 the caller
+// cannot post in the channel; 404 unknown channel; 413 body too large;
+// 429 too many pending uploads / rate limited.
+//
+// A pending upload expires 1 hour after creation if no SendMessage consumes
+// it; expired objects are deleted. Link it with
+// `SendMessageRequest.attachment_ids`.
+message PendingAttachment {
+  // Snowflake ID to pass in SendMessageRequest.attachment_ids.
+  uint64 id = 1;
+  // Sanitised file name.
+  string filename = 2;
+  // MIME type as sent in Content-Type.
+  string content_type = 3;
+  // Size in bytes.
+  uint64 size = 4;
+  // When the pending upload expires.
+  google.protobuf.Timestamp expires_at = 5;
+}

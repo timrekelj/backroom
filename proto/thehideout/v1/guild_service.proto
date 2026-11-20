@@ -98,6 +98,9 @@ message CreateChannelRequest {
   string icon = 4;
   // Palette key (see types.proto); "" = none.
   string color = 5;
+  // Three-way icon; if set it wins over `icon`. A custom emoji id must belong
+  // to this guild (INVALID_ARGUMENT otherwise).
+  optional ChannelIcon icon_ref = 6;
 }
 
 // Result of creating a channel.
@@ -150,6 +153,9 @@ message UpdateChannelRequest {
   optional string color = 5;
   // New topic, at most 256 characters; "" clears.
   optional string topic = 6;
+  // New three-way icon; if set it wins over `icon`. An icon_ref with no kind
+  // resets to the default icon.
+  optional ChannelIcon icon_ref = 7;
 }
 
 // Result of updating a channel.

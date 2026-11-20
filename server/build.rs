@@ -26,6 +26,8 @@ fn main() {
             "thehideout/v1/role_service.proto",
             "thehideout/v1/media_service.proto",
             "thehideout/v1/admin_service.proto",
+            "thehideout/v1/emoji_service.proto",
+            "thehideout/v1/attachment.proto",
             "thehideout/v1/types.proto",
         ])
         .include_file("_connectrpc.rs")

@@ -210,6 +210,8 @@ impl Event {
                 member: m.member.into_option().map(Member::from)?,
             },
             Payload::UserUpdated(u) => Self::UserUpdated((*u).into()),
+            // Emoji, reaction and message-update events have no domain type yet.
+            _ => return None,
         })
     }
 }

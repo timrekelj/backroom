@@ -57,4 +57,74 @@ impl AdminService for AdminSvc {
     ) -> ServiceResult<SetAdminResponse> {
         Err(ConnectError::unimplemented("SetAdmin is not implemented yet"))
     }
+
+    async fn list_files(
+        &self,
+        _ctx: RequestContext,
+        _req: ServiceRequest<'_, ListFilesRequest>,
+    ) -> ServiceResult<ListFilesResponse> {
+        Err(ConnectError::unimplemented("ListFiles is not implemented yet"))
+    }
+
+    async fn delete_file(
+        &self,
+        _ctx: RequestContext,
+        _req: ServiceRequest<'_, DeleteFileRequest>,
+    ) -> ServiceResult<DeleteFileResponse> {
+        Err(ConnectError::unimplemented("DeleteFile is not implemented yet"))
+    }
+
+    async fn list_audit_log(
+        &self,
+        _ctx: RequestContext,
+        _req: ServiceRequest<'_, ListAuditLogRequest>,
+    ) -> ServiceResult<ListAuditLogResponse> {
+        Err(ConnectError::unimplemented("ListAuditLog is not implemented yet"))
+    }
+}
+
+/// Placeholder implementation of the emoji service.
+pub struct EmojiSvc {
+    #[allow(dead_code)]
+    state: AppState,
+}
+
+impl EmojiSvc {
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+impl EmojiService for EmojiSvc {
+    async fn list_emojis(
+        &self,
+        _ctx: RequestContext,
+        _req: ServiceRequest<'_, ListEmojisRequest>,
+    ) -> ServiceResult<ListEmojisResponse> {
+        Err(ConnectError::unimplemented("ListEmojis is not implemented yet"))
+    }
+
+    async fn create_emoji(
+        &self,
+        _ctx: RequestContext,
+        _req: ServiceRequest<'_, CreateEmojiRequest>,
+    ) -> ServiceResult<CreateEmojiResponse> {
+        Err(ConnectError::unimplemented("CreateEmoji is not implemented yet"))
+    }
+
+    async fn rename_emoji(
+        &self,
+        _ctx: RequestContext,
+        _req: ServiceRequest<'_, RenameEmojiRequest>,
+    ) -> ServiceResult<RenameEmojiResponse> {
+        Err(ConnectError::unimplemented("RenameEmoji is not implemented yet"))
+    }
+
+    async fn delete_emoji(
+        &self,
+        _ctx: RequestContext,
+        _req: ServiceRequest<'_, DeleteEmojiRequest>,
+    ) -> ServiceResult<DeleteEmojiResponse> {
+        Err(ConnectError::unimplemented("DeleteEmoji is not implemented yet"))
+    }
 }
