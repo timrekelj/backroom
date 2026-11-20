@@ -1,0 +1,141 @@
+syntax = "proto3";
+
+package thehideout.v1;
+
+import "thehideout/v1/types.proto";
+
+// Roles and permissions within a guild. A separate service from GuildService
+// because roles are a self-contained subsystem with their own concurrency
+// version and permission rules. See types.proto (`Permission`) for the
+// permission model and role hierarchy.
+//
+// Common errors: NOT_FOUND if the guild does not exist or the caller is not a
+// member; PERMISSION_DENIED if the caller lacks MANAGE_ROLES (ADMINISTRATOR
+// and the guild owner always pass) or the hierarchy rule forbids the action
+// (target role at or above the caller's highest role, or granting permissions
+// the caller does not hold).
+service RoleService {
+  // Lists the roles of a guild the caller belongs to, most senior first.
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  // Creates a role at the bottom of the hierarchy. Requires MANAGE_ROLES.
+  // Publishes RolesUpdated.
+  rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+  // Updates a role. Requires MANAGE_ROLES. Publishes RolesUpdated.
+  rpc UpdateRole(UpdateRoleRequest) returns (UpdateRoleResponse);
+  // Deletes a role and removes it from all members. Requires MANAGE_ROLES.
+  // Publishes RolesUpdated (and MemberUpdated for affected members).
+  rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse);
+  // Sets the full role order. Requires MANAGE_ROLES. Publishes RolesUpdated.
+  rpc ReorderRoles(ReorderRolesRequest) returns (ReorderRolesResponse);
+  // Replaces the set of roles assigned to a member. Requires MANAGE_ROLES.
+  // Publishes MemberUpdated.
+  rpc SetMemberRoles(SetMemberRolesRequest) returns (SetMemberRolesResponse);
+}
+
+// Request to list roles.
+message ListRolesRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+}
+
+// The roles of a guild.
+message ListRolesResponse {
+  // Roles ordered by position descending (most senior first).
+  repeated Role roles = 1;
+  // Roles version, incremented on every create / delete / reorder. Pass it as
+  // `expected_version` to ReorderRoles.
+  uint64 version = 2;
+}
+
+// Request to create a role.
+message CreateRoleRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // Display name, 1-100 characters.
+  string name = 2;
+  // Palette key; "" = none. INVALID_ARGUMENT otherwise.
+  string color = 3;
+  // Bitwise OR of Permission values; INVALID_ARGUMENT on unknown bits. The
+  // caller can only grant permissions they hold.
+  uint64 permissions = 4;
+}
+
+// Result of creating a role.
+message CreateRoleResponse {
+  // The new role.
+  Role role = 1;
+  // Roles version after the change.
+  uint64 version = 2;
+}
+
+// Request to update a role. Unset fields are left unchanged.
+message UpdateRoleRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // ID of the role.
+  uint64 role_id = 2;
+  // New name, 1-100 characters.
+  optional string name = 3;
+  // New palette key; "" clears.
+  optional string color = 4;
+  // New permissions bitset (same rules as CreateRoleRequest.permissions).
+  optional uint64 permissions = 5;
+}
+
+// Result of updating a role.
+message UpdateRoleResponse {
+  // The updated role.
+  Role role = 1;
+}
+
+// Request to delete a role.
+message DeleteRoleRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // ID of the role.
+  uint64 role_id = 2;
+}
+
+// Result of deleting a role.
+message DeleteRoleResponse {
+  // Roles version after the change.
+  uint64 version = 1;
+}
+
+// Request to reorder roles.
+message ReorderRolesRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // Roles version the client based its edit on. A mismatch fails with ABORTED
+  // and nothing is applied.
+  uint64 expected_version = 2;
+  // Every role ID of the guild exactly once, most senior first. INVALID_ARGUMENT
+  // if not a permutation of the guild's roles. The caller cannot move roles at
+  // or above their own highest role, nor move a role to or above it.
+  repeated uint64 role_ids = 3;
+}
+
+// Result of reordering roles.
+message ReorderRolesResponse {
+  // The roles in their new order (most senior first), positions updated.
+  repeated Role roles = 1;
+  // Roles version after the change.
+  uint64 version = 2;
+}
+
+// Request to set a member's roles.
+message SetMemberRolesRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // ID of the member's user; NOT_FOUND if not a member.
+  uint64 user_id = 2;
+  // The complete new set of role IDs; all must exist in the guild. The caller
+  // may only add or remove roles strictly below their own highest role.
+  repeated uint64 role_ids = 3;
+}
+
+// Result of setting a member's roles.
+message SetMemberRolesResponse {
+  // The member after the change.
+  Member member = 1;
+}

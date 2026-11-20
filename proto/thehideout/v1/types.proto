@@ -12,6 +12,11 @@ message User {
   string username = 2;
   // When the account was created.
   google.protobuf.Timestamp created_at = 3;
+  // Opaque media key of the user's avatar; "" = no avatar (clients render a
+  // default). Load it from `GET {base}/media/{key}` (see media_service.proto).
+  string avatar = 4;
+  // Whether the user is a site administrator (see admin_service.proto).
+  bool is_admin = 5;
 }
 
 // A guild (a Discord-style server) that groups members and channels.
@@ -26,6 +31,9 @@ message Guild {
   string invite_code = 4;
   // When the guild was created.
   google.protobuf.Timestamp created_at = 5;
+  // Opaque media key of the guild icon; "" = no icon. Load it from
+  // `GET {base}/media/{key}` (see media_service.proto).
+  string icon = 6;
 }
 
 // A text channel inside a guild.
@@ -38,6 +46,20 @@ message Channel {
   string name = 3;
   // When the channel was created.
   google.protobuf.Timestamp created_at = 4;
+  // Section the channel is in; unset = top level (unsectioned).
+  optional uint64 section_id = 5;
+  // 0-based position among the channels of the same section (or among the
+  // unsectioned channels). Informational mirror of GuildLayout, which is
+  // authoritative.
+  int32 position = 6;
+  // Phosphor icon name, e.g. "game-controller"; "" = default (clients derive
+  // a hash icon from the channel). Validated by the server against
+  // `^[a-z0-9]+(-[a-z0-9]+)*$`, at most 48 characters.
+  string icon = 7;
+  // Palette key (see "Colour palette" above Section); "" = none.
+  string color = 8;
+  // Free-text topic, at most 256 characters; "" = none.
+  string topic = 9;
 }
 
 // A direct-message channel between exactly two users. Its `id` is a channel
@@ -69,4 +91,103 @@ message Message {
   optional google.protobuf.Timestamp edited_at = 7;
   // Client-supplied nonce echoed back from SendMessage; empty if none was given.
   string nonce = 8;
+}
+
+// ---------------------------------------------------------------------------
+// Colour palette
+// ---------------------------------------------------------------------------
+// Roles and channels reference colours by palette key; clients map keys to
+// concrete colours. The only valid keys are exactly these 12 strings, and ""
+// means "no colour":
+//   "slate", "red", "orange", "amber", "yellow", "lime", "green", "teal",
+//   "cyan", "blue", "indigo", "pink"
+// The server rejects any other value with INVALID_ARGUMENT.
+
+// A named group of channels inside a guild, used to organise the channel list.
+message Section {
+  // Unique Snowflake ID of the section; never 0.
+  uint64 id = 1;
+  // ID of the guild the section belongs to.
+  uint64 guild_id = 2;
+  // Display name, 1-100 characters.
+  string name = 3;
+  // 0-based position among the guild's sections. Informational mirror of
+  // GuildLayout, which is authoritative.
+  int32 position = 4;
+}
+
+// The channels of one section, in display order.
+message LayoutEntry {
+  // Section the channels belong to; 0 = top level (unsectioned channels).
+  uint64 section_id = 1;
+  // Channel IDs in display order.
+  repeated uint64 channel_ids = 2;
+}
+
+// The ordered layout of a guild's channel list. Every channel of the guild
+// appears in exactly one entry and every section has exactly one entry
+// (possibly with no channels); the entry for section_id 0 is always present.
+message GuildLayout {
+  // Monotonic version, incremented on every layout change (section create /
+  // delete, channel create / delete, UpdateLayout). Used for optimistic
+  // concurrency in UpdateLayout.
+  uint64 version = 1;
+  // Sections in display order. Rename via UpdateSection.
+  repeated Section sections = 2;
+  // Channel ordering per section.
+  repeated LayoutEntry entries = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Roles and permissions
+// ---------------------------------------------------------------------------
+
+// Permission bit flags. A permission set is a uint64 whose bits are the sum
+// (OR) of these values. Rules:
+//   - The guild owner implicitly has every permission.
+//   - A member's permissions are the OR of the permissions of all their roles.
+//   - ADMINISTRATOR implies every other permission.
+//   - Hierarchy: non-owners can only manage (edit, delete, reorder, assign)
+//     roles strictly below their own highest role, and can only grant
+//     permissions they themselves hold. Only the owner is exempt.
+enum Permission {
+  // Not a permission; the zero value.
+  PERMISSION_UNSPECIFIED = 0;
+  // Implies all permissions.
+  PERMISSION_ADMINISTRATOR = 1;
+  // Update guild name and icon.
+  PERMISSION_MANAGE_SERVER = 2;
+  // Create / update channels and sections, and change the layout.
+  PERMISSION_MANAGE_CHANNELS = 4;
+  // Create / update / delete / reorder roles and assign them to members.
+  PERMISSION_MANAGE_ROLES = 8;
+}
+
+// A role within a guild.
+message Role {
+  // Unique Snowflake ID of the role.
+  uint64 id = 1;
+  // ID of the guild the role belongs to.
+  uint64 guild_id = 2;
+  // Display name, 1-100 characters.
+  string name = 3;
+  // Palette key; "" = none.
+  string color = 4;
+  // Seniority; higher = more senior. Positions are unique within a guild and
+  // contiguous (0..n-1) after ReorderRoles.
+  int32 position = 5;
+  // Bitwise OR of Permission values.
+  uint64 permissions = 6;
+  // When the role was created.
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// A user's membership of a guild.
+message Member {
+  // The member's user.
+  User user = 1;
+  // IDs of the roles assigned to the member.
+  repeated uint64 role_ids = 2;
+  // When the user joined the guild.
+  google.protobuf.Timestamp joined_at = 3;
 }

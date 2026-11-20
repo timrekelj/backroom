@@ -39,7 +39,49 @@ message Event {
     Heartbeat heartbeat = 5;
     // A DM channel was opened with the caller.
     DmChannel dm_opened = 6;
+    // A guild's name or icon changed. Audience: guild members.
+    Guild guild_updated = 7;
+    // A channel's name, icon, colour or topic changed. Audience: guild members.
+    Channel channel_updated = 8;
+    // A guild's layout changed (sections and/or channel order). Audience:
+    // guild members.
+    LayoutUpdated layout_updated = 9;
+    // A guild's roles changed (create, update, delete, reorder). Audience:
+    // guild members.
+    RolesUpdated roles_updated = 10;
+    // A member's roles changed. Audience: guild members.
+    MemberUpdated member_updated = 11;
+    // A user changed their profile (e.g. avatar). Audience: every user that
+    // shares at least one guild or DM channel with that user (and the user
+    // themself). Not scoped to a guild.
+    User user_updated = 12;
   }
+}
+
+// Payload of a layout change.
+message LayoutUpdated {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // The full new layout.
+  GuildLayout layout = 2;
+}
+
+// Payload of a roles change; always the full list, so clients replace theirs.
+message RolesUpdated {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // All roles of the guild.
+  repeated Role roles = 2;
+  // Current roles version (see ListRolesResponse.version).
+  uint64 version = 3;
+}
+
+// Payload of a member change.
+message MemberUpdated {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // The member's new state.
+  Member member = 2;
 }
 
 // Payload of a user joining a guild.

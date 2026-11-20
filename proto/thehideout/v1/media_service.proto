@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package thehideout.v1;
+
+import "thehideout/v1/types.proto";
+
+// Image storage for avatars and guild icons.
+//
+// Serving: stored images are fetched with a plain HTTP route, not Connect:
+//   GET {base}/media/{key}
+// where `key` is the opaque value in `User.avatar` / `Guild.icon`. Keys are
+// content-addressed and never reused, so responses are immutable
+// (`Cache-Control: public, max-age=31536000, immutable`). Unknown key = 404.
+// The route needs no authentication.
+//
+// Processing: input of at most 8 MiB (larger = INVALID_ARGUMENT) in PNG, JPEG,
+// WebP or GIF (first frame only); `content_type` must be one of `image/png`,
+// `image/jpeg`, `image/webp`, `image/gif`, and the bytes must actually decode
+// as that format (INVALID_ARGUMENT otherwise). The server crops the centre
+// square, resizes to 256x256 and re-encodes (served as `image/webp`),
+// discarding all metadata. The previous image is replaced.
+service MediaService {
+  // Sets the caller's avatar. Publishes UserUpdated.
+  rpc UploadAvatar(UploadAvatarRequest) returns (UploadAvatarResponse);
+  // Removes the caller's avatar (no-op if none). Publishes UserUpdated.
+  rpc RemoveAvatar(RemoveAvatarRequest) returns (RemoveAvatarResponse);
+  // Sets a guild's icon. Requires MANAGE_SERVER. Publishes GuildUpdated.
+  rpc UploadGuildIcon(UploadGuildIconRequest) returns (UploadGuildIconResponse);
+  // Removes a guild's icon (no-op if none). Requires MANAGE_SERVER.
+  // Publishes GuildUpdated.
+  rpc RemoveGuildIcon(RemoveGuildIconRequest) returns (RemoveGuildIconResponse);
+}
+
+// Request to upload an avatar.
+message UploadAvatarRequest {
+  // Raw image bytes, at most 8 MiB.
+  bytes data = 1;
+  // MIME type of `data`.
+  string content_type = 2;
+}
+
+// Result of uploading an avatar.
+message UploadAvatarResponse {
+  // The caller, with the new `avatar` key.
+  User user = 1;
+}
+
+// Request to remove the caller's avatar.
+message RemoveAvatarRequest {}
+
+// Result of removing an avatar.
+message RemoveAvatarResponse {
+  // The caller, with `avatar` empty.
+  User user = 1;
+}
+
+// Request to upload a guild icon.
+message UploadGuildIconRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // Raw image bytes, at most 8 MiB.
+  bytes data = 2;
+  // MIME type of `data`.
+  string content_type = 3;
+}
+
+// Result of uploading a guild icon.
+message UploadGuildIconResponse {
+  // The guild, with the new `icon` key.
+  Guild guild = 1;
+}
+
+// Request to remove a guild icon.
+message RemoveGuildIconRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+}
+
+// Result of removing a guild icon.
+message RemoveGuildIconResponse {
+  // The guild, with `icon` empty.
+  Guild guild = 1;
+}

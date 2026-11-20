@@ -1,0 +1,161 @@
+syntax = "proto3";
+
+package thehideout.v1;
+
+import "google/protobuf/timestamp.proto";
+import "thehideout/v1/types.proto";
+
+// Site-wide administration dashboard. Every call requires the caller to be a
+// site admin (`User.is_admin`); otherwise PERMISSION_DENIED.
+//
+// Bootstrap: the environment variable THEHIDEOUT_ADMINS (comma-separated
+// usernames) lists users who are promoted to admin at server startup (if they
+// already exist) and at sign-up (if they register later). Further admins are
+// made with SetAdmin.
+service AdminService {
+  // Site-wide totals and today's counters.
+  rpc GetOverview(GetOverviewRequest) returns (GetOverviewResponse);
+  // Per-day activity for the last N days.
+  rpc GetActivity(GetActivityRequest) returns (GetActivityResponse);
+  // Lists all guilds with usage numbers.
+  rpc ListGuilds(ListGuildsRequest) returns (ListGuildsResponse);
+  // Lists all users with usage numbers.
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  // Grants or revokes site-admin rights.
+  rpc SetAdmin(SetAdminRequest) returns (SetAdminResponse);
+}
+
+// Request for the overview.
+message GetOverviewRequest {}
+
+// Site-wide totals. "Today" is the current UTC day.
+message GetOverviewResponse {
+  // Registered users.
+  uint64 users = 1;
+  // Guilds.
+  uint64 guilds = 2;
+  // Guild channels (DM channels excluded).
+  uint64 channels = 3;
+  // Messages, including DMs.
+  uint64 messages = 4;
+  // Total bytes of stored media (all kinds).
+  uint64 storage_bytes_total = 5;
+  // Bytes of stored avatars.
+  uint64 storage_bytes_avatars = 6;
+  // Bytes of stored guild icons.
+  uint64 storage_bytes_guild_icons = 7;
+  // Currently open gateway streams on this node.
+  uint64 live_connections = 8;
+  // Messages sent today.
+  uint64 messages_today = 9;
+  // Accounts created today.
+  uint64 signups_today = 10;
+  // Distinct users who sent a message or opened a gateway stream today.
+  uint64 active_users_today = 11;
+}
+
+// Request for per-day activity.
+message GetActivityRequest {
+  // Number of days to return, ending today (inclusive). 1..=90; 0 means the
+  // default of 30; larger values are INVALID_ARGUMENT.
+  uint32 days = 1;
+}
+
+// One day of activity.
+message ActivityPoint {
+  // UTC date, formatted "YYYY-MM-DD".
+  string date = 1;
+  // Messages sent that day.
+  uint64 messages = 2;
+  // Accounts created that day.
+  uint64 signups = 3;
+  // Distinct active users that day (same definition as active_users_today).
+  uint64 active_users = 4;
+}
+
+// Per-day activity.
+message GetActivityResponse {
+  // One point per day, oldest first, with zero-filled gaps.
+  repeated ActivityPoint points = 1;
+}
+
+// Request to list guilds.
+message ListGuildsRequest {
+  // Token from a previous response's `next_page_token`; "" for the first page.
+  string page_token = 1;
+  // Maximum rows to return; 0 = default (50); capped at 200.
+  uint32 limit = 2;
+  // Case-insensitive substring filter on the guild name; "" = no filter.
+  string query = 3;
+}
+
+// A guild with usage numbers.
+message AdminGuildRow {
+  // The guild.
+  Guild guild = 1;
+  // Members.
+  uint64 member_count = 2;
+  // Channels.
+  uint64 channel_count = 3;
+  // Messages in the guild's channels.
+  uint64 message_count = 4;
+  // Bytes of media owned by the guild (its icon).
+  uint64 storage_bytes = 5;
+}
+
+// A page of guilds.
+message ListGuildsResponse {
+  // Guild rows.
+  repeated AdminGuildRow guilds = 1;
+  // Token for the next page; "" if this was the last page.
+  string next_page_token = 2;
+}
+
+// Request to list users.
+message ListUsersRequest {
+  // Token from a previous response's `next_page_token`; "" for the first page.
+  string page_token = 1;
+  // Maximum rows to return; 0 = default (50); capped at 200.
+  uint32 limit = 2;
+  // Case-insensitive substring filter on the username; "" = no filter.
+  string query = 3;
+}
+
+// A user with usage numbers.
+message AdminUserRow {
+  // The user (includes `is_admin`).
+  User user = 1;
+  // Guilds the user is a member of.
+  uint64 guild_count = 2;
+  // Messages the user has sent.
+  uint64 message_count = 3;
+  // Bytes of media owned by the user (their avatar).
+  uint64 storage_bytes = 4;
+  // Last time the user sent a message or opened a gateway stream; unset if never.
+  optional google.protobuf.Timestamp last_active_at = 5;
+}
+
+// A page of users.
+message ListUsersResponse {
+  // User rows.
+  repeated AdminUserRow users = 1;
+  // Token for the next page; "" if this was the last page.
+  string next_page_token = 2;
+}
+
+// Request to grant or revoke admin rights.
+message SetAdminRequest {
+  // ID of the user to change; NOT_FOUND if unknown.
+  uint64 user_id = 1;
+  // true = make admin, false = revoke. Revoking fails with FAILED_PRECONDITION
+  // if `user_id` is the caller (admins cannot demote themselves) or if the
+  // user is the last remaining admin. Admins promoted via THEHIDEOUT_ADMINS are
+  // re-promoted at the next startup.
+  bool is_admin = 2;
+}
+
+// Result of changing admin rights.
+message SetAdminResponse {
+  // The user after the change.
+  User user = 1;
+}

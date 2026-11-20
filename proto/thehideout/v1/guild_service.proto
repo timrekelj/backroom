@@ -18,6 +18,23 @@ service GuildService {
   rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse);
   // Lists the channels of a guild the caller belongs to.
   rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+  // Updates guild settings. Requires MANAGE_SERVER. Publishes GuildUpdated.
+  rpc UpdateGuild(UpdateGuildRequest) returns (UpdateGuildResponse);
+  // Updates a channel's name, icon, colour or topic. Requires MANAGE_CHANNELS.
+  // Publishes ChannelUpdated.
+  rpc UpdateChannel(UpdateChannelRequest) returns (UpdateChannelResponse);
+  // Creates a channel section (appended last). Requires MANAGE_CHANNELS.
+  // Publishes LayoutUpdated.
+  rpc CreateSection(CreateSectionRequest) returns (CreateSectionResponse);
+  // Renames a section. Requires MANAGE_CHANNELS. Publishes LayoutUpdated.
+  rpc UpdateSection(UpdateSectionRequest) returns (UpdateSectionResponse);
+  // Deletes a section; its channels move to the top level, appended after the
+  // existing unsectioned channels in their current order. Requires
+  // MANAGE_CHANNELS. Publishes LayoutUpdated.
+  rpc DeleteSection(DeleteSectionRequest) returns (DeleteSectionResponse);
+  // Replaces the section order and the channel order/section assignment.
+  // Requires MANAGE_CHANNELS. Publishes LayoutUpdated.
+  rpc UpdateLayout(UpdateLayoutRequest) returns (UpdateLayoutResponse);
 }
 
 // Request to create a guild.
@@ -61,8 +78,11 @@ message ListGuildMembersRequest {
 
 // Members of a guild.
 message ListGuildMembersResponse {
-  // Users that are members of the guild.
+  // Users that are members of the guild. Kept for compatibility; equals
+  // `members[*].user`.
   repeated User users = 1;
+  // Members of the guild, with their roles.
+  repeated Member members = 2;
 }
 
 // Request to create a channel.
@@ -71,6 +91,13 @@ message CreateChannelRequest {
   uint64 guild_id = 1;
   // Display name of the new channel.
   string name = 2;
+  // Section to put the channel in (appended last); unset = top level.
+  // Must exist in the guild, else NOT_FOUND.
+  optional uint64 section_id = 3;
+  // Phosphor icon name (see Channel.icon); "" = default.
+  string icon = 4;
+  // Palette key (see types.proto); "" = none.
+  string color = 5;
 }
 
 // Result of creating a channel.
@@ -89,4 +116,118 @@ message ListChannelsRequest {
 message ListChannelsResponse {
   // Channels belonging to the guild.
   repeated Channel channels = 1;
+  // The guild's section/channel layout, including its current version.
+  // (There is no separate GetLayout RPC; this saves a round trip.)
+  GuildLayout layout = 2;
+}
+
+// Request to update guild settings.
+message UpdateGuildRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // New display name, 1-100 characters; unset = unchanged.
+  optional string name = 2;
+}
+
+// Result of updating a guild.
+message UpdateGuildResponse {
+  // The updated guild.
+  Guild guild = 1;
+}
+
+// Request to update a channel. Unset fields are left unchanged.
+message UpdateChannelRequest {
+  // ID of the guild containing the channel.
+  uint64 guild_id = 1;
+  // ID of the channel.
+  uint64 channel_id = 2;
+  // New name (same normalisation and validation as CreateChannel).
+  optional string name = 3;
+  // New Phosphor icon name; "" resets to default. INVALID_ARGUMENT if it does
+  // not match `^[a-z0-9]+(-[a-z0-9]+)*$` or exceeds 48 characters.
+  optional string icon = 4;
+  // New palette key; "" clears. INVALID_ARGUMENT if not in the palette.
+  optional string color = 5;
+  // New topic, at most 256 characters; "" clears.
+  optional string topic = 6;
+}
+
+// Result of updating a channel.
+message UpdateChannelResponse {
+  // The updated channel.
+  Channel channel = 1;
+}
+
+// Request to create a section.
+message CreateSectionRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // Display name, 1-100 characters.
+  string name = 2;
+}
+
+// Result of creating a section.
+message CreateSectionResponse {
+  // The new section.
+  Section section = 1;
+  // The resulting layout (version bumped).
+  GuildLayout layout = 2;
+}
+
+// Request to rename a section.
+message UpdateSectionRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // ID of the section.
+  uint64 section_id = 2;
+  // New display name, 1-100 characters.
+  string name = 3;
+}
+
+// Result of renaming a section.
+message UpdateSectionResponse {
+  // The updated section.
+  Section section = 1;
+  // The resulting layout (version bumped).
+  GuildLayout layout = 2;
+}
+
+// Request to delete a section.
+message DeleteSectionRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // ID of the section.
+  uint64 section_id = 2;
+}
+
+// Result of deleting a section.
+message DeleteSectionResponse {
+  // The resulting layout (version bumped).
+  GuildLayout layout = 1;
+}
+
+// Request to replace the layout. The desired layout must be a permutation of
+// the guild's current sections and channels: the same set of section IDs and
+// channel IDs, none missing, none duplicated, none unknown; every channel in
+// exactly one entry. Creating, renaming or deleting is done with the other
+// RPCs, not here.
+message UpdateLayoutRequest {
+  // ID of the guild.
+  uint64 guild_id = 1;
+  // The layout version the client based its edit on. If it differs from the
+  // server's current version the call fails with ABORTED (the client should
+  // refetch via ListChannels and retry); no changes are applied.
+  uint64 expected_version = 2;
+  // Desired section order (section IDs; never 0).
+  repeated uint64 section_ids = 3;
+  // Desired channel order per section; section_id 0 = top level. A missing
+  // entry means that section has no channels. INVALID_ARGUMENT if the
+  // arguments are not a permutation of the current state.
+  repeated LayoutEntry entries = 4;
+}
+
+// Result of updating the layout.
+message UpdateLayoutResponse {
+  // The new layout, with the version incremented.
+  GuildLayout layout = 1;
 }
