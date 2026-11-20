@@ -4750,6 +4750,7 @@ dependencies = [
  "bytes",
  "connectrpc",
  "connectrpc-build",
+ "http-body",
  "http-body-util",
  "hyper",
  "rand 0.9.5",

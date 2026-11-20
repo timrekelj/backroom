@@ -23,6 +23,10 @@ pub enum ApiError {
     RateLimited,
     /// The resource already exists. Sign-up reports a taken username this way.
     AlreadyExists,
+    /// The operation is not allowed in the current state (e.g. demoting yourself or the last admin).
+    Precondition(String),
+    /// The upload is larger than the server (or the local limit) allows.
+    TooLarge,
     /// The server could not be reached or the connection broke.
     Network(String),
     /// Anything else, with the server's message.
@@ -47,6 +51,9 @@ impl fmt::Display for ApiError {
             Self::Unimplemented => f.write_str("not supported by this server"),
             Self::RateLimited => f.write_str("too many attempts, try again later"),
             Self::AlreadyExists => f.write_str("already exists"),
+            Self::Precondition(msg) if msg.is_empty() => f.write_str("not allowed right now"),
+            Self::Precondition(msg) => write!(f, "not allowed: {msg}"),
+            Self::TooLarge => f.write_str("file is too large"),
             Self::Network(msg) => write!(f, "network error: {msg}"),
             Self::Other(msg) => write!(f, "{msg}"),
         }
@@ -54,6 +61,23 @@ impl fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
+
+impl ApiError {
+    /// Maps the HTTP status of a plain (non-Connect) request, e.g. `POST /attachments`.
+    pub(crate) fn from_status(status: u16, body: &str) -> Self {
+        let msg = body.trim().to_owned();
+        match status {
+            400 => Self::InvalidArgument(msg),
+            401 => Self::Unauthenticated,
+            403 => Self::PermissionDenied,
+            404 => Self::NotFound,
+            413 => Self::TooLarge,
+            429 => Self::RateLimited,
+            503 | 504 => Self::Network(msg),
+            s => Self::Other(if msg.is_empty() { format!("request failed with status {s}") } else { msg }),
+        }
+    }
+}
 
 impl From<ConnectError> for ApiError {
     fn from(err: ConnectError) -> Self {
@@ -66,8 +90,9 @@ impl From<ConnectError> for ApiError {
             ErrorCode::Aborted => Self::Conflict,
             ErrorCode::Unimplemented => Self::Unimplemented,
             ErrorCode::ResourceExhausted => Self::RateLimited,
-            // The server answers a taken username with FailedPrecondition.
-            ErrorCode::AlreadyExists | ErrorCode::FailedPrecondition => Self::AlreadyExists,
+            ErrorCode::AlreadyExists => Self::AlreadyExists,
+            // Sign-up also answers a taken username with this; `Client::sign_up` maps it itself.
+            ErrorCode::FailedPrecondition => Self::Precondition(msg),
             ErrorCode::Unavailable | ErrorCode::DeadlineExceeded => Self::Network(msg),
             _ => Self::Other(msg),
         }
@@ -90,11 +115,22 @@ mod tests {
         assert_eq!(map(ErrorCode::PermissionDenied), ApiError::PermissionDenied);
         assert_eq!(map(ErrorCode::ResourceExhausted), ApiError::RateLimited);
         assert_eq!(map(ErrorCode::AlreadyExists), ApiError::AlreadyExists);
-        assert_eq!(map(ErrorCode::FailedPrecondition), ApiError::AlreadyExists);
+        assert_eq!(map(ErrorCode::FailedPrecondition), ApiError::Precondition("boom".into()));
         assert_eq!(map(ErrorCode::Unavailable), ApiError::Network("boom".into()));
         assert_eq!(map(ErrorCode::Aborted), ApiError::Conflict);
         assert_eq!(map(ErrorCode::Unimplemented), ApiError::Unimplemented);
         assert_eq!(map(ErrorCode::Internal), ApiError::Other("boom".into()));
+    }
+
+    #[test]
+    fn maps_http_statuses() {
+        assert_eq!(ApiError::from_status(401, ""), ApiError::Unauthenticated);
+        assert_eq!(ApiError::from_status(403, ""), ApiError::PermissionDenied);
+        assert_eq!(ApiError::from_status(404, ""), ApiError::NotFound);
+        assert_eq!(ApiError::from_status(413, ""), ApiError::TooLarge);
+        assert_eq!(ApiError::from_status(429, ""), ApiError::RateLimited);
+        assert_eq!(ApiError::from_status(400, " bad\n"), ApiError::InvalidArgument("bad".into()));
+        assert_eq!(ApiError::from_status(500, ""), ApiError::Other("request failed with status 500".into()));
     }
 
     #[test]

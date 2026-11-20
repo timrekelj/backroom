@@ -10,6 +10,7 @@ bytes = "1"
 buffa = { version = "0.9", features = ["json"] }
 buffa-types = { version = "0.9", features = ["json"] }
 connectrpc = { version = "0.9", features = ["client"] }
+http-body = "1"
 http-body-util = "0.1"
 hyper = "1"
 rand = "0.9"

@@ -162,6 +162,61 @@ impl From<String> for ChannelIcon {
     }
 }
 
+/// A channel's icon: the authoritative three-way form of [`ChannelIcon`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum ChannelIconRef {
+    /// No icon chosen; derive a hash icon from the channel.
+    #[default]
+    Default,
+    /// A Phosphor icon name such as `"game-controller"`.
+    Phosphor(String),
+    /// A single Unicode emoji.
+    Unicode(String),
+    /// A custom emoji of the channel's guild.
+    Custom(u64),
+}
+
+impl ChannelIconRef {
+    /// The deprecated string mirror: the Phosphor name, `""` otherwise.
+    pub fn phosphor_name(&self) -> &str {
+        match self {
+            Self::Phosphor(name) => name,
+            _ => "",
+        }
+    }
+
+    /// Reads the wire form; an unset icon falls back to the legacy `icon` string.
+    pub(crate) fn from_wire(icon_ref: Option<pb::ChannelIcon>, legacy: &str) -> Self {
+        use pb::channel_icon::Kind;
+        match icon_ref.and_then(|i| i.kind) {
+            Some(Kind::Phosphor(name)) => Self::Phosphor(name),
+            Some(Kind::Unicode(e)) => Self::Unicode(e),
+            Some(Kind::CustomEmojiId(id)) => Self::Custom(id),
+            None if !legacy.is_empty() => Self::Phosphor(legacy.to_owned()),
+            None => Self::Default,
+        }
+    }
+
+    pub(crate) fn to_proto(&self) -> pb::ChannelIcon {
+        use pb::channel_icon::Kind;
+        pb::ChannelIcon {
+            kind: match self {
+                Self::Default => None,
+                Self::Phosphor(name) => Some(Kind::Phosphor(name.clone())),
+                Self::Unicode(e) => Some(Kind::Unicode(e.clone())),
+                Self::Custom(id) => Some(Kind::CustomEmojiId(*id)),
+            },
+            ..Default::default()
+        }
+    }
+}
+
+impl From<&ChannelIcon> for ChannelIconRef {
+    fn from(icon: &ChannelIcon) -> Self {
+        if icon.is_default() { Self::Default } else { Self::Phosphor(icon.0.clone()) }
+    }
+}
+
 /// A role within a guild.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Role {

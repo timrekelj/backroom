@@ -5,7 +5,8 @@ use std::time::SystemTime;
 use buffa_types::google::protobuf::Timestamp;
 
 use crate::proto::thehideout::v1 as pb;
-use crate::structure::{ChannelIcon, GuildLayout, Member, PaletteColor, Role};
+use crate::content::{Attachment, Embed, Emoji, Reaction, ReactionEmoji};
+use crate::structure::{ChannelIcon, ChannelIconRef, GuildLayout, Member, PaletteColor, Role};
 
 /// A registered user.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +44,10 @@ pub struct Channel {
     pub section_id: Option<u64>,
     /// 0-based position within its section (the layout is authoritative).
     pub position: i32,
+    /// The Phosphor name of `icon_ref`, `""` for any other icon (kept for older callers).
     pub icon: ChannelIcon,
+    /// The authoritative icon.
+    pub icon_ref: ChannelIconRef,
     pub color: PaletteColor,
     /// Free-text topic; empty = none.
     pub topic: String,
@@ -71,6 +75,11 @@ pub struct Message {
     pub edited_at: Option<SystemTime>,
     /// The nonce given to `send_message`; empty if none was given.
     pub nonce: String,
+    /// One entry per distinct emoji, ordered by first use.
+    pub reactions: Vec<Reaction>,
+    pub attachments: Vec<Attachment>,
+    /// Link previews; arrive later via [`Event::MessageUpdated`].
+    pub embeds: Vec<Embed>,
 }
 
 /// One page of messages, newest first.
@@ -104,6 +113,15 @@ pub enum Event {
     MemberUpdated { guild_id: u64, member: Member },
     /// A user changed their profile (e.g. avatar).
     UserUpdated(User),
+    /// A guild's custom emojis changed; always the full list, so replace yours.
+    EmojisUpdated { guild_id: u64, emojis: Vec<Emoji> },
+    /// Someone reacted. Set your own `me` when `user_id` is you.
+    ReactionAdded { channel_id: u64, message_id: u64, emoji: ReactionEmoji, user_id: u64 },
+    /// Someone removed their reaction.
+    ReactionRemoved { channel_id: u64, message_id: u64, emoji: ReactionEmoji, user_id: u64 },
+    /// A message changed (embeds resolved, attachment removed); replace your copy.
+    /// Its reactions' `me` is not meaningful: keep your local flags.
+    MessageUpdated(Message),
 }
 
 pub(crate) fn time(ts: Option<&Timestamp>) -> SystemTime {
@@ -142,6 +160,7 @@ impl From<pb::Guild> for Guild {
 
 impl From<pb::Channel> for Channel {
     fn from(c: pb::Channel) -> Self {
+        let icon_ref = ChannelIconRef::from_wire(c.icon_ref.into_option(), &c.icon);
         Self {
             id: c.id,
             guild_id: c.guild_id,
@@ -149,7 +168,8 @@ impl From<pb::Channel> for Channel {
             created_at: time(c.created_at.as_option()),
             section_id: c.section_id.filter(|&id| id != 0),
             position: c.position,
-            icon: ChannelIcon(c.icon),
+            icon: ChannelIcon(icon_ref.phosphor_name().to_owned()),
+            icon_ref,
             color: PaletteColor::from_key(&c.color),
             topic: c.topic,
         }
@@ -177,6 +197,9 @@ impl From<pb::Message> for Message {
             created_at: time(m.created_at.as_option()),
             edited_at: m.edited_at.as_option().map(|ts| time(Some(ts))),
             nonce: m.nonce,
+            reactions: m.reactions.into_iter().filter_map(Reaction::from_proto).collect(),
+            attachments: m.attachments.into_iter().map(Attachment::from).collect(),
+            embeds: m.embeds.into_iter().map(Embed::from).collect(),
         }
     }
 }
@@ -210,8 +233,23 @@ impl Event {
                 member: m.member.into_option().map(Member::from)?,
             },
             Payload::UserUpdated(u) => Self::UserUpdated((*u).into()),
-            // Emoji, reaction and message-update events have no domain type yet.
-            _ => return None,
+            Payload::EmojisUpdated(e) => Self::EmojisUpdated {
+                guild_id: e.guild_id,
+                emojis: e.emojis.into_iter().map(Emoji::from).collect(),
+            },
+            Payload::ReactionAdded(r) => Self::ReactionAdded {
+                channel_id: r.channel_id,
+                message_id: r.message_id,
+                emoji: ReactionEmoji::from_proto(r.emoji.into_option()?)?,
+                user_id: r.user_id,
+            },
+            Payload::ReactionRemoved(r) => Self::ReactionRemoved {
+                channel_id: r.channel_id,
+                message_id: r.message_id,
+                emoji: ReactionEmoji::from_proto(r.emoji.into_option()?)?,
+                user_id: r.user_id,
+            },
+            Payload::MessageUpdated(m) => Self::MessageUpdated(m.message.into_option().map(Message::from)?),
         })
     }
 }
@@ -308,5 +346,74 @@ mod tests {
             Some(Event::MemberUpdated { guild_id: 6, member }) if member.role_ids == vec![9]
         ));
         assert!(event(Payload::MemberUpdated(Box::default())).is_none());
+    }
+
+    #[test]
+    fn channel_icon_ref_is_authoritative_with_legacy_fallback() {
+        use pb::channel_icon::Kind;
+        let ch = |icon: &str, kind: Option<Kind>| -> Channel {
+            pb::Channel {
+                icon: icon.into(),
+                icon_ref: kind.map(|k| pb::ChannelIcon { kind: Some(k), ..Default::default() }).into(),
+                ..Default::default()
+            }
+            .into()
+        };
+        let c = ch("", Some(Kind::Unicode("🎮".into())));
+        assert_eq!((c.icon_ref, c.icon.is_default()), (ChannelIconRef::Unicode("🎮".into()), true));
+        let c = ch("", Some(Kind::CustomEmojiId(5)));
+        assert_eq!(c.icon_ref, ChannelIconRef::Custom(5));
+        // The ref wins over a stale legacy string and derives `icon`.
+        let c = ch("hash", Some(Kind::Phosphor("star".into())));
+        assert_eq!((c.icon_ref, c.icon.as_str()), (ChannelIconRef::Phosphor("star".into()), "star"));
+        // Old server: only the string is set.
+        let c = ch("hash", None);
+        assert_eq!((c.icon_ref, c.icon.as_str()), (ChannelIconRef::Phosphor("hash".into()), "hash"));
+        assert_eq!(ch("", None).icon_ref, ChannelIconRef::Default);
+    }
+
+    #[test]
+    fn message_converts_rich_content_and_drops_bad_reactions() {
+        let m: Message = pb::Message {
+            reactions: vec![
+                pb::Reaction { emoji: ReactionEmoji::Unicode("👍".into()).to_proto().into(), count: 2, me: true, ..Default::default() },
+                pb::Reaction { count: 1, ..Default::default() },
+            ],
+            attachments: vec![pb::Attachment { id: 1, file: "k".into(), ..Default::default() }],
+            embeds: vec![pb::Embed { url: "https://x".into(), ..Default::default() }],
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(m.reactions.len(), 1);
+        assert_eq!((m.attachments[0].id, m.embeds[0].url.as_str()), (1, "https://x"));
+    }
+
+    #[test]
+    fn new_events_map_to_domain_events() {
+        use pb::event::Payload;
+        let emojis = pb::EmojisUpdated { guild_id: 3, emojis: vec![pb::Emoji { id: 1, ..Default::default() }], ..Default::default() };
+        assert!(matches!(
+            event(Payload::EmojisUpdated(Box::new(emojis))),
+            Some(Event::EmojisUpdated { guild_id: 3, emojis }) if emojis.len() == 1
+        ));
+        let change = |emoji: Option<ReactionEmoji>| pb::ReactionChange {
+            channel_id: 1,
+            message_id: 2,
+            emoji: emoji.map(|e| e.to_proto()).into(),
+            user_id: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            event(Payload::ReactionAdded(Box::new(change(Some(ReactionEmoji::Custom(8)))))),
+            Some(Event::ReactionAdded { channel_id: 1, message_id: 2, emoji: ReactionEmoji::Custom(8), user_id: 4 })
+        );
+        assert_eq!(
+            event(Payload::ReactionRemoved(Box::new(change(Some(ReactionEmoji::Unicode("x".into())))))),
+            Some(Event::ReactionRemoved { channel_id: 1, message_id: 2, emoji: ReactionEmoji::Unicode("x".into()), user_id: 4 })
+        );
+        assert!(event(Payload::ReactionAdded(Box::new(change(None)))).is_none());
+        let updated = pb::MessageUpdated { message: pb::Message { id: 6, ..Default::default() }.into(), ..Default::default() };
+        assert!(matches!(event(Payload::MessageUpdated(Box::new(updated))), Some(Event::MessageUpdated(m)) if m.id == 6));
+        assert!(event(Payload::MessageUpdated(Box::default())).is_none());
     }
 }

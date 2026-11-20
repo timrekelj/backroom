@@ -4,7 +4,9 @@ use bytes::Bytes;
 use connectrpc::client::{ClientTransport, HttpClient, full_body};
 use http_body_util::BodyExt;
 
-use crate::admin::{ActivityPoint, AdminGuildRow, AdminUserRow, Overview, Paged, next_token};
+use crate::admin::{
+    ActivityPoint, AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, AuditEntry, Overview, Paged, next_token,
+};
 use crate::client::{Client, MAX_MEDIA_BYTES, required};
 use crate::error::ApiError;
 use crate::proto::thehideout::v1 as pb;
@@ -247,10 +249,54 @@ impl Client {
     }
 
     /// Grants or revokes site-admin rights. Demoting yourself or the last admin
-    /// fails (reported as [`ApiError::AlreadyExists`], the mapping of `FAILED_PRECONDITION`).
+    /// fails with [`ApiError::Precondition`].
     pub async fn admin_set_admin(&self, user_id: u64, is_admin: bool) -> Result<User> {
         let res = self.admin()?.set_admin(pb::SetAdminRequest { user_id, is_admin, ..Default::default() }).await?.into_owned();
         required(res.user.into_option())
+    }
+
+    /// Lists stored files, largest first, optionally of one guild and/or kind.
+    pub async fn admin_list_files(
+        &self,
+        guild_id: Option<u64>,
+        kind: Option<AdminFileKind>,
+        page_token: Option<&str>,
+        limit: u32,
+    ) -> Result<Paged<AdminFileRow>> {
+        let res = self
+            .admin()?
+            .list_files(pb::ListFilesRequest {
+                guild_id,
+                kind: kind.and_then(AdminFileKind::to_proto).map(Into::into),
+                page_token: page_token.unwrap_or_default().into(),
+                limit,
+                ..Default::default()
+            })
+            .await?
+            .into_owned();
+        Ok(Paged {
+            items: res.files.into_iter().map(Into::into).collect(),
+            next_page_token: next_token(res.next_page_token),
+        })
+    }
+
+    /// Deletes a stored file and its owner reference; `reason` goes to the audit log.
+    pub async fn admin_delete_file(&self, key: &str, reason: &str) -> Result<()> {
+        self.admin()?.delete_file(pb::DeleteFileRequest { key: key.into(), reason: reason.into(), ..Default::default() }).await?;
+        Ok(())
+    }
+
+    /// Lists audit entries, newest first.
+    pub async fn admin_list_audit_log(&self, page_token: Option<&str>, limit: u32) -> Result<Paged<AuditEntry>> {
+        let res = self
+            .admin()?
+            .list_audit_log(pb::ListAuditLogRequest { page_token: page_token.unwrap_or_default().into(), limit, ..Default::default() })
+            .await?
+            .into_owned();
+        Ok(Paged {
+            items: res.entries.into_iter().map(Into::into).collect(),
+            next_page_token: next_token(res.next_page_token),
+        })
     }
 }
 

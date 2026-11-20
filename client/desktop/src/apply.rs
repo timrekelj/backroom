@@ -413,6 +413,11 @@ fn gateway(s: &mut AppState, update: GatewayUpdate, tx: &mut Tx) {
 fn event(s: &mut AppState, e: Event, tx: &mut Tx) {
     match e {
         Event::Heartbeat => {}
+        // handled in the emoji, reactions and attachments tasks
+        Event::EmojisUpdated { .. }
+        | Event::ReactionAdded { .. }
+        | Event::ReactionRemoved { .. }
+        | Event::MessageUpdated(_) => {}
         Event::GuildUpdated(g) => {
             if let Some(slot) = s.data.guilds.iter_mut().find(|x| x.id == g.id) {
                 *slot = g;
@@ -496,7 +501,7 @@ mod tests {
     }
 
     fn msg(id: u64, channel: u64, author: u64, content: &str, nonce: &str) -> Message {
-        Message { id, channel_id: channel, guild_id: Some(1), author_id: author, content: content.into(), created_at: UNIX_EPOCH + Duration::from_secs(id), edited_at: None, nonce: nonce.into() }
+        Message { id, channel_id: channel, guild_id: Some(1), author_id: author, content: content.into(), created_at: UNIX_EPOCH + Duration::from_secs(id), edited_at: None, nonce: nonce.into(), reactions: vec![], attachments: vec![], embeds: vec![] }
     }
 
     fn state() -> AppState {
@@ -514,6 +519,7 @@ mod tests {
             section_id: None,
             position,
             icon: Default::default(),
+            icon_ref: Default::default(),
             color: Default::default(),
             topic: String::new(),
         };

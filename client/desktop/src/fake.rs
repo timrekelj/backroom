@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use thehideout_api::{
-    ApiError, Channel, ChannelIcon, DmChannel, Event, GatewayUpdate, Guild, GuildLayout, LayoutEntry, Member, Message, Page,
+    ApiError, Channel, ChannelIcon, ChannelIconRef, DmChannel, Event, GatewayUpdate, Guild, GuildLayout, LayoutEntry, Member, Message, Page,
     PaletteColor, Permissions, Role, Section, User,
 };
 
@@ -127,11 +127,13 @@ impl World {
             section_id: None,
             position,
             icon: ChannelIcon::default(),
+            icon_ref: ChannelIconRef::Default,
             color: PaletteColor::None,
             topic: String::new(),
         };
         let look = |mut c: Channel, icon: &str, color: PaletteColor, topic: &str| {
             c.icon = ChannelIcon::new(icon);
+            c.icon_ref = ChannelIconRef::from(&c.icon);
             c.color = color;
             c.topic = topic.into();
             c
@@ -288,6 +290,9 @@ impl World {
             created_at: time(at),
             edited_at: None,
             nonce: String::new(),
+            reactions: vec![],
+            attachments: vec![],
+            embeds: vec![],
         };
         self.messages.entry(channel).or_default().push(m);
     }
@@ -743,6 +748,7 @@ impl World {
                     section_id: None,
                     position: 0,
                     icon: ChannelIcon::default(),
+                    icon_ref: ChannelIconRef::Default,
                     color: PaletteColor::None,
                     topic: String::new(),
                 });
@@ -784,6 +790,7 @@ impl World {
                         created_at: time(now_unix()),
                         section_id: section,
                         position: 0,
+                        icon_ref: ChannelIconRef::from(&icon),
                         icon,
                         color,
                         topic: String::new(),

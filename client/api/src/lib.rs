@@ -71,20 +71,25 @@
 
 mod admin;
 mod client;
+mod content;
 mod client_ext;
 mod error;
 mod gateway;
 mod state;
 mod structure;
 mod types;
+mod upload;
 
 pub(crate) mod proto {
     connectrpc::include_generated!();
 }
 
-pub use admin::{ActivityPoint, AdminGuildRow, AdminUserRow, Overview, Paged};
-pub use client::{Client, MAX_MEDIA_BYTES, MAX_MESSAGE_CHARS};
+pub use admin::{
+    ActivityPoint, AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, AuditEntry, Overview, Paged, StorageBreakdown,
+};
+pub use client::{Client, DEFAULT_MAX_UPLOAD_BYTES, MAX_EMOJI_BYTES, MAX_MEDIA_BYTES, MAX_MESSAGE_CHARS};
+pub use content::{Attachment, Embed, Emoji, PendingAttachment, Reaction, ReactionEmoji};
 pub use error::ApiError;
 pub use gateway::{Gateway, GatewayConfig, GatewayHandle, GatewayUpdate};
-pub use structure::{ChannelIcon, GuildLayout, LayoutEntry, Member, PaletteColor, Permissions, Role, RoleList, Section};
+pub use structure::{ChannelIcon, ChannelIconRef, GuildLayout, LayoutEntry, Member, PaletteColor, Permissions, Role, RoleList, Section};
 pub use types::{Channel, DmChannel, Event, Guild, Message, Page, User};

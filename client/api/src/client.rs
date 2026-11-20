@@ -6,7 +6,8 @@ use connectrpc::client::{ClientConfig, HttpClient};
 
 use crate::error::ApiError;
 use crate::proto::thehideout::v1 as pb;
-use crate::structure::{ChannelIcon, GuildLayout, Member, PaletteColor, Section};
+use crate::content::{Emoji, ReactionEmoji};
+use crate::structure::{ChannelIcon, ChannelIconRef, GuildLayout, Member, PaletteColor, Section};
 use crate::types::{Channel, DmChannel, Event, Guild, Message, Page, User};
 
 type Result<T> = std::result::Result<T, ApiError>;
@@ -21,6 +22,7 @@ pub struct Client {
     pub(crate) http: HttpClient,
     pub(crate) base_url: String,
     token: Arc<RwLock<Option<String>>>,
+    pub(crate) max_upload_bytes: u64,
 }
 
 impl Client {
@@ -32,7 +34,15 @@ impl Client {
             http: HttpClient::plaintext(),
             base_url: base_url.into(),
             token: Arc::default(),
+            max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
         }
+    }
+
+    /// Sets the local attachment size limit (default [`DEFAULT_MAX_UPLOAD_BYTES`]);
+    /// match the server's `THEHIDEOUT_MAX_UPLOAD_BYTES`.
+    pub fn with_max_upload_bytes(mut self, max: u64) -> Self {
+        self.max_upload_bytes = max;
+        self
     }
 
     /// Builder-style [`set_token`](Self::set_token).
@@ -79,6 +89,10 @@ impl Client {
         Ok(pb::MessageServiceClient::new(self.http.clone(), self.config()?))
     }
 
+    fn emojis(&self) -> Result<pb::EmojiServiceClient<HttpClient>> {
+        Ok(pb::EmojiServiceClient::new(self.http.clone(), self.config()?))
+    }
+
     fn dms(&self) -> Result<pb::DmServiceClient<HttpClient>> {
         Ok(pb::DmServiceClient::new(self.http.clone(), self.config()?))
     }
@@ -95,7 +109,12 @@ impl Client {
                 password: password.into(),
                 ..Default::default()
             })
-            .await?
+            .await
+            // Sign-up answers a taken username with FAILED_PRECONDITION.
+            .map_err(|e| match ApiError::from(e) {
+                ApiError::Precondition(_) => ApiError::AlreadyExists,
+                other => other,
+            })?
             .into_owned();
         self.finish_auth(res.token, res.user.into_option())
     }
@@ -207,6 +226,30 @@ impl Client {
         required(res.channel.into_option())
     }
 
+    /// Like [`create_channel_with`](Self::create_channel_with) with a Phosphor, Unicode or custom-emoji icon.
+    pub async fn create_channel_with_ref(
+        &self,
+        guild_id: u64,
+        name: &str,
+        section_id: Option<u64>,
+        icon: &ChannelIconRef,
+        color: PaletteColor,
+    ) -> Result<Channel> {
+        let res = self
+            .guilds()?
+            .create_channel(pb::CreateChannelRequest {
+                guild_id,
+                name: name.into(),
+                section_id,
+                icon_ref: Some(icon.to_proto()).into(),
+                color: color.as_key().into(),
+                ..Default::default()
+            })
+            .await?
+            .into_owned();
+        required(res.channel.into_option())
+    }
+
     /// The channels of a guild the caller belongs to.
     pub async fn list_channels(&self, guild_id: u64) -> Result<Vec<Channel>> {
         Ok(self.list_channels_with_layout(guild_id).await?.0)
@@ -251,6 +294,33 @@ impl Client {
                 channel_id,
                 name: name.map(str::to_owned),
                 icon: icon.map(|i| i.0.clone()),
+                color: color.map(|c| c.as_key().to_owned()),
+                topic: topic.map(str::to_owned),
+                ..Default::default()
+            })
+            .await?
+            .into_owned();
+        required(res.channel.into_option())
+    }
+
+    /// Like [`update_channel`](Self::update_channel) with a three-way icon;
+    /// [`ChannelIconRef::Default`] resets the icon.
+    pub async fn update_channel_ref(
+        &self,
+        guild_id: u64,
+        channel_id: u64,
+        name: Option<&str>,
+        icon: Option<&ChannelIconRef>,
+        color: Option<PaletteColor>,
+        topic: Option<&str>,
+    ) -> Result<Channel> {
+        let res = self
+            .guilds()?
+            .update_channel(pb::UpdateChannelRequest {
+                guild_id,
+                channel_id,
+                name: name.map(str::to_owned),
+                icon_ref: icon.map(ChannelIconRef::to_proto).into(),
                 color: color.map(|c| c.as_key().to_owned()),
                 topic: topic.map(str::to_owned),
                 ..Default::default()
@@ -329,6 +399,82 @@ impl Client {
         required(res.message.into_option())
     }
 
+    /// Posts a message with uploaded attachments (see [`upload_attachment`](Self::upload_attachment));
+    /// `content` may be empty when `attachment_ids` is not. At most 10, all pending
+    /// uploads of the caller for this channel.
+    pub async fn send_message_with(
+        &self,
+        channel_id: u64,
+        content: &str,
+        nonce: Option<&str>,
+        attachment_ids: &[u64],
+    ) -> Result<Message> {
+        let res = self
+            .messages()?
+            .send_message(pb::SendMessageRequest {
+                channel_id,
+                content: content.into(),
+                nonce: nonce.map(str::to_owned),
+                attachment_ids: attachment_ids.to_vec(),
+                ..Default::default()
+            })
+            .await?
+            .into_owned();
+        required(res.message.into_option())
+    }
+
+    /// Adds the caller's reaction (idempotent).
+    pub async fn add_reaction(&self, channel_id: u64, message_id: u64, emoji: &ReactionEmoji) -> Result<()> {
+        self.messages()?
+            .add_reaction(pb::AddReactionRequest { channel_id, message_id, emoji: Some(emoji.to_proto()).into(), ..Default::default() })
+            .await?;
+        Ok(())
+    }
+
+    /// Removes the caller's reaction (idempotent).
+    pub async fn remove_reaction(&self, channel_id: u64, message_id: u64, emoji: &ReactionEmoji) -> Result<()> {
+        self.messages()?
+            .remove_reaction(pb::RemoveReactionRequest { channel_id, message_id, emoji: Some(emoji.to_proto()).into(), ..Default::default() })
+            .await?;
+        Ok(())
+    }
+
+    /// The custom emojis of a guild, ordered by name.
+    pub async fn list_emojis(&self, guild_id: u64) -> Result<Vec<Emoji>> {
+        let res = self.emojis()?.list_emojis(pb::ListEmojisRequest { guild_id, ..Default::default() }).await?.into_owned();
+        Ok(res.emojis.into_iter().map(Into::into).collect())
+    }
+
+    /// Creates a custom emoji (needs `MANAGE_EMOJIS`). `data` is a PNG/JPEG/WebP/GIF
+    /// of at most [`MAX_EMOJI_BYTES`]; `name` matches `^[a-z0-9_]{2,32}$`.
+    pub async fn create_emoji(&self, guild_id: u64, name: &str, data: Vec<u8>, content_type: &str) -> Result<Emoji> {
+        if data.len() > MAX_EMOJI_BYTES {
+            return Err(ApiError::TooLarge);
+        }
+        let res = self
+            .emojis()?
+            .create_emoji(pb::CreateEmojiRequest { guild_id, name: name.into(), data, content_type: content_type.into(), ..Default::default() })
+            .await?
+            .into_owned();
+        required(res.emoji.into_option())
+    }
+
+    /// Renames a custom emoji (needs `MANAGE_EMOJIS`).
+    pub async fn rename_emoji(&self, guild_id: u64, emoji_id: u64, name: &str) -> Result<Emoji> {
+        let res = self
+            .emojis()?
+            .rename_emoji(pb::RenameEmojiRequest { guild_id, emoji_id, name: name.into(), ..Default::default() })
+            .await?
+            .into_owned();
+        required(res.emoji.into_option())
+    }
+
+    /// Deletes a custom emoji (needs `MANAGE_EMOJIS`).
+    pub async fn delete_emoji(&self, guild_id: u64, emoji_id: u64) -> Result<()> {
+        self.emojis()?.delete_emoji(pb::DeleteEmojiRequest { guild_id, emoji_id, ..Default::default() }).await?;
+        Ok(())
+    }
+
     /// Lists messages newest first. Pass the previous page's `next_before` as
     /// `before` to go further back; `limit` is capped by the server at 100.
     pub async fn list_messages(&self, channel_id: u64, before: Option<u64>, limit: u32) -> Result<Page<Message>> {
@@ -373,6 +519,13 @@ impl Client {
 /// The Connect client imposes no request-size limit of its own (its
 /// `max_message_size` only bounds responses), so no client config change is needed.
 pub const MAX_MEDIA_BYTES: usize = 8 * 1024 * 1024;
+
+/// Largest custom emoji upload the server accepts (2 MiB); bigger ones are rejected locally.
+pub const MAX_EMOJI_BYTES: usize = 2 * 1024 * 1024;
+
+/// The server's default attachment limit (50 MiB), used for the local pre-check
+/// until [`Client::with_max_upload_bytes`] says otherwise.
+pub const DEFAULT_MAX_UPLOAD_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Maximum message length in characters accepted by the server.
 pub const MAX_MESSAGE_CHARS: usize = 4000;
