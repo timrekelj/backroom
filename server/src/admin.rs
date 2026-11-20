@@ -20,21 +20,22 @@ pub fn parse_admins(raw: &str) -> Vec<String> {
     raw.split(',').map(normalize_username).filter(|s| !s.is_empty()).collect()
 }
 
-/// Loads a user including `is_admin` (use only for the user themself and
-/// for admin views; other users never see the flag).
+/// Loads a user including `is_admin` and `email` (use only for the user
+/// themself and for admin views; other users never see them).
 pub async fn load_user(state: &AppState, id: u64) -> Result<Option<User>, ConnectError> {
     Ok(state
         .session
-        .execute_unpaged("SELECT username, created_at, avatar, is_admin FROM users WHERE id = ?", (id_to_db(id),))
+        .execute_unpaged("SELECT username, created_at, avatar, is_admin, email FROM users WHERE id = ?", (id_to_db(id),))
         .await
         .map_err(internal)?
         .into_rows_result()
         .map_err(internal)?
-        .maybe_first_row::<(String, DateTime<Utc>, Option<String>, Option<bool>)>()
+        .maybe_first_row::<(String, DateTime<Utc>, Option<String>, Option<bool>, Option<String>)>()
         .map_err(internal)?
-        .map(|(username, created_at, avatar, is_admin)| {
+        .map(|(username, created_at, avatar, is_admin, email)| {
             let mut user = user_to_proto(id, &username, created_at, avatar);
             user.is_admin = is_admin.unwrap_or(false);
+            user.email = email.filter(|e| !e.is_empty());
             user
         }))
 }

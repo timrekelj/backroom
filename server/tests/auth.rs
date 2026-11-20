@@ -1,196 +1,92 @@
 mod common;
 
-use thehideout_server::proto::thehideout::v1::{
-    AuthServiceClient, GetMeRequest, LoginRequest, SignUpRequest, User,
-};
-use thehideout_server::services::auth::LOGIN_IP_MAX;
 use common::TestApp;
+use common::fixtures::*;
 use connectrpc::ErrorCode;
-
-const PASSWORD: &str = "correct horse battery";
-
-fn sign_up_req(username: &str, password: &str) -> SignUpRequest {
-    SignUpRequest {
-        username: username.into(),
-        password: password.into(),
-        ..Default::default()
-    }
-}
-
-fn login_req(username: &str, password: &str) -> LoginRequest {
-    LoginRequest {
-        username: username.into(),
-        password: password.into(),
-        ..Default::default()
-    }
-}
+use thehideout_server::proto::thehideout::v1::*;
+use thehideout_server::services::auth::LOGIN_IP_MAX;
 
 async fn get_me(app: &TestApp, token: Option<&str>) -> Result<User, connectrpc::ConnectError> {
-    let client = app.client(AuthServiceClient::new, token);
-    let resp = client.get_me(GetMeRequest::default()).await?;
-    Ok(resp.into_owned().user.unwrap())
+    Ok(auth(app, token).get_me(GetMeRequest::default()).await?.into_owned().user.unwrap())
 }
 
 #[tokio::test]
-async fn sign_up_then_get_me() {
+async fn sign_up_requires_an_invite() {
     let app = TestApp::start().await;
-    let client = app.client(AuthServiceClient::new, None);
-
-    let resp = client
-        .sign_up(sign_up_req(&format!("  {}  ", app.name("Alice")), PASSWORD))
+    let err = auth(&app, None)
+        .sign_up(SignUpRequest { username: app.name("alice"), password: PASSWORD.into(), ..Default::default() })
         .await
-        .expect("sign up")
-        .into_owned();
-    let user = resp.user.unwrap();
-    assert!(!resp.token.is_empty());
-    assert_ne!(user.id, 0);
-    assert_eq!(user.username, app.name("alice"));
-    assert!(user.created_at.is_set());
-
-    let me = get_me(&app, Some(&resp.token)).await.expect("get me");
-    assert_eq!(me, user);
-
+        .expect_err("sign up is invite-only");
+    assert_eq!(err.code, ErrorCode::FailedPrecondition);
+    assert_eq!(err.message.as_deref(), Some("invite required"));
     app.cleanup().await;
 }
 
 #[tokio::test]
-async fn duplicate_username_is_rejected_case_insensitively() {
+async fn login_by_username_or_email_returns_a_new_working_token() {
     let app = TestApp::start().await;
-    let client = app.client(AuthServiceClient::new, None);
-
-    client.sign_up(sign_up_req(&app.name("alice"), PASSWORD)).await.expect("first sign up");
-    for name in [app.name("alice"), app.name("Alice"), format!("{} ", app.name("ALICE"))] {
-        let err = client
-            .sign_up(sign_up_req(&name, PASSWORD))
-            .await
-            .expect_err("duplicate must fail");
-        // Generic error: a distinct "username taken" code would be an account-existence oracle.
-        assert_eq!(err.code, ErrorCode::FailedPrecondition, "username {name:?}");
-        assert!(!err.message.as_deref().unwrap_or("").contains("taken"), "message must not confirm existence");
+    let bob = user(&app, "bob").await;
+    let client = auth(&app, None);
+    for name in [app.name("Bob"), email_of(&app, "bob").to_uppercase()] {
+        let login = client.login(login_req(&name, PASSWORD, "laptop")).await.expect("login").into_owned();
+        assert!(!login.token.is_empty() && login.token != bob.token);
+        assert!(!login.second_factor_required.is_set());
+        let user = login.user.unwrap();
+        assert_eq!(user.id, bob.id);
+        assert_eq!(user.email.as_deref(), Some(email_of(&app, "bob").as_str()));
+        let me = get_me(&app, Some(&login.token)).await.expect("get me");
+        assert_eq!(me.username, app.name("bob"));
     }
-
     app.cleanup().await;
 }
 
 #[tokio::test]
-async fn sign_up_validates_input() {
-    let app = TestApp::builder().isolated().start().await;
-    let client = app.client(AuthServiceClient::new, None);
-
-    let too_long = "a".repeat(33);
-    let long_password = "p".repeat(129);
-    let cases = [
-        ("", PASSWORD),
-        ("a", PASSWORD),
-        (too_long.as_str(), PASSWORD),
-        ("bad name", PASSWORD),
-        ("bad-name", PASSWORD),
-        ("émile", PASSWORD),
-        ("alice", "short"),
-        ("alice", ""),
-        ("alice", long_password.as_str()),
-    ];
-    for (username, password) in cases {
-        let err = client
-            .sign_up(sign_up_req(username, password))
-            .await
-            .expect_err("invalid input must fail");
-        assert_eq!(
-            err.code,
-            ErrorCode::InvalidArgument,
-            "username {username:?}, password length {}",
-            password.len()
-        );
-    }
-
-    // Boundary values are accepted.
-    client
-        .sign_up(sign_up_req(&"a".repeat(32), &"p".repeat(128)))
-        .await
-        .expect("max length");
-    client.sign_up(sign_up_req("a.", "12345678")).await.expect("min length");
-
-    app.cleanup().await;
-}
-
-#[tokio::test]
-async fn login_returns_new_working_token() {
+async fn legacy_accounts_without_email_keep_password_login() {
     let app = TestApp::start().await;
-    let client = app.client(AuthServiceClient::new, None);
-
-    let signed_up = client
-        .sign_up(sign_up_req(&app.name("bob"), PASSWORD))
-        .await
-        .expect("sign up")
-        .into_owned();
-    let login = client
-        .login(login_req(&app.name("Bob"), PASSWORD))
-        .await
-        .expect("login")
-        .into_owned();
-    assert!(!login.token.is_empty());
-    assert_ne!(login.token, signed_up.token);
-    assert_eq!(login.user.unwrap(), signed_up.user.unwrap());
-
-    let me = get_me(&app, Some(&login.token)).await.expect("get me");
-    assert_eq!(me.username, app.name("bob"));
-
+    let old = legacy_user(&app, "old").await;
+    let me = get_me(&app, Some(&old.token)).await.unwrap();
+    assert_eq!(me.email, None);
+    let login = auth(&app, None).login(login_req(&app.name("old"), PASSWORD, "")).await.expect("login").into_owned();
+    assert_eq!(login.user.unwrap().id, old.id);
     app.cleanup().await;
 }
 
 #[tokio::test]
 async fn bad_credentials_are_unauthenticated() {
     let app = TestApp::start().await;
-    let client = app.client(AuthServiceClient::new, None);
-    client.sign_up(sign_up_req(&app.name("carol"), PASSWORD)).await.expect("sign up");
-
-    let wrong_password = client
-        .login(login_req(&app.name("carol"), "not the password"))
-        .await
-        .expect_err("wrong password");
-    let unknown_user = client
-        .login(login_req("nobody", PASSWORD))
-        .await
-        .expect_err("unknown user");
-    assert_eq!(wrong_password.code, ErrorCode::Unauthenticated);
-    assert_eq!(unknown_user.code, ErrorCode::Unauthenticated);
-    assert_eq!(wrong_password.message, unknown_user.message);
-
+    user(&app, "carol").await;
+    let client = auth(&app, None);
+    let wrong_password = client.login(login_req(&app.name("carol"), "not the password", "")).await.expect_err("wrong password");
+    let unknown_user = client.login(login_req("nobody", PASSWORD, "")).await.expect_err("unknown user");
+    let unknown_email = client.login(login_req("nobody@example.test", PASSWORD, "")).await.expect_err("unknown email");
+    for err in [&wrong_password, &unknown_user, &unknown_email] {
+        assert_eq!(err.code, ErrorCode::Unauthenticated);
+        assert_eq!(err.message, wrong_password.message);
+    }
     app.cleanup().await;
 }
 
 #[tokio::test]
 async fn login_is_rate_limited_per_ip() {
     let app = TestApp::start().await;
-    let client = app.client(AuthServiceClient::new, None);
-
+    let client = auth(&app, None);
     // Distinct usernames keep each per-username counter at one attempt (no delay);
     // the per-IP hard cap is what rejects here.
     for i in 0..LOGIN_IP_MAX {
-        let err = client
-            .login(login_req(&format!("user{i}"), "wrong password"))
-            .await
-            .expect_err("unknown user");
+        let err = client.login(login_req(&format!("user{i}"), "wrong password", "")).await.expect_err("unknown user");
         assert_eq!(err.code, ErrorCode::Unauthenticated, "attempt {i}");
     }
-    let err = client
-        .login(login_req("one-more", "wrong password"))
-        .await
-        .expect_err("over the limit");
+    let err = client.login(login_req("one-more", "wrong password", "")).await.expect_err("over the limit");
     assert_eq!(err.code, ErrorCode::ResourceExhausted);
-
     app.cleanup().await;
 }
 
 #[tokio::test]
 async fn get_me_requires_valid_token() {
     let app = TestApp::start().await;
-
     let err = get_me(&app, None).await.expect_err("no header");
     assert_eq!(err.code, ErrorCode::Unauthenticated);
-
     let err = get_me(&app, Some("garbage")).await.expect_err("garbage token");
     assert_eq!(err.code, ErrorCode::Unauthenticated);
-
     app.cleanup().await;
 }

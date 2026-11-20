@@ -13,7 +13,13 @@
 //! use thehideout_api::Client;
 //!
 //! let client = Client::new("http://127.0.0.1:8080");
-//! let (token, me) = client.sign_up("alice", "correct horse battery").await?; // or `login`
+//! // Accounts are invite-only: `accept_invite(code, ..)` creates one.
+//! let (token, me) = match client.login("alice", "correct horse battery").await? {
+//!     thehideout_api::LoginOutcome::Session { token, user } => (token, user),
+//!     thehideout_api::LoginOutcome::SecondFactor { challenge, .. } => {
+//!         client.complete_second_factor(&challenge, thehideout_api::SecondFactor::Totp("123456")).await?
+//!     }
+//! };
 //! // Persist `token`; next launch: `Client::new(url).with_token(token)`.
 //!
 //! let guild = client.create_guild("friends").await?;
@@ -44,6 +50,17 @@
 //! `upload_avatar` / `upload_guild_icon` send up to [`MAX_MEDIA_BYTES`].
 //! Site admins ([`User::is_admin`]) use the `admin_*` calls.
 //!
+//! # Accounts and sign-in
+//!
+//! Accounts are invite-only: [`Client::create_invite`] (site admins, or
+//! guild members with [`Permissions::INVITE_PEOPLE`]),
+//! [`Client::lookup_invite`] / [`Client::accept_invite`] for the invitee.
+//! Sign in with [`Client::login`] (username or email + password),
+//! [`Client::request_email_code`] / [`Client::verify_email_code`], or a passkey
+//! ([`Client::begin_passkey_login`] / [`Client::finish_passkey_login`]); the
+//! first two may return [`LoginOutcome::SecondFactor`]. Account security:
+//! password, email, TOTP, passkeys and [`Client::list_sessions`].
+//!
 //! # Real-time updates
 //!
 //! [`Gateway::spawn`] subscribes on the current tokio runtime and keeps the
@@ -69,6 +86,7 @@
 //! # }
 //! ```
 
+mod account;
 mod admin;
 mod client;
 mod content;
@@ -84,6 +102,10 @@ pub(crate) mod proto {
     connectrpc::include_generated!();
 }
 
+pub use account::{
+    DeviceSession, Invite, InvitePreview, InviteStatus, LoginOutcome, NewInvite, Passkey, PasskeyCeremony, SecondFactor,
+    SecondFactorMethod, TotpSetup,
+};
 pub use admin::{
     ActivityPoint, AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, AuditEntry, Overview, Paged, StorageBreakdown,
 };

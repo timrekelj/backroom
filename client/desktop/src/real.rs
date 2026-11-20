@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use rune::Waker;
 use rune::prefs::Prefs;
-use thehideout_api::{ApiError, Client, Event, Gateway, GatewayHandle, GatewayUpdate};
+use thehideout_api::{ApiError, Client, Event, Gateway, GatewayHandle, GatewayUpdate, LoginOutcome};
 
 use crate::backend::{Backend, Command, GuildAccess, Initial, Reply, Session};
 
@@ -286,7 +286,13 @@ impl RealBackend {
             let result = if sign_up {
                 client.sign_up(&username, &password).await
             } else {
-                client.login(&username, &password).await
+                // Second factors have no UI yet: report them as an error for now.
+                client.login(&username, &password).await.and_then(|outcome| match outcome {
+                    LoginOutcome::Session { token, user } => Ok((token, user)),
+                    LoginOutcome::SecondFactor { .. } => {
+                        Err(ApiError::Precondition("two-factor sign-in is not supported by this app yet".into()))
+                    }
+                })
             };
             let reply = result.map(|(token, me)| {
                 shared.new_generation();

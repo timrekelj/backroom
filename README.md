@@ -3,9 +3,11 @@ A Discord-style chat app for me and my friends, built to learn handling lots of 
 
 ## Development
 
-Start ScyllaDB (single dev node) and a local S3-compatible object store
-(SeaweedFS) for avatars and guild icons. A one-shot `seaweedfs-init` container
-creates the `thehideout-media` bucket; both services listen on 127.0.0.1 only:
+Start ScyllaDB (single dev node), a local S3-compatible object store
+(SeaweedFS) for avatars and guild icons, and Mailpit (catches all outgoing
+email: SMTP on 1025, web inbox at <http://127.0.0.1:8025>). A one-shot
+`seaweedfs-init` container creates the `thehideout-media` bucket; all services
+listen on 127.0.0.1 only:
 
 ```sh
 docker compose up -d
@@ -39,6 +41,36 @@ Settings are environment variables. Copy `.env.example` to `.env` (gitignored)
 and edit it; the server loads the repo-root `.env`, and real environment
 variables override it. `.env.example` documents every variable and its default.
 Never commit `.env`.
+
+## Accounts, invites and email
+
+Accounts are invite-only; there is no open sign-up.
+
+- **First admin.** On an install with no accounts, the server creates a
+  site-admin invite for `THEHIDEOUT_BOOTSTRAP_ADMIN_EMAIL` at startup, emails
+  it and logs its code and link (`created bootstrap admin invite`). Without the
+  variable it logs a reminder instead. A still-pending bootstrap invite is not
+  re-created on restart.
+- **CLI.** `thehideout-server invite <email> [--admin]` (from `server/`:
+  `cargo run -- invite alice@example.com --admin`) creates and emails an invite
+  at any time and prints its code and link, then exits.
+- **Dashboard.** Site admins invite anyone (optionally pre-joining guilds and
+  making them admin); guild members with the `INVITE_PEOPLE` role permission
+  invite people into that guild. Guild invite codes only let existing accounts
+  join more guilds.
+- `THEHIDEOUT_ADMINS` still works as a second way to make admins: listed
+  usernames are promoted at startup and when the account is created.
+
+Sign-in methods: username or email + password, emailed one-time codes, an
+authenticator app (TOTP) with recovery codes as a second factor, and passkeys
+(WebAuthn; the relying party is the host of `THEHIDEOUT_PUBLIC_URL`, which must
+be a domain name: `localhost` in development). Second-factor challenges and
+passkey ceremonies are kept in memory, so with several server instances a
+sign-in must finish on the instance that started it.
+
+Email goes through Resend when `THEHIDEOUT_RESEND_API_KEY` is set, otherwise
+over plain SMTP to `THEHIDEOUT_SMTP_URL` (Mailpit in development). Links in
+emails use `THEHIDEOUT_PUBLIC_URL`.
 
 ## Media storage (S3)
 

@@ -199,10 +199,11 @@ impl TestApp {
         state.embeds = options.embeds;
         state.embeds.cache_namespace = format!("{tag}:");
         state.admins = Arc::new(options.admins.iter().map(|n| format!("{}_{tag}", thehideout_server::admin::normalize_username(n))).collect());
-        let app = build_app(state.clone());
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        // `localhost` (not the IP): WebAuthn needs a domain name as RP id.
+        let state = state.with_public_url(format!("http://localhost:{}", addr.port()).parse().unwrap());
+        let app = build_app(state.clone());
         tokio::spawn(async move {
             axum::serve(
                 listener,

@@ -7,7 +7,12 @@ use std::time::Duration;
 use rand::Rng;
 use scylla::client::caching_session::CachingSession;
 use scylla::client::session_builder::SessionBuilder;
-use thehideout_api::{ApiError, Client, Event, Gateway, GatewayConfig, GatewayUpdate};
+mod common;
+
+use common::PASSWORD;
+use thehideout_api::{
+    ApiError, Client, Event, Gateway, GatewayConfig, GatewayUpdate, InviteStatus, LoginOutcome, NewInvite, SecondFactor,
+};
 use thehideout_server::snowflake::Snowflake;
 use thehideout_server::{AppState, build_app, migrations};
 use tokio::net::{TcpListener, TcpStream};
@@ -15,7 +20,6 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-const PASSWORD: &str = "correct horse battery";
 const HEARTBEAT: Duration = Duration::from_millis(200);
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -136,15 +140,17 @@ async fn rpc_round_trip() {
     let alice = Client::new(&server.url);
     let bob = Client::new(&server.url);
 
-    let (token, me) = alice.sign_up("alice", PASSWORD).await.expect("sign up");
+    let (token, me) = common::sign_up(&server.state, &alice, "alice").await;
     assert_eq!(alice.token().as_deref(), Some(token.as_str()));
     assert_eq!(me.username, "alice");
     assert!(me.created_at > std::time::UNIX_EPOCH);
-    assert_eq!(alice.sign_up("alice", PASSWORD).await.unwrap_err(), ApiError::AlreadyExists);
+    assert_eq!(alice.sign_up("alice2", PASSWORD).await.unwrap_err(), ApiError::InviteRequired);
     assert_eq!(alice.login("alice", "wrong password!").await.unwrap_err(), ApiError::Unauthenticated);
 
     let fresh = Client::new(&server.url);
-    let (_, logged_in) = fresh.login("alice", PASSWORD).await.expect("login");
+    let LoginOutcome::Session { user: logged_in, .. } = fresh.login("alice", PASSWORD).await.expect("login") else {
+        panic!("no second factor expected");
+    };
     assert_eq!(logged_in.id, me.id);
     assert_eq!(fresh.get_me().await.unwrap(), me);
     assert_eq!(Client::new(&server.url).get_me().await.unwrap_err(), ApiError::Unauthenticated);
@@ -157,7 +163,7 @@ async fn rpc_round_trip() {
     assert!(channels.contains(&general));
     let channel_id = channels[0].id;
 
-    let (_, bob_user) = bob.sign_up("bob", PASSWORD).await.unwrap();
+    let (_, bob_user) = common::sign_up(&server.state, &bob, "bob").await;
     assert_eq!(bob.join_guild("nope-nope").await.unwrap_err(), ApiError::NotFound);
     assert_eq!(bob.join_guild(&guild.invite_code).await.unwrap().id, guild.id);
     let members = alice.list_guild_members(guild.id).await.unwrap();
@@ -208,8 +214,8 @@ async fn gateway_delivers_events() {
     let server = Server::start().await;
     let alice = Client::new(&server.url);
     let bob = Client::new(&server.url);
-    alice.sign_up("alice", PASSWORD).await.unwrap();
-    let (_, bob_user) = bob.sign_up("bob", PASSWORD).await.unwrap();
+    common::sign_up(&server.state, &alice, "alice").await;
+    let (_, bob_user) = common::sign_up(&server.state, &bob, "bob").await;
     let guild = alice.create_guild("friends").await.unwrap();
     bob.join_guild(&guild.invite_code).await.unwrap();
     let channel_id = alice.list_channels(guild.id).await.unwrap()[0].id;
@@ -240,8 +246,8 @@ async fn gateway_reconnects_after_connection_loss() {
     let url = format!("http://{}", proxy.addr);
     let alice = Client::new(&url);
     let bob = Client::new(&url);
-    alice.sign_up("alice", PASSWORD).await.unwrap();
-    bob.sign_up("bob", PASSWORD).await.unwrap();
+    common::sign_up(&server.state, &alice, "alice").await;
+    common::sign_up(&server.state, &bob, "bob").await;
     let guild = alice.create_guild("friends").await.unwrap();
     bob.join_guild(&guild.invite_code).await.unwrap();
     let channel_id = alice.list_channels(guild.id).await.unwrap()[0].id;
@@ -286,7 +292,7 @@ async fn gateway_stops_when_token_is_rejected() {
 async fn gateway_declares_silent_connection_dead() {
     let server = Server::start().await;
     let client = Client::new(&server.url);
-    client.sign_up("alice", PASSWORD).await.unwrap();
+    common::sign_up(&server.state, &client, "alice").await;
     // The server heartbeats every 200ms; a watchdog window far below that
     // must trip and reconnect.
     let (tx, mut rx) = unbounded_channel();
@@ -300,5 +306,93 @@ async fn gateway_declares_silent_connection_dead() {
         let _ = tx.send(u);
     });
     expect_update(&mut rx, "Disconnected", |u| matches!(u, GatewayUpdate::Disconnected { .. })).await;
+    server.cleanup().await;
+}
+
+/// The first run of 6 digits in `text`.
+fn six_digits(text: &str) -> String {
+    let b = text.as_bytes();
+    (0..b.len() - 5).find(|&i| b[i..i + 6].iter().all(u8::is_ascii_digit)).map(|i| text[i..i + 6].to_owned()).expect("code")
+}
+
+#[tokio::test]
+async fn invite_accept_and_sign_in() {
+    let server = Server::start().await;
+    let admin = Client::new(&server.url);
+    let (_, admin_user) = common::sign_up(&server.state, &admin, "admin").await;
+    thehideout_server::admin::set_flag(&server.state, admin_user.id, true).await.unwrap();
+    let guild = admin.create_guild("friends").await.unwrap();
+
+    let invite = admin
+        .create_invite(&NewInvite { email: "Zoe@Example.test".into(), guild_ids: vec![guild.id], ..Default::default() })
+        .await
+        .expect("create invite");
+    assert_eq!(invite.email, "zoe@example.test");
+    assert_eq!(invite.status, InviteStatus::Pending);
+    let code = invite.code.clone().expect("code");
+    // The emailed link (test hook: the server's in-memory outbox) and the code both work.
+    let mail = common::mail(&server.state, "zoe@example.test", "invited").await;
+    assert!(mail.text.contains(&code));
+
+    let zoe = Client::new(&server.url);
+    let preview = zoe.lookup_invite(&code).await.unwrap();
+    assert_eq!((preview.masked_email.as_str(), preview.guild_names.clone()), ("z***@example.test", vec!["friends".to_owned()]));
+    let (token, me) = zoe.accept_invite(&code, "zoe", Some(PASSWORD), "laptop").await.expect("accept");
+    assert_eq!(zoe.token().as_deref(), Some(token.as_str()));
+    assert_eq!(me.email.as_deref(), Some("zoe@example.test"));
+    assert_eq!(zoe.list_guilds().await.unwrap()[0].id, guild.id);
+    assert!(matches!(zoe.accept_invite(&code, "zoe2", None, "").await, Err(ApiError::Precondition(_))));
+    let listed = admin.list_invites(None, None, 10).await.unwrap();
+    assert_eq!(listed.items[0].status, InviteStatus::Accepted);
+
+    // Password sign-in by email.
+    let fresh = Client::new(&server.url);
+    match fresh.login_on("zoe@example.test", PASSWORD, "phone").await.unwrap() {
+        LoginOutcome::Session { user, .. } => assert_eq!(user.id, me.id),
+        other => panic!("unexpected {other:?}"),
+    }
+    let sessions = fresh.list_sessions().await.unwrap();
+    assert!(sessions.iter().any(|s| s.current && s.device_name == "phone"));
+    assert!(sessions.iter().any(|s| s.device_name == "laptop"));
+    server.cleanup().await;
+}
+
+#[tokio::test]
+async fn email_code_sign_in_with_second_factor() {
+    let server = Server::start().await;
+    let ann = Client::new(&server.url);
+    common::sign_up(&server.state, &ann, "ann").await;
+    let email = common::email("ann");
+
+    // Email code without two-factor: straight to a session.
+    let fresh = Client::new(&server.url);
+    fresh.request_email_code(&email).await.unwrap();
+    let code = six_digits(&common::mail(&server.state, &email, "sign-in code").await.text);
+    assert!(matches!(fresh.verify_email_code(&email, &code, "tablet").await.unwrap(), LoginOutcome::Session { .. }));
+    assert!(fresh.token().is_some());
+
+    // With an authenticator app the code leads to a second-factor challenge.
+    let setup = ann.begin_totp_setup().await.unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let recovery = ann.confirm_totp(&thehideout_server::codes::totp_now(&setup.secret, now)).await.unwrap();
+    assert_eq!(recovery.len(), 10);
+    let other = Client::new(&server.url);
+    other.request_email_code(&email).await.unwrap();
+    let mail = loop {
+        let m = common::mail(&server.state, &email, "sign-in code").await;
+        if six_digits(&m.text) != code {
+            break m;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let LoginOutcome::SecondFactor { challenge, methods } = other.verify_email_code(&email, &six_digits(&mail.text), "").await.unwrap()
+    else {
+        panic!("second factor expected");
+    };
+    assert_eq!(methods.len(), 2);
+    assert!(other.token().is_none());
+    let (_, me) = other.complete_second_factor(&challenge, SecondFactor::RecoveryCode(&recovery[0])).await.unwrap();
+    assert_eq!(me.username, "ann");
+    assert!(other.token().is_some());
     server.cleanup().await;
 }

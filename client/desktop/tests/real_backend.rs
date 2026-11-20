@@ -61,6 +61,8 @@ const WAIT: Duration = Duration::from_secs(10);
 struct Server {
     url: String,
     state: AppState,
+    /// The runtime the server runs on, to create accounts from the (sync) test thread.
+    runtime: tokio::runtime::Handle,
 }
 
 impl Server {
@@ -118,7 +120,24 @@ impl Server {
         Self {
             url: format!("http://{addr}"),
             state,
+            runtime: tokio::runtime::Handle::current(),
         }
+    }
+
+    /// Creates the account `username` on the server: sign-up is invite-only, so
+    /// tests create accounts directly and then sign in.
+    async fn create_account(&self, username: &str) {
+        let email = format!("{username}@example.test");
+        thehideout_server::accounts::create_user(
+            &self.state,
+            thehideout_server::accounts::NewUser {
+                username,
+                password: Some(PASSWORD),
+                email: Some(&email),
+            },
+        )
+        .await
+        .expect("create account");
     }
 
     async fn cleanup(self) {
@@ -204,8 +223,10 @@ impl Peer {
         self.wait(&what, pick)
     }
 
-    fn sign_up(&mut self, name: &str) -> Session {
-        let cmd = Command::SignUp {
+    /// Creates the account on the server, then signs in through the backend.
+    fn sign_up(&mut self, server: &Server, name: &str) -> Session {
+        server.runtime.block_on(server.create_account(name));
+        let cmd = Command::Login {
             username: name.into(),
             password: PASSWORD.into(),
         };
@@ -213,7 +234,7 @@ impl Peer {
             Reply::Auth(a) => Some(a.clone()),
             _ => None,
         });
-        session.expect("sign up")
+        session.expect("sign in")
     }
 
     fn initial(&mut self) -> backend::Initial {
@@ -244,7 +265,7 @@ fn drives_the_real_server() {
     let mut bob = Peer::new(&server.url);
 
     // Sign up, and the session lands in the prefs file.
-    let a = alice.sign_up("alice");
+    let a = alice.sign_up(&server, "alice");
     assert_eq!(a.me.username, "alice");
     let saved = alice.saved().expect("the session is saved after sign-up");
     assert_eq!(
@@ -297,7 +318,7 @@ fn drives_the_real_server() {
     assert_eq!((extra.guild_id, extra.name.as_str()), (guild.id, "random"));
 
     // Bob signs up, sees nothing, joins by invite code and loads the members.
-    let b = bob.sign_up("bob");
+    let b = bob.sign_up(&server, "bob");
     assert!(bob.initial().guilds.is_empty());
     bob.connected();
     let joined = bob
@@ -673,9 +694,10 @@ fn a_dropped_gateway_refetches_what_was_missed() {
     ));
     let url = format!("http://{}", proxy.addr);
 
-    // Alice runs the app through the proxy and makes a server.
+    // Alice (invited earlier: the account exists) runs the app through the proxy and makes a server.
+    rt.block_on(server.create_account("alice"));
     let mut alice = Desk::new(&url);
-    alice.ui.set_auth_mode(AuthMode::SignUp);
+    alice.ui.set_auth_mode(AuthMode::Login);
     alice.ui.auth.username.replace_text("alice");
     alice.ui.auth.password.replace_text(PASSWORD);
     alice.ui.submit_auth();
@@ -714,7 +736,8 @@ fn a_dropped_gateway_refetches_what_was_missed() {
     // Bob, straight on the server, posts while alice is away.
     let bob = thehideout_api::Client::new(&server.url);
     rt.block_on(async {
-        bob.sign_up("bob", PASSWORD).await.unwrap();
+        server.create_account("bob").await;
+        bob.login("bob", PASSWORD).await.unwrap();
         bob.join_guild(&invite).await.unwrap();
         bob.send_message(channel, "posted while you were away", None)
             .await
@@ -788,7 +811,7 @@ fn sections_icons_and_layout_reach_a_second_client() {
     let server = rt.block_on(Server::start());
     let mut alice = Peer::new(&server.url);
     let mut bob = Peer::new(&server.url);
-    alice.sign_up("alice");
+    alice.sign_up(&server, "alice");
     alice.initial();
     alice.connected();
     let guild = alice
@@ -802,7 +825,7 @@ fn sections_icons_and_layout_reach_a_second_client() {
             },
         )
         .expect("create guild");
-    bob.sign_up("bob");
+    bob.sign_up(&server, "bob");
     bob.initial();
     bob.connected();
     bob.ask(
@@ -1010,7 +1033,7 @@ fn a_role_with_manage_channels_lets_a_second_user_reorder_the_layout() {
     let server = rt.block_on(Server::start());
     let mut alice = Peer::new(&server.url);
     let mut bob = Peer::new(&server.url);
-    alice.sign_up("alice");
+    alice.sign_up(&server, "alice");
     alice.initial();
     alice.connected();
     let guild = alice
@@ -1024,7 +1047,7 @@ fn a_role_with_manage_channels_lets_a_second_user_reorder_the_layout() {
             },
         )
         .expect("create guild");
-    let b = bob.sign_up("bob");
+    let b = bob.sign_up(&server, "bob");
     bob.initial();
     bob.connected();
     bob.ask(
@@ -1221,7 +1244,7 @@ fn an_uploaded_avatar_reaches_a_second_client_and_can_be_fetched() {
     let server = rt.block_on(Server::start_with_media());
     let mut alice = Peer::new(&server.url);
     let mut bob = Peer::new(&server.url);
-    let a = alice.sign_up("alice");
+    let a = alice.sign_up(&server, "alice");
     alice.initial();
     alice.connected();
     let guild = alice
@@ -1235,7 +1258,7 @@ fn an_uploaded_avatar_reaches_a_second_client_and_can_be_fetched() {
             },
         )
         .expect("create guild");
-    bob.sign_up("bob");
+    bob.sign_up(&server, "bob");
     bob.initial();
     bob.connected();
     bob.ask(
@@ -1398,7 +1421,7 @@ fn an_uploaded_file_reaches_a_second_client_and_downloads_identical_bytes() {
     let server = rt.block_on(Server::start_with_media());
     let mut alice = Peer::new(&server.url);
     let mut bob = Peer::new(&server.url);
-    alice.sign_up("alice");
+    alice.sign_up(&server, "alice");
     alice.initial();
     alice.connected();
     let guild = alice
@@ -1417,7 +1440,7 @@ fn an_uploaded_file_reaches_a_second_client_and_downloads_identical_bytes() {
         .first()
         .expect("a default channel")
         .id;
-    bob.sign_up("bob");
+    bob.sign_up(&server, "bob");
     bob.initial();
     bob.connected();
     bob.ask(Command::JoinGuild { code: guild.invite_code.clone() }, |r| matches!(r, Reply::GuildJoined(Ok(_))).then_some(()));
@@ -1515,7 +1538,7 @@ fn emojis_reactions_and_an_emoji_channel_icon_reach_a_second_client() {
     let server = rt.block_on(Server::start_with_media());
     let mut alice = Peer::new(&server.url);
     let mut bob = Peer::new(&server.url);
-    let a = alice.sign_up("alice");
+    let a = alice.sign_up(&server, "alice");
     alice.initial();
     alice.connected();
     let guild = alice
@@ -1529,7 +1552,7 @@ fn emojis_reactions_and_an_emoji_channel_icon_reach_a_second_client() {
             },
         )
         .expect("create guild");
-    let b = bob.sign_up("bob");
+    let b = bob.sign_up(&server, "bob");
     bob.initial();
     bob.connected();
     bob.ask(

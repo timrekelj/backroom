@@ -6,13 +6,12 @@ use thehideout_server::proto::thehideout::v1::event::Payload;
 use thehideout_server::proto::thehideout::v1::{
     AuthServiceClient, CreateChannelRequest, CreateGuildRequest, Event, GatewayServiceClient, GetMeRequest,
     Guild, GuildServiceClient, JoinGuildRequest, ListChannelsRequest, MessageServiceClient,
-    SendMessageRequest, SignUpRequest, SubscribeRequest,
+    SendMessageRequest, SubscribeRequest,
 };
 use common::TestApp;
 use connectrpc::{ConnectError, ErrorCode};
 use tokio::time::{sleep, timeout};
 
-const PASSWORD: &str = "correct horse battery";
 const HEARTBEAT: Duration = Duration::from_millis(200);
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -21,16 +20,7 @@ async fn start() -> TestApp {
 }
 
 async fn sign_up(app: &TestApp, username: &str) -> String {
-    app.client(AuthServiceClient::new, None)
-        .sign_up(SignUpRequest {
-            username: app.name(username),
-            password: PASSWORD.into(),
-            ..Default::default()
-        })
-        .await
-        .expect("sign up")
-        .into_owned()
-        .token
+    common::fixtures::user(app, username).await.token
 }
 
 /// Creates a guild for `token` and returns it with its `general` channel id.

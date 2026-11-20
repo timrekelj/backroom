@@ -93,6 +93,7 @@ fn user(id: u64, name: &str) -> User {
         created_at: time(utc(2026, 1, 5, 12, 0)),
         avatar: None,
         is_admin: false,
+        email: None,
     }
 }
 

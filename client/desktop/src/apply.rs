@@ -881,6 +881,7 @@ mod tests {
             created_at: UNIX_EPOCH,
             avatar: None,
             is_admin: false,
+            email: None,
         }
     }
 

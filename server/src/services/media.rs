@@ -147,10 +147,11 @@ impl MediaSvc {
     }
 
     /// Sends `user_updated` to the user and everyone sharing a guild or DM with
-    /// them. Only the user themself gets `is_admin`.
+    /// them. Only the user themself gets `is_admin` and `email`.
     pub(crate) async fn publish_user_updated(&self, user_id: u64, user: &User) {
         let mut public = user.clone();
         public.is_admin = false;
+        public.email = None;
         match self.audience(user_id).await {
             Ok(ids) => {
                 for id in ids {

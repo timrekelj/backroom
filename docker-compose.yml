@@ -54,6 +54,16 @@ services:
     command:
       - echo "s3.bucket.create -name thehideout-media" | weed shell -master=seaweedfs:9333
 
+  # Development mail sink: the server sends here when no Resend API key is set.
+  # Web inbox at http://127.0.0.1:8025 (also a JSON API at /api/v1/messages).
+  mailpit:
+    image: axllent/mailpit:v1.27
+    container_name: thehideout-mailpit
+    ports:
+      # Localhost only: anyone who can reach these reads every dev email.
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+
 configs:
   # Local-only development credentials (match the server's defaults).
   seaweedfs-s3:

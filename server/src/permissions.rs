@@ -16,8 +16,10 @@ pub const MANAGE_SERVER: u64 = 2;
 pub const MANAGE_CHANNELS: u64 = 4;
 pub const MANAGE_ROLES: u64 = 8;
 pub const MANAGE_EMOJIS: u64 = 16;
+/// Invite people by email (the invite auto-joins the guild).
+pub const INVITE_PEOPLE: u64 = 32;
 /// Every defined permission bit.
-pub const ALL_PERMISSIONS: u64 = ADMINISTRATOR | MANAGE_SERVER | MANAGE_CHANNELS | MANAGE_ROLES | MANAGE_EMOJIS;
+pub const ALL_PERMISSIONS: u64 = ADMINISTRATOR | MANAGE_SERVER | MANAGE_CHANNELS | MANAGE_ROLES | MANAGE_EMOJIS | INVITE_PEOPLE;
 
 /// A caller's standing within a guild.
 pub struct Standing {

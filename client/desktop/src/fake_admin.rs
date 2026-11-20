@@ -106,6 +106,7 @@ fn user(id: u64, name: &str, admin: bool, avatar: Option<String>) -> User {
         created_at: time(utc(2026, 1, 5, 12, 0) + id as i64 * DAY),
         avatar,
         is_admin: admin,
+        email: None,
     }
 }
 

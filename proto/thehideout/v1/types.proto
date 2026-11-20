@@ -17,6 +17,9 @@ message User {
   string avatar = 4;
   // Whether the user is a site administrator (see admin_service.proto).
   bool is_admin = 5;
+  // The account's email address. Only set for the user themself and for site
+  // admins; unset for other viewers and for legacy accounts without an email.
+  optional string email = 6;
 }
 
 // A guild (a Discord-style server) that groups members and channels.
@@ -330,6 +333,9 @@ enum Permission {
   PERMISSION_MANAGE_ROLES = 8;
   // Create / rename / delete custom emojis.
   PERMISSION_MANAGE_EMOJIS = 16;
+  // Invite people by email to create an account; the invite auto-joins the
+  // guild (see invite_service.proto).
+  PERMISSION_INVITE_PEOPLE = 32;
 }
 
 // A role within a guild.

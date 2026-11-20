@@ -199,22 +199,7 @@ impl GuildService for GuildSvc {
             .map_err(internal)?
             .ok_or_else(invalid)?;
         let guild = self.find_guild(guild_id).await?.ok_or_else(invalid)?;
-
-        if !is_member(&self.state, user_id, guild.id).await? {
-            self.add_member(guild.id, user_id).await?;
-            if let Some(user) = find_user(&self.state, id_to_db(user_id)).await? {
-                self.state.events.publish_to_guild(
-                    guild.id,
-                    EventPayload::GuildMemberJoined(GuildMemberJoined {
-                        guild_id: guild.id,
-                        user: user.into(),
-                        ..Default::default()
-                    }),
-                );
-            }
-            self.state.events.notify_user_joined_guild(user_id, guild.id);
-            tracing::info!(guild_id = guild.id, user_id, "user joined guild");
-        }
+        self.admit(&guild, user_id).await?;
         Response::ok(JoinGuildResponse {
             guild: guild.into(),
             ..Default::default()
@@ -721,6 +706,26 @@ impl GuildSvc {
     }
 
     /// Writes both membership tables in one logged batch so they stay consistent.
+    /// Makes `user_id` a member of `guild` (no-op for members) and tells everyone.
+    pub(crate) async fn admit(&self, guild: &Guild, user_id: u64) -> Result<(), ConnectError> {
+        if !is_member(&self.state, user_id, guild.id).await? {
+            self.add_member(guild.id, user_id).await?;
+            if let Some(user) = find_user(&self.state, id_to_db(user_id)).await? {
+                self.state.events.publish_to_guild(
+                    guild.id,
+                    EventPayload::GuildMemberJoined(GuildMemberJoined {
+                        guild_id: guild.id,
+                        user: user.into(),
+                        ..Default::default()
+                    }),
+                );
+            }
+            self.state.events.notify_user_joined_guild(user_id, guild.id);
+            tracing::info!(guild_id = guild.id, user_id, "user joined guild");
+        }
+        Ok(())
+    }
+
     async fn add_member(&self, guild_id: u64, user_id: u64) -> Result<(), ConnectError> {
         let (guild_id, user_id) = (id_to_db(guild_id), id_to_db(user_id));
         let joined_at = Utc::now();

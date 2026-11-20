@@ -2,23 +2,82 @@ syntax = "proto3";
 
 package thehideout.v1;
 
+import "google/protobuf/timestamp.proto";
 import "thehideout/v1/types.proto";
 
-// Account creation and authentication.
+// Authentication and account security.
 //
-// SignUp and Login are the only unauthenticated RPCs in TheHideout. Every
-// other RPC, in every service, requires the session token returned by those
-// calls, sent as the HTTP header `Authorization: Bearer <token>`.
+// Accounts are invite-only (see invite_service.proto): SignUp always fails.
+// The unauthenticated RPCs are Login, RequestEmailCode, VerifyEmailCode,
+// CompleteSecondFactor, RequestPasswordReset, ResetPassword,
+// BeginPasskeyLogin and FinishPasskeyLogin (plus LookupInvite and
+// AcceptInvite in InviteService). Every other RPC, in every service, requires
+// the session token returned by those calls, sent as the HTTP header
+// `Authorization: Bearer <token>`.
 service AuthService {
-  // Creates a new account and returns a session token for it.
+  // Deprecated: accounts are invite-only. Always fails with
+  // FAILED_PRECONDITION "invite required"; use InviteService.AcceptInvite.
   rpc SignUp(SignUpRequest) returns (SignUpResponse);
-  // Verifies credentials and returns a new session token.
+  // Verifies a username or email plus password. Returns a session, or a
+  // second-factor challenge when the account has two-factor authentication.
   rpc Login(LoginRequest) returns (LoginResponse);
   // Returns the user the session token belongs to.
   rpc GetMe(GetMeRequest) returns (GetMeResponse);
+
+  // Emails a one-time sign-in code. Always succeeds (unless rate limited),
+  // whether or not an account has that email.
+  rpc RequestEmailCode(RequestEmailCodeRequest) returns (RequestEmailCodeResponse);
+  // Signs in with an emailed code; like Login it may answer with a
+  // second-factor challenge.
+  rpc VerifyEmailCode(VerifyEmailCodeRequest) returns (VerifyEmailCodeResponse);
+  // Answers a second-factor challenge with a TOTP or recovery code.
+  rpc CompleteSecondFactor(CompleteSecondFactorRequest) returns (CompleteSecondFactorResponse);
+
+  // Emails a password reset code. Always succeeds (unless rate limited).
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
+  // Sets a new password with an emailed reset code and signs out every session.
+  rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse);
+  // Changes the caller's password and signs out their other sessions.
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+  // Starts changing (or, for legacy accounts, adding) the caller's email:
+  // emails a code to the new address.
+  rpc ChangeEmail(ChangeEmailRequest) returns (ChangeEmailResponse);
+  // Finishes ChangeEmail with the code sent to the new address.
+  rpc ConfirmEmailChange(ConfirmEmailChangeRequest) returns (ConfirmEmailChangeResponse);
+
+  // Starts enabling an authenticator app: returns a fresh secret.
+  rpc BeginTotpSetup(BeginTotpSetupRequest) returns (BeginTotpSetupResponse);
+  // Enables the authenticator app with a code from it; returns recovery codes (shown once).
+  rpc ConfirmTotp(ConfirmTotpRequest) returns (ConfirmTotpResponse);
+  // Disables the authenticator app (and deletes the recovery codes).
+  rpc DisableTotp(DisableTotpRequest) returns (DisableTotpResponse);
+  // Replaces the recovery codes; the old ones stop working.
+  rpc RegenerateRecoveryCodes(RegenerateRecoveryCodesRequest) returns (RegenerateRecoveryCodesResponse);
+
+  // Starts adding a passkey to the caller's account.
+  rpc BeginPasskeyRegistration(BeginPasskeyRegistrationRequest) returns (BeginPasskeyRegistrationResponse);
+  // Finishes adding a passkey.
+  rpc FinishPasskeyRegistration(FinishPasskeyRegistrationRequest) returns (FinishPasskeyRegistrationResponse);
+  // The caller's passkeys.
+  rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse);
+  // Renames one of the caller's passkeys.
+  rpc RenamePasskey(RenamePasskeyRequest) returns (RenamePasskeyResponse);
+  // Deletes one of the caller's passkeys.
+  rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
+  // Starts signing in with a passkey.
+  rpc BeginPasskeyLogin(BeginPasskeyLoginRequest) returns (BeginPasskeyLoginResponse);
+  // Finishes signing in with a passkey. A passkey sign-in never needs a second factor.
+  rpc FinishPasskeyLogin(FinishPasskeyLoginRequest) returns (FinishPasskeyLoginResponse);
+
+  // The caller's signed-in sessions (devices).
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  // Signs out one of the caller's sessions.
+  rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);
+  // Signs out every session of the caller except the current one.
+  rpc RevokeOtherSessions(RevokeOtherSessionsRequest) returns (RevokeOtherSessionsResponse);
 }
 
-// Request to create an account.
+// Request to create an account (no longer supported).
 message SignUpRequest {
   // Desired username; must be unique.
   string username = 1;
@@ -26,7 +85,7 @@ message SignUpRequest {
   string password = 2;
 }
 
-// Result of a successful registration.
+// Result of a successful registration (never returned any more).
 message SignUpResponse {
   // Session token to use in the Authorization header.
   string token = 1;
@@ -34,20 +93,45 @@ message SignUpResponse {
   User user = 2;
 }
 
+// A second sign-in step.
+enum SecondFactorMethod {
+  // Not a method; the zero value.
+  SECOND_FACTOR_METHOD_UNSPECIFIED = 0;
+  // A 6-digit code from an authenticator app.
+  SECOND_FACTOR_METHOD_TOTP = 1;
+  // One of the single-use recovery codes.
+  SECOND_FACTOR_METHOD_RECOVERY_CODE = 2;
+}
+
+// The first factor succeeded; answer with CompleteSecondFactor.
+message SecondFactorChallenge {
+  // Opaque id to pass to CompleteSecondFactor; valid for 5 minutes.
+  string challenge_id = 1;
+  // Methods that can answer it.
+  repeated SecondFactorMethod methods = 2;
+  // When the challenge stops being valid.
+  google.protobuf.Timestamp expires_at = 3;
+}
+
 // Request to log in.
 message LoginRequest {
-  // Username of the account.
+  // Username or email of the account.
   string username = 1;
   // Plaintext password (protected by transport encryption).
   string password = 2;
+  // Human-readable name of the device, shown in ListSessions (≤ 64 chars).
+  string device_name = 3;
 }
 
-// Result of a successful login.
+// Result of a successful login: either `token` + `user`, or (with two-factor
+// authentication on) only `second_factor_required`.
 message LoginResponse {
-  // Session token to use in the Authorization header.
+  // Session token to use in the Authorization header; "" when a second factor is required.
   string token = 1;
-  // The authenticated user.
+  // The authenticated user; unset when a second factor is required.
   User user = 2;
+  // Set when the account needs a second factor before a session is created.
+  SecondFactorChallenge second_factor_required = 3;
 }
 
 // Request for the current user; identity comes from the session token.
@@ -55,6 +139,319 @@ message GetMeRequest {}
 
 // The current user.
 message GetMeResponse {
-  // The authenticated user.
+  // The authenticated user (with `email`).
   User user = 1;
+}
+
+// Request to email a sign-in code.
+message RequestEmailCodeRequest {
+  // Email of the account.
+  string email = 1;
+}
+
+// Sent (or silently not sent if there is no such account).
+message RequestEmailCodeResponse {}
+
+// Request to sign in with an emailed code.
+message VerifyEmailCodeRequest {
+  // Email the code was sent to.
+  string email = 1;
+  // The 6-digit code.
+  string code = 2;
+  // Human-readable name of the device (≤ 64 chars).
+  string device_name = 3;
+}
+
+// Same shape as LoginResponse.
+message VerifyEmailCodeResponse {
+  // Session token; "" when a second factor is required.
+  string token = 1;
+  // The authenticated user; unset when a second factor is required.
+  User user = 2;
+  // Set when the account needs a second factor.
+  SecondFactorChallenge second_factor_required = 3;
+}
+
+// Answer to a second-factor challenge; set exactly one code.
+message CompleteSecondFactorRequest {
+  // `SecondFactorChallenge.challenge_id`.
+  string challenge_id = 1;
+  // Code from the authenticator app.
+  string totp_code = 2;
+  // One of the recovery codes (consumed on use).
+  string recovery_code = 3;
+}
+
+// The new session.
+message CompleteSecondFactorResponse {
+  // Session token to use in the Authorization header.
+  string token = 1;
+  // The authenticated user.
+  User user = 2;
+}
+
+// Request to email a password reset code.
+message RequestPasswordResetRequest {
+  // Email of the account.
+  string email = 1;
+}
+
+// Sent (or silently not sent).
+message RequestPasswordResetResponse {}
+
+// Request to set a new password with a reset code.
+message ResetPasswordRequest {
+  // Email the code was sent to.
+  string email = 1;
+  // The 6-digit code.
+  string code = 2;
+  // The new password (8-128 characters).
+  string new_password = 3;
+}
+
+// Password changed; every session was signed out.
+message ResetPasswordResponse {}
+
+// Request to change the caller's password.
+message ChangePasswordRequest {
+  // The current password; "" for accounts that have none yet.
+  string current_password = 1;
+  // The new password (8-128 characters).
+  string new_password = 2;
+}
+
+// Password changed; the caller's other sessions were signed out.
+message ChangePasswordResponse {}
+
+// Request to change (or add) the caller's email.
+message ChangeEmailRequest {
+  // The new address; a code is sent there.
+  string new_email = 1;
+  // The current password; "" for accounts that have none.
+  string current_password = 2;
+}
+
+// Code sent to the new address (valid 10 minutes).
+message ChangeEmailResponse {}
+
+// Request to confirm an email change.
+message ConfirmEmailChangeRequest {
+  // The 6-digit code sent to the new address.
+  string code = 1;
+}
+
+// The updated user.
+message ConfirmEmailChangeResponse {
+  // The caller with the new email.
+  User user = 1;
+}
+
+// Request to start enabling an authenticator app.
+message BeginTotpSetupRequest {}
+
+// The secret to add to an authenticator app (valid 10 minutes).
+message BeginTotpSetupResponse {
+  // `otpauth://totp/...` URI (render as a QR code).
+  string otpauth_uri = 1;
+  // The base32 secret, for manual entry.
+  string secret = 2;
+}
+
+// Request to enable the authenticator app.
+message ConfirmTotpRequest {
+  // A current code from the app.
+  string code = 1;
+}
+
+// Enabled.
+message ConfirmTotpResponse {
+  // 10 single-use recovery codes; shown only now.
+  repeated string recovery_codes = 1;
+}
+
+// Request to disable the authenticator app.
+message DisableTotpRequest {
+  // A current code from the app, or a recovery code.
+  string code = 1;
+}
+
+// Disabled.
+message DisableTotpResponse {}
+
+// Request for new recovery codes.
+message RegenerateRecoveryCodesRequest {
+  // A current code from the authenticator app.
+  string code = 1;
+}
+
+// The new codes.
+message RegenerateRecoveryCodesResponse {
+  // 10 single-use recovery codes; shown only now.
+  repeated string recovery_codes = 1;
+}
+
+// A passkey (WebAuthn credential) of the caller.
+message Passkey {
+  // Snowflake ID of the passkey.
+  uint64 id = 1;
+  // User-chosen name (≤ 64 chars).
+  string name = 2;
+  // When it was added.
+  google.protobuf.Timestamp created_at = 3;
+  // When it was last used to sign in; unset if never.
+  google.protobuf.Timestamp last_used_at = 4;
+}
+
+// A WebAuthn ceremony. Browsers (or webviews) call
+// `navigator.credentials.create/get` with `options_json` and send the result
+// to Finish*. Native apps without WebAuthn open `ceremony_url` in the system
+// browser instead (a page served by the server that does the same and stores
+// the result) and then poll Finish* with an empty `credential_json`.
+message PasskeyCeremony {
+  // Opaque id to pass to Finish*; valid for 5 minutes.
+  string ceremony_id = 1;
+  // `{THEHIDEOUT_PUBLIC_URL}/auth/passkey?ceremony=<id>`.
+  string ceremony_url = 2;
+  // `CredentialCreationOptions` / `CredentialRequestOptions` as JSON
+  // (binary fields base64url).
+  string options_json = 3;
+}
+
+// Request to start adding a passkey.
+message BeginPasskeyRegistrationRequest {
+  // Name for the passkey (≤ 64 chars); "" = "Passkey".
+  string name = 1;
+  // When set, the ceremony page redirects to `http://127.0.0.1:<port>/done`
+  // after finishing, so a native app can notice without polling.
+  optional uint32 redirect_port = 2;
+}
+
+// The ceremony.
+message BeginPasskeyRegistrationResponse {
+  // The ceremony to run.
+  PasskeyCeremony ceremony = 1;
+}
+
+// Request to finish adding a passkey.
+message FinishPasskeyRegistrationRequest {
+  // `PasskeyCeremony.ceremony_id`.
+  string ceremony_id = 1;
+  // The `PublicKeyCredential` as JSON; "" = use the result the ceremony page stored.
+  string credential_json = 2;
+}
+
+// The new passkey, or `pending` while the ceremony page has no result yet.
+message FinishPasskeyRegistrationResponse {
+  // The added passkey; unset while pending.
+  Passkey passkey = 1;
+  // True when `credential_json` was empty and the page has not finished; poll again.
+  bool pending = 2;
+}
+
+// Request for the caller's passkeys.
+message ListPasskeysRequest {}
+
+// The caller's passkeys, oldest first.
+message ListPasskeysResponse {
+  // The passkeys.
+  repeated Passkey passkeys = 1;
+}
+
+// Request to rename a passkey.
+message RenamePasskeyRequest {
+  // ID of the passkey.
+  uint64 passkey_id = 1;
+  // New name (1-64 chars).
+  string name = 2;
+}
+
+// The renamed passkey.
+message RenamePasskeyResponse {
+  // The passkey.
+  Passkey passkey = 1;
+}
+
+// Request to delete a passkey.
+message DeletePasskeyRequest {
+  // ID of the passkey.
+  uint64 passkey_id = 1;
+}
+
+// Deleted.
+message DeletePasskeyResponse {}
+
+// Request to start signing in with a passkey.
+message BeginPasskeyLoginRequest {
+  // Username or email of the account.
+  string username = 1;
+  // Human-readable name of the device (≤ 64 chars).
+  string device_name = 2;
+  // See BeginPasskeyRegistrationRequest.redirect_port.
+  optional uint32 redirect_port = 3;
+}
+
+// The ceremony.
+message BeginPasskeyLoginResponse {
+  // The ceremony to run.
+  PasskeyCeremony ceremony = 1;
+}
+
+// Request to finish signing in with a passkey.
+message FinishPasskeyLoginRequest {
+  // `PasskeyCeremony.ceremony_id`.
+  string ceremony_id = 1;
+  // The `PublicKeyCredential` as JSON; "" = use the result the ceremony page stored.
+  string credential_json = 2;
+}
+
+// The new session, or `pending`.
+message FinishPasskeyLoginResponse {
+  // Session token; "" while pending.
+  string token = 1;
+  // The authenticated user; unset while pending.
+  User user = 2;
+  // True when the ceremony page has not finished yet; poll again.
+  bool pending = 3;
+}
+
+// A signed-in session (device).
+message Session {
+  // Snowflake ID of the session.
+  uint64 id = 1;
+  // Device name given at sign-in.
+  string device_name = 2;
+  // When the session was created.
+  google.protobuf.Timestamp created_at = 3;
+  // When the session was last used (to within a few minutes); unset if unknown.
+  google.protobuf.Timestamp last_seen_at = 4;
+  // Whether this is the session making the request.
+  bool current = 5;
+}
+
+// Request for the caller's sessions.
+message ListSessionsRequest {}
+
+// The caller's sessions, newest first. Sessions created before session
+// tracking existed are not listed.
+message ListSessionsResponse {
+  // The sessions.
+  repeated Session sessions = 1;
+}
+
+// Request to sign out one session.
+message RevokeSessionRequest {
+  // ID of the session (may be the current one).
+  uint64 session_id = 1;
+}
+
+// Signed out.
+message RevokeSessionResponse {}
+
+// Request to sign out every other session.
+message RevokeOtherSessionsRequest {}
+
+// Signed out.
+message RevokeOtherSessionsResponse {
+  // How many sessions were signed out.
+  uint32 revoked = 1;
 }

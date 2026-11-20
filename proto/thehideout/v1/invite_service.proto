@@ -1,0 +1,171 @@
+syntax = "proto3";
+
+package thehideout.v1;
+
+import "google/protobuf/timestamp.proto";
+import "thehideout/v1/types.proto";
+
+// Email invites: the only way to create an account.
+//
+// Site admins invite anyone (optionally pre-joining guilds and granting site
+// admin). Guild members with PERMISSION_INVITE_PEOPLE invite people into that
+// guild. The invitee gets an email with a link (token) and a short code;
+// either can be passed to LookupInvite / AcceptInvite. Invites expire after 7
+// days. Guild invite codes (`Guild.invite_code`) only let existing accounts
+// join more guilds.
+service InviteService {
+  // Creates an invite and emails it.
+  rpc CreateInvite(CreateInviteRequest) returns (CreateInviteResponse);
+  // Lists invites: all of them (site admins) or those of one guild
+  // (PERMISSION_INVITE_PEOPLE there).
+  rpc ListInvites(ListInvitesRequest) returns (ListInvitesResponse);
+  // Revokes a pending invite.
+  rpc RevokeInvite(RevokeInviteRequest) returns (RevokeInviteResponse);
+  // Emails a pending (or expired) invite again with a new link and code and a
+  // fresh 7-day expiry; the old link and code stop working.
+  rpc ResendInvite(ResendInviteRequest) returns (ResendInviteResponse);
+  // Unauthenticated: what an invite is for, before accepting it.
+  rpc LookupInvite(LookupInviteRequest) returns (LookupInviteResponse);
+  // Unauthenticated: creates the account and returns its first session.
+  rpc AcceptInvite(AcceptInviteRequest) returns (AcceptInviteResponse);
+}
+
+// Lifecycle of an invite.
+enum InviteStatus {
+  // Not a status; the zero value.
+  INVITE_STATUS_UNSPECIFIED = 0;
+  // Can be accepted.
+  INVITE_STATUS_PENDING = 1;
+  // An account was created with it.
+  INVITE_STATUS_ACCEPTED = 2;
+  // Past `expires_at` without being accepted.
+  INVITE_STATUS_EXPIRED = 3;
+  // Revoked by an admin or inviter.
+  INVITE_STATUS_REVOKED = 4;
+}
+
+// An invite as seen by admins and inviters.
+message Invite {
+  // Snowflake ID of the invite.
+  uint64 id = 1;
+  // The invited address (lowercased).
+  string email = 2;
+  // The short code (`XXXX-XXXX`); only returned by CreateInvite and ResendInvite.
+  optional string code = 3;
+  // Current status.
+  InviteStatus status = 4;
+  // Who created it; unset for invites made by the server (bootstrap, CLI).
+  User inviter = 5;
+  // Guilds the new account joins.
+  repeated uint64 guild_ids = 6;
+  // When it was created.
+  google.protobuf.Timestamp created_at = 7;
+  // When it expires (7 days after creation or the last resend).
+  google.protobuf.Timestamp expires_at = 8;
+  // The account created with it, once accepted.
+  optional uint64 accepted_user_id = 9;
+  // Whether the new account becomes a site admin.
+  bool make_admin = 10;
+}
+
+// Request to create an invite.
+message CreateInviteRequest {
+  // Address to invite; must not belong to an account (ALREADY_EXISTS).
+  string email = 1;
+  // Invite into this guild (needs PERMISSION_INVITE_PEOPLE there).
+  optional uint64 guild_id = 2;
+  // Site admins only: more guilds to pre-join.
+  repeated uint64 guild_ids = 3;
+  // Site admins only: make the new account a site admin.
+  bool make_admin = 4;
+}
+
+// The created invite, with its code.
+message CreateInviteResponse {
+  // The invite (`code` set).
+  Invite invite = 1;
+}
+
+// Request for a page of invites.
+message ListInvitesRequest {
+  // Only invites into this guild (needs PERMISSION_INVITE_PEOPLE); unset = all
+  // invites (site admins only).
+  optional uint64 guild_id = 1;
+  // `next_page_token` of the previous page; "" = first page.
+  string page_token = 2;
+  // Page size; 0 = 50, at most 200.
+  uint32 limit = 3;
+}
+
+// Newest first.
+message ListInvitesResponse {
+  // The invites (`code` unset).
+  repeated Invite invites = 1;
+  // Token of the next page; "" = no more.
+  string next_page_token = 2;
+}
+
+// Request to revoke an invite (site admin, its inviter, or
+// PERMISSION_INVITE_PEOPLE in its guild).
+message RevokeInviteRequest {
+  // ID of the invite.
+  uint64 invite_id = 1;
+}
+
+// The revoked invite.
+message RevokeInviteResponse {
+  // The invite.
+  Invite invite = 1;
+}
+
+// Request to resend an invite (same rights as RevokeInvite).
+message ResendInviteRequest {
+  // ID of the invite.
+  uint64 invite_id = 1;
+}
+
+// The invite with its new code.
+message ResendInviteResponse {
+  // The invite (`code` set).
+  Invite invite = 1;
+}
+
+// Request to look up an invite.
+message LookupInviteRequest {
+  // The link token or the short code (dashes and case ignored).
+  string token_or_code = 1;
+}
+
+// What the invitee sees before accepting.
+message LookupInviteResponse {
+  // The invited address, masked (`a***@example.com`).
+  string masked_email = 1;
+  // Who invited them; unset for server-made invites.
+  User inviter = 2;
+  // Names of the guilds they will join.
+  repeated string guild_names = 3;
+  // When the invite expires.
+  google.protobuf.Timestamp expires_at = 4;
+  // Current status; only PENDING invites can be accepted.
+  InviteStatus status = 5;
+}
+
+// Request to accept an invite.
+message AcceptInviteRequest {
+  // The link token or the short code.
+  string token_or_code = 1;
+  // Desired username (`^[a-z0-9_.]{2,32}$`, case-insensitive); ALREADY_EXISTS if taken.
+  string username = 2;
+  // Password (8-128 chars); unset = passwordless (sign in by email code or passkey).
+  optional string password = 3;
+  // Human-readable name of the device (≤ 64 chars).
+  string device_name = 4;
+}
+
+// The new account's first session.
+message AcceptInviteResponse {
+  // Session token to use in the Authorization header.
+  string token = 1;
+  // The new user (with `email`).
+  User user = 2;
+}

@@ -2,28 +2,16 @@ mod common;
 
 use thehideout_server::convert::{id_to_db, snowflake_datetime};
 use thehideout_server::proto::thehideout::v1::{
-    AuthServiceClient, CreateGuildRequest, GuildServiceClient, ListChannelsRequest,
+    CreateGuildRequest, GuildServiceClient, ListChannelsRequest,
     ListMessagesRequest, ListMessagesResponse, Message, MessageServiceClient, SendMessageRequest,
-    SignUpRequest,
-};
+    };
 use thehideout_server::snowflake::{BUCKET_MS, bucket_of, make_id};
 use common::TestApp;
 use connectrpc::{ConnectError, ErrorCode};
 
-const PASSWORD: &str = "correct horse battery";
 
 async fn sign_up(app: &TestApp, username: &str) -> String {
-    let client = app.client(AuthServiceClient::new, None);
-    client
-        .sign_up(SignUpRequest {
-            username: app.name(username),
-            password: PASSWORD.into(),
-            ..Default::default()
-        })
-        .await
-        .expect("sign up")
-        .into_owned()
-        .token
+    common::fixtures::user(app, username).await.token
 }
 
 /// Creates a guild for `token` and returns `(guild_id, general_channel_id)`.

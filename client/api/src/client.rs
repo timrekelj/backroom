@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use connectrpc::client::{ClientConfig, HttpClient};
 
+use crate::account::LoginOutcome;
 use crate::error::ApiError;
 use crate::proto::thehideout::v1 as pb;
 use crate::content::{Emoji, ReactionEmoji};
@@ -77,7 +78,7 @@ impl Client {
         Ok(config)
     }
 
-    fn auth(&self) -> Result<pb::AuthServiceClient<HttpClient>> {
+    pub(crate) fn auth(&self) -> Result<pb::AuthServiceClient<HttpClient>> {
         Ok(pb::AuthServiceClient::new(self.http.clone(), self.config()?))
     }
 
@@ -97,10 +98,9 @@ impl Client {
         Ok(pb::DmServiceClient::new(self.http.clone(), self.config()?))
     }
 
-    /// Creates an account. Returns the session token and the user, and also
-    /// stores the token on this client.
-    ///
-    /// Fails with [`ApiError::AlreadyExists`] if the username is taken.
+    /// Deprecated: accounts are invite-only, so current servers answer
+    /// [`ApiError::InviteRequired`]; use [`accept_invite`](Self::accept_invite).
+    /// (Old servers answer a taken username with [`ApiError::AlreadyExists`].)
     pub async fn sign_up(&self, username: &str, password: &str) -> Result<(String, User)> {
         let res = self
             .auth()?
@@ -110,7 +110,7 @@ impl Client {
                 ..Default::default()
             })
             .await
-            // Sign-up answers a taken username with FAILED_PRECONDITION.
+            // Old servers answered a taken username with FAILED_PRECONDITION.
             .map_err(|e| match ApiError::from(e) {
                 ApiError::Precondition(_) => ApiError::AlreadyExists,
                 other => other,
@@ -119,22 +119,43 @@ impl Client {
         self.finish_auth(res.token, res.user.into_option())
     }
 
-    /// Logs in. Returns the session token and the user, and also stores the
-    /// token on this client.
-    pub async fn login(&self, username: &str, password: &str) -> Result<(String, User)> {
+    /// Logs in with a username or email and password. On
+    /// [`LoginOutcome::Session`] the token is also stored on this client; on
+    /// [`LoginOutcome::SecondFactor`] call
+    /// [`complete_second_factor`](Self::complete_second_factor).
+    pub async fn login(&self, username_or_email: &str, password: &str) -> Result<LoginOutcome> {
+        self.login_on(username_or_email, password, "").await
+    }
+
+    /// Like [`login`](Self::login), naming the device (shown in [`list_sessions`](Self::list_sessions)).
+    pub async fn login_on(&self, username_or_email: &str, password: &str, device_name: &str) -> Result<LoginOutcome> {
         let res = self
             .auth()?
             .login(pb::LoginRequest {
-                username: username.into(),
+                username: username_or_email.into(),
                 password: password.into(),
+                device_name: device_name.into(),
                 ..Default::default()
             })
             .await?
             .into_owned();
-        self.finish_auth(res.token, res.user.into_option())
+        self.outcome(res.token, res.user.into_option(), res.second_factor_required.into_option())
     }
 
-    fn finish_auth(&self, token: String, user: Option<pb::User>) -> Result<(String, User)> {
+    pub(crate) fn outcome(
+        &self,
+        token: String,
+        user: Option<pb::User>,
+        challenge: Option<pb::SecondFactorChallenge>,
+    ) -> Result<LoginOutcome> {
+        if let Some(challenge) = challenge {
+            return Ok(LoginOutcome::from_challenge(challenge));
+        }
+        let (token, user) = self.finish_auth(token, user)?;
+        Ok(LoginOutcome::Session { token, user })
+    }
+
+    pub(crate) fn finish_auth(&self, token: String, user: Option<pb::User>) -> Result<(String, User)> {
         let user = user.ok_or_else(|| ApiError::Other("server returned no user".into()))?;
         self.set_token(Some(token.clone()));
         Ok((token, user.into()))

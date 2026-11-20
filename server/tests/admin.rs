@@ -198,13 +198,8 @@ async fn configured_admins_are_promoted_at_sign_up_and_at_startup() {
     // Names are normalised like usernames: lower-case, trimmed.
     let early = user(&app, "early").await;
     assert!(me(&app, &early).await.is_admin, "promoted at sign-up");
-    let sign_up = app
-        .client(AuthServiceClient::new, None)
-        .sign_up(SignUpRequest { username: app.name("boss"), password: "correct horse battery".into(), ..Default::default() })
-        .await
-        .unwrap()
-        .into_owned();
-    assert!(sign_up.user.as_option().unwrap().is_admin);
+    let boss = user(&app, "boss").await;
+    assert!(me(&app, &boss).await.is_admin, "promoted at account creation");
     let login = app
         .client(AuthServiceClient::new, None)
         .login(LoginRequest { username: app.name("boss"), password: "correct horse battery".into(), ..Default::default() })

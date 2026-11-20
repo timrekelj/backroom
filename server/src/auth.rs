@@ -1,19 +1,23 @@
 //! Password hashing, session tokens and request authentication.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use axum::extract::ConnectInfo;
 use base64::Engine;
+use chrono::{DateTime, Utc};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use connectrpc::{ConnectError, RequestContext};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 use crate::AppState;
-use crate::convert::id_from_db;
+use crate::convert::{id_from_db, id_to_db};
 
 /// How long a session token stays valid.
 pub const SESSION_TTL_SECS: i32 = 30 * 24 * 60 * 60;
@@ -50,9 +54,10 @@ pub async fn authenticate(state: &AppState, ctx: &RequestContext) -> Result<u64,
 
 /// Returns the user id a session token belongs to, if the session still exists.
 pub async fn user_id_for_token(state: &AppState, token: &str) -> Result<u64, ConnectError> {
+    let token_hash = hash_token(token);
     let rows = state
         .session
-        .execute_unpaged("SELECT user_id FROM sessions WHERE token_hash = ?", (hash_token(token),))
+        .execute_unpaged("SELECT user_id FROM sessions WHERE token_hash = ?", (&token_hash,))
         .await
         .map_err(internal)?
         .into_rows_result()
@@ -62,6 +67,19 @@ pub async fn user_id_for_token(state: &AppState, token: &str) -> Result<u64, Con
         .map_err(internal)?
         .map(|(id,)| id_from_db(id))
         .ok_or_else(|| ConnectError::unauthenticated("invalid or expired session token"))?;
+    if state.seen.due(&token_hash) {
+        // Best effort: a failed write only makes "last seen" a bit older.
+        if let Err(e) = state
+            .session
+            .execute_unpaged(
+                "INSERT INTO session_seen (token_hash, last_seen_at) VALUES (?, toTimestamp(now())) USING TTL ?",
+                (&token_hash, SESSION_TTL_SECS),
+            )
+            .await
+        {
+            tracing::debug!(error = %e, "recording session last-seen failed");
+        }
+    }
     Ok(user_id)
 }
 
@@ -81,18 +99,151 @@ pub async fn session_exists(state: &AppState, token_hash: &str) -> Result<bool, 
         .is_some())
 }
 
-/// Creates a session for `user_id` and returns the plaintext token (only its hash is stored).
-pub async fn create_session(state: &AppState, user_id: i64) -> Result<String, ConnectError> {
+/// Longest device name kept on a session.
+const MAX_DEVICE_NAME: usize = 64;
+
+/// Trims and bounds a client-supplied device name; "" -> "Unknown device".
+pub fn device_label(raw: &str) -> String {
+    let name: String = raw.trim().chars().filter(|c| !c.is_control()).take(MAX_DEVICE_NAME).collect();
+    if name.is_empty() { "Unknown device".to_owned() } else { name }
+}
+
+/// Creates a session for `user_id` and returns the plaintext token (only its
+/// hash is stored). The session is also listed under the user.
+pub async fn create_session(state: &AppState, user_id: u64, device_name: &str) -> Result<String, ConnectError> {
     let token = generate_token();
+    let token_hash = hash_token(&token);
+    let session_id = id_to_db(state.snowflake.next_id());
+    let device = device_label(device_name);
+    let db_user = id_to_db(user_id);
     state
         .session
         .execute_unpaged(
-            "INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, toTimestamp(now())) USING TTL ?",
-            (hash_token(&token), user_id, SESSION_TTL_SECS),
+            "INSERT INTO sessions (token_hash, user_id, created_at, id, device_name) VALUES (?, ?, toTimestamp(now()), ?, ?) USING TTL ?",
+            (&token_hash, db_user, session_id, &device, SESSION_TTL_SECS),
+        )
+        .await
+        .map_err(internal)?;
+    state
+        .session
+        .execute_unpaged(
+            "INSERT INTO sessions_by_user (user_id, session_id, token_hash, device_name, created_at) VALUES (?, ?, ?, ?, toTimestamp(now())) USING TTL ?",
+            (db_user, session_id, &token_hash, &device, SESSION_TTL_SECS),
         )
         .await
         .map_err(internal)?;
     Ok(token)
+}
+
+/// A listed session.
+pub struct SessionRow {
+    pub id: u64,
+    pub token_hash: String,
+    pub device_name: String,
+    pub created_at: Option<DateTime<Utc>>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+}
+
+/// The user's live sessions, newest first (pre-migration sessions are not listed).
+pub async fn list_sessions(state: &AppState, user_id: u64) -> Result<Vec<SessionRow>, ConnectError> {
+    let rows = state
+        .session
+        .execute_unpaged(
+            "SELECT session_id, token_hash, device_name, created_at FROM sessions_by_user WHERE user_id = ?",
+            (id_to_db(user_id),),
+        )
+        .await
+        .map_err(internal)?
+        .into_rows_result()
+        .map_err(internal)?
+        .rows::<(i64, Option<String>, Option<String>, Option<DateTime<Utc>>)>()
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, token_hash, device_name, created_at) in rows {
+        let token_hash = token_hash.unwrap_or_default();
+        let last_seen_at = state
+            .session
+            .execute_unpaged("SELECT last_seen_at FROM session_seen WHERE token_hash = ?", (&token_hash,))
+            .await
+            .map_err(internal)?
+            .into_rows_result()
+            .map_err(internal)?
+            .maybe_first_row::<(Option<DateTime<Utc>>,)>()
+            .map_err(internal)?
+            .and_then(|(t,)| t);
+        out.push(SessionRow {
+            id: id_from_db(id),
+            token_hash,
+            device_name: device_name.unwrap_or_default(),
+            created_at,
+            last_seen_at,
+        });
+    }
+    out.sort_by_key(|s| std::cmp::Reverse(s.id));
+    Ok(out)
+}
+
+/// Deletes one session of the user.
+pub async fn revoke_session(state: &AppState, user_id: u64, session_id: u64, token_hash: &str) -> Result<(), ConnectError> {
+    state
+        .session
+        .execute_unpaged("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+        .await
+        .map_err(internal)?;
+    state
+        .session
+        .execute_unpaged(
+            "DELETE FROM sessions_by_user WHERE user_id = ? AND session_id = ?",
+            (id_to_db(user_id), id_to_db(session_id)),
+        )
+        .await
+        .map_err(internal)?;
+    let _ = state.session.execute_unpaged("DELETE FROM session_seen WHERE token_hash = ?", (token_hash,)).await;
+    Ok(())
+}
+
+/// Deletes every listed session of the user except `keep` (a token hash);
+/// returns how many were deleted.
+pub async fn revoke_all_sessions(state: &AppState, user_id: u64, keep: Option<&str>) -> Result<u32, ConnectError> {
+    let mut revoked = 0;
+    for row in list_sessions(state, user_id).await? {
+        if Some(row.token_hash.as_str()) == keep {
+            continue;
+        }
+        revoke_session(state, user_id, row.id, &row.token_hash).await?;
+        revoked += 1;
+    }
+    Ok(revoked)
+}
+
+/// Throttles "last seen" writes to one per session per [`SEEN_EVERY`].
+#[derive(Default)]
+pub struct SeenThrottle {
+    last: Mutex<HashMap<String, Instant>>,
+}
+
+const SEEN_EVERY: Duration = Duration::from_secs(5 * 60);
+const SEEN_MAX_KEYS: usize = 50_000;
+
+impl SeenThrottle {
+    /// Whether a write for `token_hash` is due now (and records it).
+    pub fn due(&self, token_hash: &str) -> bool {
+        let now = Instant::now();
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if last.get(token_hash).is_some_and(|t| now.duration_since(*t) < SEEN_EVERY) {
+            return false;
+        }
+        if last.len() >= SEEN_MAX_KEYS {
+            last.retain(|_, t| now.duration_since(*t) < SEEN_EVERY);
+            if last.len() >= SEEN_MAX_KEYS {
+                last.clear();
+            }
+        }
+        last.insert(token_hash.to_owned(), now);
+        true
+    }
 }
 
 /// 32 random bytes from the OS-seeded CSPRNG, base64url without padding.
@@ -102,7 +253,8 @@ pub fn generate_token() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// Hex SHA-256 of a token, as stored in `sessions.token_hash`.
+/// Hex SHA-256 of a secret (session tokens, invite tokens and codes, one-time
+/// codes, recovery codes).
 pub fn hash_token(token: &str) -> String {
     Sha256::digest(token.as_bytes())
         .iter()
@@ -133,6 +285,17 @@ pub async fn verify_password(password: String, hash: String) -> Result<bool, Con
     .await
     .map_err(internal)?
     .map_err(internal)
+}
+
+/// The `[applied]` flag of a lightweight-transaction result (whatever other
+/// columns Scylla returns with it).
+pub fn lwt_applied(result: scylla::response::query_result::QueryResult) -> Result<bool, ConnectError> {
+    let row = result
+        .into_rows_result()
+        .map_err(internal)?
+        .first_row::<scylla::value::Row>()
+        .map_err(internal)?;
+    Ok(row.columns.first().and_then(|c| c.as_ref()).and_then(|v| v.as_boolean()).unwrap_or(false))
 }
 
 /// Logs the real cause and returns an opaque internal error.

@@ -8,13 +8,21 @@ use axum::routing::get;
 use connectrpc::Router as ConnectRouter;
 use scylla::client::caching_session::CachingSession;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use url::Url;
 
+fn default_public_url() -> Url {
+    Url::parse("http://localhost:8080").expect("valid default URL")
+}
+
+use crate::auth::SeenThrottle;
+use crate::email::Mailer;
 use crate::embeds::EmbedSettings;
 use crate::events::EventBus;
 use crate::media::attachments::AttachmentSettings;
 use crate::media::{self, MAX_INPUT_BYTES};
 use crate::ratelimit::RateLimiter;
-use crate::services::{AdminSvc, AuthSvc, DmSvc, EmojiSvc, GatewaySvc, GuildSvc, MediaSvc, MessageSvc, RoleSvc};
+use crate::services::auth::AuthMemory;
+use crate::services::{AdminSvc, AuthSvc, DmSvc, EmojiSvc, GatewaySvc, GuildSvc, InviteSvc, MediaSvc, MessageSvc, RoleSvc};
 use crate::snowflake::Snowflake;
 use crate::storage::Storage;
 
@@ -42,6 +50,16 @@ pub struct AppState {
     pub live: Arc<crate::stats::Live>,
     /// Serialises SetAdmin so two concurrent revocations cannot remove the last admin.
     pub admin_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Outgoing email (in-memory by default; see [`AppState::with_mailer`]).
+    pub mailer: Mailer,
+    /// Base URL of links in emails and the WebAuthn origin (`THEHIDEOUT_PUBLIC_URL`).
+    pub public_url: Url,
+    /// The WebAuthn relying party; `None` when `public_url` has no domain name.
+    pub webauthn: Option<Arc<webauthn_rs::Webauthn>>,
+    /// Short-lived auth state: second-factor challenges, TOTP setups, passkey ceremonies.
+    pub auth: Arc<AuthMemory>,
+    /// Throttles session "last seen" writes.
+    pub seen: Arc<SeenThrottle>,
 }
 
 impl AppState {
@@ -64,7 +82,30 @@ impl AppState {
             admins: Arc::default(),
             live: Arc::default(),
             admin_lock: Arc::default(),
+            mailer: Mailer::memory(),
+            webauthn: crate::passkeys::relying_party(&default_public_url()),
+            public_url: default_public_url(),
+            auth: Arc::default(),
+            seen: Arc::default(),
         }
+    }
+
+    /// Sets the public base URL (and rebuilds the WebAuthn relying party).
+    pub fn with_public_url(mut self, url: Url) -> Self {
+        self.webauthn = crate::passkeys::relying_party(&url);
+        self.public_url = url;
+        self
+    }
+
+    /// Sets the email sender.
+    pub fn with_mailer(mut self, mailer: Mailer) -> Self {
+        self.mailer = mailer;
+        self
+    }
+
+    /// `public_url` without a trailing slash, for building links.
+    pub fn public_base(&self) -> String {
+        self.public_url.as_str().trim_end_matches('/').to_owned()
     }
 
     /// Sets the usernames promoted to site admin (`THEHIDEOUT_ADMINS`).
@@ -98,7 +139,8 @@ impl AppState {
 const MEDIA_REQUEST_LIMIT: usize = MAX_INPUT_BYTES / 3 * 4 + 64 * 1024;
 
 /// Builds the HTTP app: all Connect services, `GET /health`, `GET /media/*`,
-/// `POST /attachments`, and permissive CORS.
+/// `POST /attachments`, the passkey ceremony page (`/auth/passkey*`), the
+/// invite landing page (`GET /invite/{token}`), and permissive CORS.
 pub fn build_app(state: AppState) -> Router {
     let connect = ConnectRouter::new()
         .add_service(Arc::new(AuthSvc::new(state.clone())))
@@ -107,6 +149,7 @@ pub fn build_app(state: AppState) -> Router {
         .add_service(Arc::new(DmSvc::new(state.clone())))
         .add_service(Arc::new(RoleSvc::new(state.clone())))
         .add_service(Arc::new(AdminSvc::new(state.clone())))
+        .add_service(Arc::new(InviteSvc::new(state.clone())))
         .add_service(Arc::new(EmojiSvc::new(state.clone())))
         .add_service(Arc::new(GatewaySvc::new(state.clone())));
 
@@ -125,7 +168,9 @@ pub fn build_app(state: AppState) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route_service("/thehideout.v1.MediaService/{method}", media_connect)
         .merge(media::media_route().with_state(state.clone()))
-        .merge(media::attachments::attachments_route().with_state(state))
+        .merge(media::attachments::attachments_route().with_state(state.clone()))
+        .merge(crate::passkeys::routes().with_state(state.clone()))
+        .merge(crate::services::invite::routes().with_state(state))
         .fallback_service(connect.into_axum_service())
         .layer(cors())
 }

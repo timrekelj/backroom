@@ -23,6 +23,9 @@ pub enum ApiError {
     RateLimited,
     /// The resource already exists. Sign-up reports a taken username this way.
     AlreadyExists,
+    /// Accounts are invite-only: sign up by accepting an invite
+    /// ([`Client::accept_invite`](crate::Client::accept_invite)).
+    InviteRequired,
     /// The operation is not allowed in the current state (e.g. demoting yourself or the last admin).
     Precondition(String),
     /// The upload is larger than the server (or the local limit) allows.
@@ -51,6 +54,7 @@ impl fmt::Display for ApiError {
             Self::Unimplemented => f.write_str("not supported by this server"),
             Self::RateLimited => f.write_str("too many attempts, try again later"),
             Self::AlreadyExists => f.write_str("already exists"),
+            Self::InviteRequired => f.write_str("an invite is required to create an account"),
             Self::Precondition(msg) if msg.is_empty() => f.write_str("not allowed right now"),
             Self::Precondition(msg) => write!(f, "not allowed: {msg}"),
             Self::TooLarge => f.write_str("file is too large"),
@@ -79,6 +83,9 @@ impl ApiError {
     }
 }
 
+/// The server's message for a sign-up without an invite.
+const INVITE_REQUIRED: &str = "invite required";
+
 impl From<ConnectError> for ApiError {
     fn from(err: ConnectError) -> Self {
         let msg = err.message.clone().unwrap_or_default();
@@ -91,7 +98,7 @@ impl From<ConnectError> for ApiError {
             ErrorCode::Unimplemented => Self::Unimplemented,
             ErrorCode::ResourceExhausted => Self::RateLimited,
             ErrorCode::AlreadyExists => Self::AlreadyExists,
-            // Sign-up also answers a taken username with this; `Client::sign_up` maps it itself.
+            ErrorCode::FailedPrecondition if msg == INVITE_REQUIRED => Self::InviteRequired,
             ErrorCode::FailedPrecondition => Self::Precondition(msg),
             ErrorCode::Unavailable | ErrorCode::DeadlineExceeded => Self::Network(msg),
             _ => Self::Other(msg),
@@ -116,6 +123,7 @@ mod tests {
         assert_eq!(map(ErrorCode::ResourceExhausted), ApiError::RateLimited);
         assert_eq!(map(ErrorCode::AlreadyExists), ApiError::AlreadyExists);
         assert_eq!(map(ErrorCode::FailedPrecondition), ApiError::Precondition("boom".into()));
+        assert_eq!(ApiError::from(ConnectError::new(ErrorCode::FailedPrecondition, "invite required")), ApiError::InviteRequired);
         assert_eq!(map(ErrorCode::Unavailable), ApiError::Network("boom".into()));
         assert_eq!(map(ErrorCode::Aborted), ApiError::Conflict);
         assert_eq!(map(ErrorCode::Unimplemented), ApiError::Unimplemented);

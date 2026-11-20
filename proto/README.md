@@ -3,11 +3,24 @@
 Connect/protobuf contract in `proto/thehideout/v1`. Lint: `buf lint`; compatibility: `buf breaking --against '.git#branch=main'`. Changes are additive only.
 
 ## Permissions and roles (`RoleService`, `types.proto`)
-- `uint64` bit flags (`Permission`): ADMINISTRATOR=1, MANAGE_SERVER=2, MANAGE_CHANNELS=4, MANAGE_ROLES=8, MANAGE_EMOJIS=16 (owner / ADMINISTRATOR imply it).
+- `uint64` bit flags (`Permission`): ADMINISTRATOR=1, MANAGE_SERVER=2, MANAGE_CHANNELS=4, MANAGE_ROLES=8, MANAGE_EMOJIS=16, INVITE_PEOPLE=32 (owner / ADMINISTRATOR imply it).
 - The guild owner has every permission; a member's permissions are the OR of their roles; ADMINISTRATOR implies all.
 - Hierarchy: non-owners may only manage roles strictly below their highest role (and only grant permissions they hold).
 - `RoleService` is separate from `GuildService` because roles have their own version counter and rules. `ListGuildMembersResponse.members` carries role IDs (`users` is kept for compatibility).
 - Colours (roles, channels) are one of 12 palette keys: slate red orange amber yellow lime green teal cyan blue indigo pink; `""` = none.
+
+## Authentication & invites (`AuthService`, `InviteService`)
+- **Invite-only.** `SignUp` always fails with `FAILED_PRECONDITION` "invite required". Accounts come from `InviteService.AcceptInvite`.
+- **Invites.** `CreateInvite(email, guild_id?, guild_ids, make_admin)`: site admins may set anything; others need `guild_id` with `PERMISSION_INVITE_PEOPLE` (owner / ADMINISTRATOR imply it) there, and may not set `guild_ids` / `make_admin` (`PERMISSION_DENIED`). An email that already has an account is `ALREADY_EXISTS`. The invitee is emailed a link `{THEHIDEOUT_PUBLIC_URL}/invite/{token}` (32 random bytes, base64url) and a code `XXXX-XXXX` (8 Crockford base32 chars; case, dashes and I/L/O are forgiven); only their SHA-256 hashes are stored. `Invite.code` is returned only by CreateInvite / ResendInvite. Invites expire after 7 days; `ResendInvite` rotates link and code and restarts the 7 days (also for expired invites). `RevokeInvite` / `ResendInvite`: site admins, the inviter, or INVITE_PEOPLE holders of the invite's guild (`NOT_FOUND` for others). `ListInvites`: no `guild_id` = all (admins), else that guild's (INVITE_PEOPLE).
+- `LookupInvite` and `AcceptInvite` need no session (rate limited per IP). Lookup shows a masked email, inviter, guild names, expiry and status (`NOT_FOUND` for unknown). Accept: `INVALID_ARGUMENT` for a bad username/password, `ALREADY_EXISTS` for a taken username (the invite stays usable), `FAILED_PRECONDITION` for used / expired / revoked invites. The account gets the invite's email, joins its guilds, becomes site admin if `make_admin`, and receives its first session. `password` unset = passwordless account.
+- **Login** takes a username or email. With an authenticator app, `Login` / `VerifyEmailCode` return only `second_factor_required { challenge_id, methods, expires_at }` (5 minutes, 5 answers) instead of `token` + `user`; answer with `CompleteSecondFactor` (TOTP or recovery code). Passkey sign-ins skip the second factor. `device_name` (≤ 64 chars, "" = "Unknown device") names the session; a sign-in from a device name the account has not used yet emails a notice.
+- **Email codes** (`RequestEmailCode`, `RequestPasswordReset`, `ChangeEmail`): 6 digits, valid 10 minutes, dead after 5 wrong guesses, single use. Request RPCs always succeed (enumeration-safe; mail is only sent if the account exists) and are rate limited per IP and per address (`RESOURCE_EXHAUSTED`); a wrong code and an unknown address give the same `UNAUTHENTICATED`. `ResetPassword` signs out every session; `ChangePassword` every other one. `ChangeEmail` needs the current password (if the account has one) and confirms the new address by code (`ConfirmEmailChange`); legacy accounts without an email use it to add one.
+- **TOTP**: SHA-1, 6 digits, 30 s, ±1 step; each step is accepted once (replay protection). `ConfirmTotp` returns 10 single-use recovery codes once; `RegenerateRecoveryCodes` replaces them; `DisableTotp` takes a TOTP or recovery code.
+- **Passkeys** (WebAuthn): RP id = host of `THEHIDEOUT_PUBLIC_URL` (must be a domain name; dev `localhost`), origin = that URL's origin. `Begin*` returns a `PasskeyCeremony { ceremony_id, ceremony_url, options_json }` (5 minutes). Clients with WebAuthn pass `options_json` to `navigator.credentials` and send the result as `credential_json`. Native apps open `ceremony_url` (a server page that runs the ceremony and stores the result; with `redirect_port` it then redirects to `http://127.0.0.1:<port>/done`) and poll `Finish*` with an empty `credential_json` until `pending` is false. `BeginPasskeyLogin` is username-first and fails with `FAILED_PRECONDITION` when the account has no passkey (this reveals that; it is rate limited).
+- **Sessions**: `ListSessions` (device, created, last seen to within ~5 minutes, current), `RevokeSession`, `RevokeOtherSessions`. Sessions created before this release still work but are not listed.
+- `User.email` is set only for the user themself (GetMe, auth responses, own `user_updated`) and for site admins; never for other users. Legacy accounts have none.
+- Security changes (password, email, TOTP, recovery codes, passkeys) email a notice and are written to the admin audit log (`auth.*`), like invites (`invite.create|resend|revoke|accept`).
+- Second-factor challenges, pending TOTP setups and passkey ceremonies live in server memory (single node; lost on restart).
 
 ## Channel layout (`GuildService`)
 - `ListChannelsResponse.layout` holds the sections and per-section channel order (section 0 = top level); there is no separate GetLayout.
@@ -19,7 +32,7 @@ Connect/protobuf contract in `proto/thehideout/v1`. Lint: `buf lint`; compatibil
 - Upload ≤ 8 MiB PNG/JPEG/WebP/GIF (first frame); the server centre-crops, resizes to 256×256 and re-encodes (WebP). Guild icons need MANAGE_SERVER.
 
 ## Site admin (`AdminService`)
-- Every call requires `User.is_admin`. Bootstrap: `THEHIDEOUT_ADMINS` (comma-separated usernames) are promoted at startup and at sign-up.
+- Every call requires `User.is_admin`. Bootstrap: an admin invite (see below); also `THEHIDEOUT_ADMINS` (comma-separated usernames) are promoted at startup and at account creation.
 - `SetAdmin` cannot demote yourself or the last admin (`FAILED_PRECONDITION`).
 
 ## Custom emojis (`EmojiService`, `emoji_service.proto`)

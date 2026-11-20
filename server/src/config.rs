@@ -24,6 +24,28 @@ pub struct Config {
     pub embed_max_video_bytes: usize,
     /// Usernames promoted to site admin at startup and sign-up (`THEHIDEOUT_ADMINS`).
     pub admins: Vec<String>,
+    /// Public base URL used in email links and as the WebAuthn origin
+    /// (`THEHIDEOUT_PUBLIC_URL`; default `http://localhost:<listen port>`).
+    pub public_url: url::Url,
+    /// Sender of outgoing mail (`THEHIDEOUT_EMAIL_FROM`).
+    pub email_from: String,
+    /// Resend API key (`THEHIDEOUT_RESEND_API_KEY`); `None` = SMTP.
+    pub resend_api_key: Option<Redacted>,
+    /// SMTP sink used without a Resend key (`THEHIDEOUT_SMTP_URL`, Mailpit in dev).
+    pub smtp_url: String,
+    /// Email that gets the first admin invite on an empty install
+    /// (`THEHIDEOUT_BOOTSTRAP_ADMIN_EMAIL`).
+    pub bootstrap_admin_email: Option<String>,
+}
+
+/// A secret config value that never shows up in logs.
+#[derive(Clone)]
+pub struct Redacted(pub String);
+
+impl std::fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
 }
 
 /// Connection settings of the S3-compatible object store holding media.
@@ -100,7 +122,14 @@ impl Config {
         if embed_max_video_bytes == 0 {
             bail!("THEHIDEOUT_EMBED_MAX_VIDEO_BYTES must be at least 1");
         }
+        let public_url = public_url(&listen_addr)?;
+        let non_empty = |name: &str| env::var(name).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
         Ok(Self {
+            public_url,
+            email_from: non_empty("THEHIDEOUT_EMAIL_FROM").unwrap_or_else(|| crate::email::DEFAULT_FROM.to_owned()),
+            resend_api_key: non_empty("THEHIDEOUT_RESEND_API_KEY").map(Redacted),
+            smtp_url: non_empty("THEHIDEOUT_SMTP_URL").unwrap_or_else(|| "smtp://127.0.0.1:1025".to_owned()),
+            bootstrap_admin_email: non_empty("THEHIDEOUT_BOOTSTRAP_ADMIN_EMAIL").map(|e| crate::accounts::normalize_email(&e)),
             listen_addr,
             scylla_nodes,
             keyspace,
@@ -134,6 +163,17 @@ impl S3Config {
             public_base: env::var("THEHIDEOUT_S3_PUBLIC_BASE").ok().filter(|s| !s.is_empty()),
         })
     }
+}
+
+/// `THEHIDEOUT_PUBLIC_URL` without a trailing slash, or `http://localhost:<port>`.
+fn public_url(listen_addr: &SocketAddr) -> Result<url::Url> {
+    let raw = env::var("THEHIDEOUT_PUBLIC_URL").ok().map(|s| s.trim().trim_end_matches('/').to_owned()).filter(|s| !s.is_empty());
+    let raw = raw.unwrap_or_else(|| format!("http://localhost:{}", listen_addr.port()));
+    let url = url::Url::parse(&raw).with_context(|| format!("invalid THEHIDEOUT_PUBLIC_URL {raw:?}"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        bail!("THEHIDEOUT_PUBLIC_URL must be an http(s) URL with a host");
+    }
+    Ok(url)
 }
 
 fn var(name: &str, default: &str) -> String {

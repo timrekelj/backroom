@@ -14,46 +14,37 @@ pub const MANAGE_SERVER: u64 = 2;
 pub const MANAGE_CHANNELS: u64 = 4;
 pub const MANAGE_ROLES: u64 = 8;
 pub const MANAGE_EMOJIS: u64 = 16;
+pub const INVITE_PEOPLE: u64 = 32;
 
 pub struct Account {
     pub token: String,
     pub id: u64,
 }
 
-/// Signs `username` up. A transient server error (the database timing out
-/// under load) is retried until a generous deadline: the failed attempt may
-/// have claimed the name, so the retry then signs in instead.
+/// Creates the account `username` (unique per app, email
+/// `<name>@example.test`) directly on the server (sign-up is invite-only) and
+/// signs it in. A transient database error is retried until a generous deadline.
 pub async fn user(app: &TestApp, username: &str) -> Account {
     let name = app.name(username);
-    let client = app.client(AuthServiceClient::new, None);
+    let email = format!("{name}@example.test");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let signed_up = client
-            .sign_up(SignUpRequest { username: name.clone(), password: PASSWORD.into(), ..Default::default() })
-            .await;
-        let (token, user) = match signed_up {
-            Ok(resp) => {
-                let resp = resp.into_owned();
-                (resp.token, resp.user)
-            }
-            Err(e) if std::time::Instant::now() < deadline => {
-                eprintln!("sign up of {name} failed ({e}); retrying");
+    let account = loop {
+        let created = thehideout_server::accounts::create_user(
+            &app.state,
+            thehideout_server::accounts::NewUser { username: &name, password: Some(PASSWORD), email: Some(&email) },
+        )
+        .await;
+        match created {
+            Ok(account) => break account,
+            Err(e) if std::time::Instant::now() < deadline && e.code != connectrpc::ErrorCode::AlreadyExists => {
+                eprintln!("creating {name} failed ({e}); retrying");
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                // The name may have been claimed by the attempt that failed.
-                if let Ok(resp) = client
-                    .login(LoginRequest { username: name.clone(), password: PASSWORD.into(), ..Default::default() })
-                    .await
-                {
-                    let resp = resp.into_owned();
-                    (resp.token, resp.user)
-                } else {
-                    continue;
-                }
             }
-            Err(e) => panic!("sign up: {e}"),
-        };
-        return Account { token, id: user.as_option().expect("user").id };
-    }
+            Err(e) => panic!("create user {name}: {e}"),
+        }
+    };
+    let token = thehideout_server::auth::create_session(&app.state, account.id, "test").await.expect("create session");
+    Account { token, id: account.id }
 }
 
 pub fn guilds(app: &TestApp, who: &Account) -> GuildServiceClient<HttpClient> {
@@ -211,4 +202,75 @@ pub async fn update_layout(
         .into_owned()
         .layout
         .unwrap())
+}
+
+/// The email of a [`user`] created with `username`.
+pub fn email_of(app: &TestApp, username: &str) -> String {
+    format!("{}@example.test", app.name(username))
+}
+
+/// Creates a legacy-style account without an email.
+pub async fn legacy_user(app: &TestApp, username: &str) -> Account {
+    let name = app.name(username);
+    let account = thehideout_server::accounts::create_user(
+        &app.state,
+        thehideout_server::accounts::NewUser { username: &name, password: Some(PASSWORD), email: None },
+    )
+    .await
+    .expect("create legacy user");
+    let token = thehideout_server::auth::create_session(&app.state, account.id, "test").await.expect("create session");
+    Account { token, id: account.id }
+}
+
+/// A [`user`] made site admin.
+pub async fn site_admin(app: &TestApp, username: &str) -> Account {
+    let who = user(app, username).await;
+    thehideout_server::admin::set_flag(&app.state, who.id, true).await.unwrap();
+    who
+}
+
+pub fn auth(app: &TestApp, token: Option<&str>) -> AuthServiceClient<HttpClient> {
+    app.client(AuthServiceClient::new, token)
+}
+
+pub fn invites(app: &TestApp, token: Option<&str>) -> InviteServiceClient<HttpClient> {
+    app.client(InviteServiceClient::new, token)
+}
+
+/// Mail sent to `to` so far (the app's in-memory outbox).
+pub fn mail(app: &TestApp, to: &str) -> Vec<thehideout_server::email::Email> {
+    app.state.mailer.outbox.as_ref().expect("in-memory mailer").to(to)
+}
+
+/// Waits (up to 5 s) until `to` has received more than `seen` messages and
+/// returns the newest one whose subject contains `subject`.
+pub async fn wait_mail(app: &TestApp, to: &str, seen: usize, subject: &str) -> thehideout_server::email::Email {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let all = mail(app, to);
+        if all.len() > seen
+            && let Some(found) = all[seen..].iter().rev().find(|m| m.subject.contains(subject))
+        {
+            return found.clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "no mail {subject:?} to {to}; got {:?}", all.iter().map(|m| &m.subject).collect::<Vec<_>>());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// The first run of 6 digits in `text`.
+pub fn six_digit_code(text: &str) -> String {
+    let bytes = text.as_bytes();
+    (0..bytes.len().saturating_sub(5))
+        .find(|&i| {
+            bytes[i..i + 6].iter().all(u8::is_ascii_digit)
+                && (i == 0 || !bytes[i - 1].is_ascii_digit())
+                && bytes.get(i + 6).is_none_or(|b| !b.is_ascii_digit())
+        })
+        .map(|i| text[i..i + 6].to_owned())
+        .expect("a 6-digit code")
+}
+
+pub fn login_req(username: &str, password: &str, device: &str) -> LoginRequest {
+    LoginRequest { username: username.into(), password: password.into(), device_name: device.into(), ..Default::default() }
 }

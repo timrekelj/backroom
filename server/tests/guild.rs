@@ -1,29 +1,17 @@
 mod common;
 
 use thehideout_server::proto::thehideout::v1::{
-    AuthServiceClient, Channel, CreateChannelRequest, CreateGuildRequest, Guild, GuildServiceClient,
+    Channel, CreateChannelRequest, CreateGuildRequest, Guild, GuildServiceClient,
     JoinGuildRequest, ListChannelsRequest, ListGuildMembersRequest, ListMyGuildsRequest,
-    SignUpRequest,
-};
+    };
 use thehideout_server::services::guild::{GUILD_CREATE_MAX, JOIN_IP_MAX};
 use common::TestApp;
 use connectrpc::{ConnectError, ErrorCode};
 
-const PASSWORD: &str = "correct horse battery";
 
 /// Signs up `username` and returns its session token.
 async fn sign_up(app: &TestApp, username: &str) -> String {
-    let client = app.client(AuthServiceClient::new, None);
-    client
-        .sign_up(SignUpRequest {
-            username: app.name(username),
-            password: PASSWORD.into(),
-            ..Default::default()
-        })
-        .await
-        .expect("sign up")
-        .into_owned()
-        .token
+    common::fixtures::user(app, username).await.token
 }
 
 fn guilds(app: &TestApp, token: &str) -> GuildServiceClient<connectrpc::client::HttpClient> {

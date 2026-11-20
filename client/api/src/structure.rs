@@ -22,6 +22,8 @@ impl Permissions {
     pub const MANAGE_ROLES: Self = Self(8);
     /// Create / rename / delete custom emojis.
     pub const MANAGE_EMOJIS: Self = Self(16);
+    /// Invite people by email into the guild.
+    pub const INVITE_PEOPLE: Self = Self(32);
 
     pub const fn bits(self) -> u64 {
         self.0

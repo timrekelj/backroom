@@ -11,6 +11,9 @@ use std::time::Duration;
 use rand::Rng;
 use scylla::client::caching_session::CachingSession;
 use scylla::client::session_builder::SessionBuilder;
+mod common;
+
+use common::PASSWORD;
 use thehideout_api::{
     ApiError, ChannelIcon, Client, Event, Gateway, GatewayConfig, GatewayUpdate, LayoutEntry, PaletteColor,
     Permissions,
@@ -21,7 +24,6 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::timeout;
 
-const PASSWORD: &str = "correct horse battery";
 const HEARTBEAT: Duration = Duration::from_millis(200);
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -40,7 +42,7 @@ impl Server {
         let keyspace = format!("test_{:016x}", rand::rng().random::<u64>());
         migrations::run(&session, &keyspace).await.expect("run migrations");
         let session = Arc::new(CachingSession::from(session, 64));
-        let state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, HEARTBEAT);
+        let state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, HEARTBEAT).with_admins(["alice".to_owned()]);
         let app = build_app(state.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -91,8 +93,8 @@ async fn roles_and_member_roles() {
     let server = Server::start().await;
     let alice = Client::new(&server.url);
     let bob = Client::new(&server.url);
-    alice.sign_up("alice", PASSWORD).await.unwrap();
-    let (_, bob_user) = bob.sign_up("bob", PASSWORD).await.unwrap();
+    common::sign_up(&server.state, &alice, "alice").await;
+    let (_, bob_user) = common::sign_up(&server.state, &bob, "bob").await;
     let guild = alice.create_guild("friends").await.unwrap();
     bob.join_guild(&guild.invite_code).await.unwrap();
 
@@ -167,8 +169,8 @@ async fn layout_sections_and_channel_look() {
     let server = Server::start().await;
     let alice = Client::new(&server.url);
     let bob = Client::new(&server.url);
-    alice.sign_up("alice", PASSWORD).await.unwrap();
-    bob.sign_up("bob", PASSWORD).await.unwrap();
+    common::sign_up(&server.state, &alice, "alice").await;
+    common::sign_up(&server.state, &bob, "bob").await;
     let guild = alice.create_guild("friends").await.unwrap();
     bob.join_guild(&guild.invite_code).await.unwrap();
     let (_handle, mut rx) = spawn_gateway(bob.clone());
@@ -257,7 +259,7 @@ const PNG: &[u8] = &[
 async fn media_upload_and_fetch() {
     let server = Server::start().await;
     let alice = Client::new(&server.url);
-    alice.sign_up("alice", PASSWORD).await.unwrap();
+    common::sign_up(&server.state, &alice, "alice").await;
     let guild = alice.create_guild("friends").await.unwrap();
     let (_handle, mut rx) = spawn_gateway(alice.clone());
     expect_update_connected(&mut rx).await;
@@ -279,18 +281,17 @@ async fn media_upload_and_fetch() {
 }
 
 #[tokio::test]
-#[ignore = "server: not implemented yet"]
 async fn admin_dashboard() {
     let server = Server::start().await;
     let alice = Client::new(&server.url);
     let bob = Client::new(&server.url);
-    alice.sign_up("alice", PASSWORD).await.unwrap();
-    let (_, bob_user) = bob.sign_up("bob", PASSWORD).await.unwrap();
+    common::sign_up(&server.state, &alice, "alice").await;
+    let (_, bob_user) = common::sign_up(&server.state, &bob, "bob").await;
 
     // Not an admin unless THEHIDEOUT_ADMINS lists the user; bob never is.
     assert_eq!(bob.admin_overview().await.unwrap_err(), ApiError::PermissionDenied);
 
-    // Needs `THEHIDEOUT_ADMINS=alice` in the server environment.
+    // `Server::start` configures THEHIDEOUT_ADMINS=alice.
     let overview = alice.admin_overview().await.expect("overview");
     assert!(overview.users >= 2);
     assert_eq!(alice.admin_activity(7).await.unwrap().len(), 7);

@@ -55,6 +55,11 @@ pub const MIGRATIONS: &[(i32, &str, &str)] = &[
         "admin",
         include_str!("../migrations/0010_admin.cql"),
     ),
+    (
+        11,
+        "auth",
+        include_str!("../migrations/0011_auth.cql"),
+    ),
 ];
 
 /// Creates the keyspace if needed, selects it on the session, and applies any

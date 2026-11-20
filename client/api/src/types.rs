@@ -18,6 +18,9 @@ pub struct User {
     pub avatar: Option<String>,
     /// Whether the user is a site administrator.
     pub is_admin: bool,
+    /// The account's email; only known for yourself (and to site admins).
+    /// `None` for legacy accounts without one.
+    pub email: Option<String>,
 }
 
 /// A guild (server) that groups members and channels.
@@ -141,6 +144,7 @@ impl From<pb::User> for User {
             created_at: time(u.created_at.as_option()),
             avatar: media_key(u.avatar),
             is_admin: u.is_admin,
+            email: u.email.filter(|e| !e.is_empty()),
         }
     }
 }
