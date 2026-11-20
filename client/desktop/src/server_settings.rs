@@ -9,9 +9,9 @@ use rune::TextEdit;
 use thehideout_api::{ApiError, Guild, PaletteColor, Permissions, Role};
 
 use crate::backend::{Command, ImagePurpose};
+use crate::emoji::EmojiPage;
 use crate::forms::{DialogKind, Phase, check_name, sentence};
 use crate::media;
-use crate::perms::MANAGE_EMOJIS;
 use crate::state::AppState;
 
 pub const ROLES_CONFLICT_TOAST: &str = "Roles changed elsewhere \u{2014} try again";
@@ -31,7 +31,7 @@ pub const PERMISSION_ROWS: [PermRow; 5] = [
     PermRow { bit: Permissions::MANAGE_SERVER, name: "Manage server", help: "Rename the server and change its icon." },
     PermRow { bit: Permissions::MANAGE_CHANNELS, name: "Manage channels", help: "Create and edit channels and sections, and reorder the sidebar." },
     PermRow { bit: Permissions::MANAGE_ROLES, name: "Manage roles", help: "Create, edit, reorder and hand out roles below their own highest role." },
-    PermRow { bit: MANAGE_EMOJIS, name: "Manage emojis", help: "Add, rename and remove custom emojis." },
+    PermRow { bit: Permissions::MANAGE_EMOJIS, name: "Manage emojis", help: "Add, rename and remove custom emojis." },
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +39,7 @@ pub enum ServerPage {
     Overview,
     Roles,
     Members,
+    Emojis,
 }
 
 /// Picked bytes waiting to be saved, with a decoded preview.
@@ -116,6 +117,8 @@ pub struct ServerSettings {
     pub member_menu: Option<u64>,
     pub member_error: Option<String>,
     pub member_busy: Option<u64>,
+    /// The Emojis page: the draft being named, a rename in progress, errors.
+    pub emojis: EmojiPage,
 }
 
 /// A header of the member panel and the members under it.
@@ -192,7 +195,7 @@ impl AppState {
 
     /// "Server settings…" is offered to the owner and to anyone who may manage the server or its roles.
     pub fn can_open_server_settings(&self, guild: u64) -> bool {
-        self.can_manage_server(guild) || self.can_manage_roles(guild)
+        self.can_manage_server(guild) || self.can_manage_roles(guild) || self.can_manage_emojis(guild)
     }
 
     /// Whether the user may edit, delete or hand out `role`.
@@ -261,6 +264,7 @@ impl AppState {
         match page {
             ServerPage::Overview => self.can_manage_server(guild),
             ServerPage::Roles | ServerPage::Members => self.can_manage_roles(guild),
+            ServerPage::Emojis => self.can_manage_emojis(guild),
         }
     }
 
@@ -269,10 +273,11 @@ impl AppState {
         if !self.can_open_server_settings(guild) {
             return;
         }
-        let page = [ServerPage::Overview, ServerPage::Roles].into_iter().find(|p| self.settings_page_allowed(guild, *p)).unwrap_or(ServerPage::Roles);
+        let page = [ServerPage::Overview, ServerPage::Roles, ServerPage::Emojis].into_iter().find(|p| self.settings_page_allowed(guild, *p)).unwrap_or(ServerPage::Roles);
         let name = self.guild(guild).map_or_else(String::new, |g| g.name.clone());
         self.want_members(guild);
         self.want_access(guild);
+        self.want_emojis(guild);
         self.ui.settings = None;
         self.ui.server_settings = Some(ServerSettings {
             guild,
@@ -290,6 +295,7 @@ impl AppState {
             member_menu: None,
             member_error: None,
             member_busy: None,
+            emojis: EmojiPage::default(),
         });
     }
 
@@ -334,6 +340,9 @@ impl AppState {
 
     /// Opens the file chooser's answer for `purpose`: checks the type and has the backend read it.
     pub fn pick_image(&mut self, purpose: ImagePurpose, path: &Path) {
+        if matches!(purpose, ImagePurpose::Emoji { .. }) {
+            return self.pick_emoji_file(path);
+        }
         if media::image_type(path).is_none() {
             self.image_error(purpose, "Choose a PNG, JPEG, WebP or GIF image.".into());
             return;
@@ -341,6 +350,7 @@ impl AppState {
         let pick = match purpose {
             ImagePurpose::Avatar => self.ui.dialog.as_mut().map(|d| &mut d.pick),
             ImagePurpose::GuildIcon { guild } => self.ui.server_settings.as_mut().filter(|s| s.guild == guild).map(|s| &mut s.icon),
+            ImagePurpose::Emoji { .. } => None,
         };
         let Some(pick) = pick else { return };
         if pick.reading {
@@ -363,6 +373,7 @@ impl AppState {
                     ss.icon_error = Some(message);
                 }
             }
+            ImagePurpose::Emoji { .. } => {}
         }
     }
 
@@ -378,14 +389,19 @@ impl AppState {
                     ss.icon_error = None;
                 }
             }
+            ImagePurpose::Emoji { .. } => {}
         }
     }
 
     /// The backend's answer to `ReadImage`.
     pub fn image_read(&mut self, purpose: ImagePurpose, result: Result<(Vec<u8>, String), ApiError>) {
+        if let ImagePurpose::Emoji { guild } = purpose {
+            return self.emoji_file_read(guild, result);
+        }
         let pick = match purpose {
             ImagePurpose::Avatar => self.ui.dialog.as_mut().filter(|d| d.kind == DialogKind::Profile).map(|d| &mut d.pick),
             ImagePurpose::GuildIcon { guild } => self.ui.server_settings.as_mut().filter(|s| s.guild == guild).map(|s| &mut s.icon),
+            ImagePurpose::Emoji { .. } => None,
         };
         let Some(pick) = pick else { return };
         pick.reading = false;
@@ -395,6 +411,7 @@ impl AppState {
                 let pick = match purpose {
                     ImagePurpose::Avatar => self.ui.dialog.as_mut().map(|d| &mut d.pick),
                     ImagePurpose::GuildIcon { .. } => self.ui.server_settings.as_mut().map(|s| &mut s.icon),
+                    ImagePurpose::Emoji { .. } => None,
                 };
                 if let Some(pick) = pick {
                     pick.draft = Some(ImageDraft { bytes, content_type, preview });

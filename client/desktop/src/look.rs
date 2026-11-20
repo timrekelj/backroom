@@ -17,6 +17,7 @@ use thehideout_design::ThemeSpec;
 pub const KEY: &str = "appearance";
 /// The prefs key of the folded sidebar sections: `{"<guild>": [<section>, ...]}`.
 pub const COLLAPSED_KEY: &str = "collapsed_sections";
+pub use crate::emoji::RECENTS_KEY;
 
 pub use crate::real::SharedPrefs;
 
@@ -63,9 +64,17 @@ pub fn load_collapsed(prefs: &SharedPrefs) -> HashSet<(u64, u64)> {
     saved.into_iter().filter_map(|(g, v)| g.parse::<u64>().ok().map(|g| (g, v))).flat_map(|(g, v)| v.into_iter().map(move |s| (g, s))).collect()
 }
 
+/// The recent emojis (reaction keys, newest first); unreadable prefs mean none.
+pub fn load_recents(prefs: &SharedPrefs) -> Vec<String> {
+    let mut saved: Vec<String> = prefs.lock().unwrap_or_else(|e| e.into_inner()).get(RECENTS_KEY).unwrap_or_default();
+    saved.truncate(thehideout_design::components::chat::emoji::RECENT_MAX);
+    saved
+}
+
 enum Save {
     Look(Look),
     Collapsed(HashMap<String, Vec<u64>>),
+    Recents(Vec<String>),
 }
 
 /// Writes looks and folded sections to the prefs on its own thread; a burst of changes is
@@ -82,10 +91,11 @@ impl Saver {
             .name("thehideout-prefs".into())
             .spawn(move || {
                 while let Ok(first) = rx.recv() {
-                    let (mut look, mut collapsed) = (None, None);
+                    let (mut look, mut collapsed, mut recents) = (None, None, None);
                     let mut take = |s: Save| match s {
                         Save::Look(l) => look = Some(l),
                         Save::Collapsed(c) => collapsed = Some(c),
+                        Save::Recents(r) => recents = Some(r),
                     };
                     take(first);
                     while let Ok(newer) = rx.try_recv() {
@@ -99,6 +109,9 @@ impl Saver {
                     if let Some(c) = collapsed {
                         p.set(COLLAPSED_KEY, &c).ok();
                     }
+                    if let Some(r) = recents {
+                        p.set(RECENTS_KEY, &r).ok();
+                    }
                 }
             })
             .ok();
@@ -108,6 +121,12 @@ impl Saver {
     pub fn save(&self, look: Look) {
         if let Some(tx) = &self.tx {
             tx.send(Save::Look(look)).ok();
+        }
+    }
+
+    pub fn save_recents(&self, recents: &[String]) {
+        if let Some(tx) = &self.tx {
+            tx.send(Save::Recents(recents.to_vec())).ok();
         }
     }
 

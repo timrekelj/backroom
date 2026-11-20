@@ -7,6 +7,7 @@ description = "thehideout's design language: tokens, kit mapping and basic contr
 
 # Platform-neutral: no fs, no windowing. Shared by the desktop, web and mobile apps.
 [dependencies]
+emojis = "0.9.1"
 rune = { workspace = true }
 rune-kit = { workspace = true }
 serde = { version = "1", features = ["derive"] }

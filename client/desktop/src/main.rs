@@ -9,6 +9,9 @@
 mod app;
 mod apply;
 mod backend;
+mod emoji;
+#[cfg(test)]
+mod emoji_tests;
 mod fake;
 mod fake_lines;
 mod forms;

@@ -41,6 +41,7 @@ impl App {
     pub fn start(backend: Box<dyn Backend>, mut state: AppState, prefs: SharedPrefs) -> App {
         state.ui.look = look::load(&prefs);
         state.ui.collapsed = look::load_collapsed(&prefs);
+        state.ui.recents = look::load_recents(&prefs);
         let mut app = App::new(backend, state);
         app.saver = Some(Saver::spawn(prefs));
         app
@@ -57,6 +58,11 @@ impl App {
             && let Some(saver) = &self.saver
         {
             saver.save_collapsed(&self.state.ui.collapsed);
+        }
+        if std::mem::take(&mut self.state.ui.recents_dirty)
+            && let Some(saver) = &self.saver
+        {
+            saver.save_recents(&self.state.ui.recents);
         }
         for cmd in std::mem::take(&mut self.state.outbox) {
             if matches!(cmd, Command::Login { .. } | Command::SignUp { .. }) {
@@ -228,6 +234,12 @@ pub fn view(a: &App, cx: &mut Cx<App>) -> El {
         look::ReduceMotion::On => cx.reduced_motion(true),
         look::ReduceMotion::Off => cx.reduced_motion(false),
     }
+    // Pictures read it while the tree is built: animated emojis rest on their first frame.
+    a.state.ui.reduced.set(match look.reduce_motion {
+        look::ReduceMotion::On => true,
+        look::ReduceMotion::Off => false,
+        look::ReduceMotion::System => cx.is_reduced_motion(),
+    });
     let lay = cx
         .layout_with("stage", |r| ui::shell::Layout::of(r[2], r[3]))
         .unwrap_or_default();
@@ -247,6 +259,7 @@ pub fn view(a: &App, cx: &mut Cx<App>) -> El {
     };
     let screen = screen.absolute(0.0, 0.0).w_full().h_full().transition(fade);
     ui::dialogs::build(a, k, &mut layer, lay.height);
+    ui::emoji::build(a, k, &mut layer);
     layer.push(ui::toasts::build(a, k));
     // Where the window's own controls sit over the content: a strip that drags the window.
     let mut stage = el()

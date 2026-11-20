@@ -187,7 +187,8 @@ Data in, callbacks out: no app state types, every one takes the `Kit` like the c
 | `ChannelHeader` | `#` + name + topic + trailing IconButtons; `breadcrumb` gives "Guild / # channel". | static |
 | `MemberRow` | Avatar (with a picture if given) and presence, the name (in a role colour if given), crown for the owner. | online, idle, offline (faint), hover |
 | `EmptyState` | Icon tile, title, body, optional action `Button`. | static |
-| `PickerTabs`, `IconGrid`, `ColorSwatches` | The channel look pickers: tabs (Icons, Emoji and Server emoji disabled with "Soon"), the Phosphor catalog as a virtualized 10-column grid (six rows high, or `.visible_rows(n)`; only rows near the viewport are built; a `highlight` for keyboard choice, the search field keeps focus), and the 12 palette swatches plus "none" (selected: ring and check; they wrap in a narrow column). | rest, hover, selected, highlighted |
+| `EmojiPicker`, `EmojiSuggest`, `EmojiSet` | See "Emojis" below. | rest, hover, highlighted, searching |
+| `PickerTabs`, `IconGrid`, `ColorSwatches` | The channel look pickers: tabs (a tab given `false` shows "Soon"; the app enables Emoji and Server emoji, which hold an `EmojiPicker`), the Phosphor catalog as a virtualized 10-column grid (six rows high, or `.visible_rows(n)`; only rows near the viewport are built; a `highlight` for keyboard choice, the search field keeps focus), and the 12 palette swatches plus "none" (selected: ring and check; they wrap in a narrow column). | rest, hover, selected, highlighted |
 | `Dialog` | Modal (`.body_max_h(h)` makes the body scroll past `h`, so a tall form fits a short window): scrim, panel (24 padding; title to body 16, label to field 6, field to field 16, body to footer 24), title, body, right-aligned footer. Rune's modal stack gives the focus trap, Esc, scrim click and focus restore. `preview()` draws the panel inline. | closed, open |
 | `Toast` | Bottom-centre notice, info / success / danger. `Toast::host` is its inert overlay layer; the caller dismisses. | kinds |
 | `ConnectionPill` | Connected, Connecting…, Reconnecting in Ns, Offline. | status |
@@ -217,7 +218,7 @@ unchanged (no live preview). Selecting message text copies it as drawn (markers 
 | `\|\|spoiler\|\|` | a block in `border` the text colour hides; click reveals it (state per message, local to the UI, not app state); a link inside stays inert until revealed |
 | `[text](https://url)`, `https://url`, `<https://url>` | `accent_text`, underline on hover, hand cursor; click opens the default browser. A masked link shows its URL in a tooltip. Trailing punctuation, `*`, `_`, `~`, `\|` and an unbalanced `)` are not part of a bare URL |
 | `@name` | the mention chip (`accent_subtle`); the row's `accent_wash` still comes from `mentions_me`. Not parsed in code; works inside bold, quotes, lists and spoilers |
-| `<:name:id>`, `<a:name:id>` | tokenised as an emoji mark; drawn as `:name:` text until emoji render |
+| `<:name:id>`, `<a:name:id>` | a custom emoji: a 20pt picture in the line when the app's `EmojiSet` knows the id, else `:name:` text; see "Emojis" |
 | `\*`, `\@`, `\<`, any `\` + ASCII punctuation | the character itself |
 
 Markers pair only when they flank text (`2 * 3 * 4` is text; `snake__case__word` is text) and an unmatched marker
@@ -233,6 +234,48 @@ formatting at 16 open markers, at most 4096 marks per text, and only the first 6
 is one plain paragraph). Tests drive 60,000-character pathological inputs.
 
 `body::parse` is the flat view the app uses to find mentions (`Block::Text` / `Block::Code`, mention and code marks only).
+
+### Emojis (`chat/emoji.rs`, `chat/emoji_picker.rs`, drawn by `body.rs` and `message.rs`)
+
+**Unicode.** The `emojis` crate (bundled, no network) gives about 1,900 default-tone emojis with names, shortcodes and
+groups. Only Unicode 15.1 and older are offered: the crate already ships 16 to 18, which no colour emoji font draws yet
+(they showed as boxes). Skin tones: the default only; a tone someone types still renders, being plain text. Emojis draw
+as text, so the system's colour font does it: Apple Color Emoji on macOS (checked in the headless snapshots), Segoe UI
+Emoji on Windows, Noto Color Emoji on Linux where installed (nothing is bundled; without one they fall back to
+monochrome or boxes).
+
+**Picker.** `EmojiPicker` is a 304pt body: a search field, a strip of section buttons (recent, this server, the nine
+groups; they scroll to the section), and a virtualized grid of 32pt cells, nine across, eight rows high (the Unicode
+set is 1,900 cells: only rows near the viewport are built). Sections have a title row; a search drops the titles and
+lists matches of the server's emojis, then Unicode (an exact shortcode first, then prefixes, then anything containing
+it, names included). `Scope` picks what is offered: `All` (composer, reactions), `Unicode` (a DM, the channel icon's
+Emoji tab) or `Server`. Keyboard: the search field keeps focus; arrows move the highlighted cell (left/right by one,
+up/down by a row, over titles), Enter picks, Escape closes. The caller owns `EmojiPickerState` and the recent list
+(reaction keys, newest first, 24); a pick comes back as `Pick::Unicode` or `Pick::Custom`, whose `text()` is what goes
+into the composer (the character, or `<:name:id>` / `<a:name:id>`). It is a body, not a popover: the app wraps it in
+`rune_kit::popover` hung from the button.
+
+**Animation.** In the picker an animated server emoji rests on its first frame and plays while the pointer is over its
+cell, so thirty GIFs don't keep the window drawing. Under reduced motion it never plays. In message text Rune draws an
+inline image from its first frame only (its inline-icon path has no animation clock), so a custom emoji inside a line
+is still there; animated ones play where they are elements: jumbo messages, reaction chips and the picker. (Making
+inline ones play needs Rune to pass its animation clock to inline icon images.)
+
+**In messages.** `MessageGroup::emojis(EmojiSet)` resolves ids to pictures. A token the set knows draws 20pt in the line
+(a faint square while the picture downloads, so nothing shifts when it lands); unknown ids (another server's, a deleted
+emoji, anywhere in a DM) stay `:name:` text. A message of only emoji and spaces, at most 27 of them, draws jumbo: custom
+at 48pt, Unicode at 40pt text (flags, keycaps, skin tones and ZWJ families count once). Any other text, or formatting
+around them, makes it an ordinary message.
+
+**Autocomplete.** `EmojiSuggest` is the list for `:sm` (two letters after a colon that starts the text or follows a
+space): at most eight rows, the server's emojis ahead of Unicode ones on equal rank. The composer's `on_key` takes Up,
+Down, Tab and Enter (accept) and Escape (hide until the word changes); rows keep the composer focused when pressed.
+
+**Reactions.** Chips under the body: emoji, a rolling count (`RollingText`), 24pt high. Yours takes `accent_subtle`
+and an `accent` border. A new chip pops in on `motion::POP`; counts roll on their own spring (reduced motion crossfades).
+Press toggles yours; "+" (and the React button in the hover bar) asks the app for its picker, hung from the element
+keyed `react-add-<id>` / `react-bar-<id>`. At 20 different emojis "+" is disabled. The hover text names the emoji and
+your part (the server sends counts, not who reacted).
 
 ### Motion
 

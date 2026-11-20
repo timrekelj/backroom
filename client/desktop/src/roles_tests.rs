@@ -251,7 +251,7 @@ fn editing_a_role_sends_only_what_changed() {
     // A permission switch and a rename.
     app.act(|s| {
         s.role_form().unwrap().name.replace_text("Mods");
-        s.toggle_permission(crate::perms::MANAGE_EMOJIS);
+        s.toggle_permission(Permissions::MANAGE_EMOJIS);
         s.save_role();
     });
     assert!(fake.sent().iter().any(|c| matches!(c, Command::UpdateRole { name: Some(n), color: None, permissions: Some(p), .. } if n == "Mods" && p.bits() == (4 | 16))));
@@ -508,7 +508,7 @@ fn a_roadie_may_only_touch_roles_below_the_roadie_role() {
     // Permissions: only the ones they hold.
     assert!(
         s.can_grant(BAND, Permissions::MANAGE_ROLES)
-            && s.can_grant(BAND, crate::perms::MANAGE_EMOJIS)
+            && s.can_grant(BAND, Permissions::MANAGE_EMOJIS)
     );
     assert!(
         !s.can_grant(BAND, Permissions::MANAGE_SERVER)

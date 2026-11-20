@@ -6,8 +6,9 @@ use rune_kit::{Kit, State};
 use thehideout_design::components::chat::{
     ChannelHeader, ChannelRow, ChatMessage, Composer, ConnectionPill, ConnectionStatus,
     DateDivider, DeliveryState, Dialog, EmptyState, GuildBadge, MemberRow, MessageGroup, NavRow,
-    NewMessagesDivider, SidebarSection, Toast, ToastKind,
+    NewMessagesDivider, ReactionChip, ReactionGlyph, SidebarSection, Toast, ToastKind,
 };
+use thehideout_design::components::{EmojiPicker, EmojiScope, EmojiSet, ServerEmoji};
 use thehideout_design::components::{Button, IconButton, Presence, Size, TextInput, Variant};
 use thehideout_design::icons::{self, CHAT, GEAR, HASH, SEARCH, USERS};
 use thehideout_design::{radius, theme_of, type_};
@@ -29,6 +30,7 @@ pub fn page(s: &G, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(section(k, "SidebarSection", "Chevron turns on motion-disclosure; rows fade on the same spring. The + shows on hover.", sections(k)))
         .child(section(k, "ChannelHeader", "Title and topic; the breadcrumb variant for narrow layouts.", headers(k)))
         .child(section(k, "Composer", "Grows to 8 lines, then scrolls. Send is primary once there is text.", composers(k)))
+        .child(section(k, "EmojiPicker", "Reused by the composer, reactions and the channel icon picker. Server emojis play on hover; Unicode draws in the system's colour emoji font.", emoji_picker(s, k)))
         .child(section(k, "MemberRow", "Presence dot, owner crown. Offline reads fainter.", members(k)));
     let right = col()
         .gap(20.0)
@@ -269,7 +271,46 @@ pub fn sample(id: &str, who: (&str, &str), at: i64, label: &str, body: &str) -> 
         body: body.to_owned(),
         delivery: DeliveryState::Sent,
         mentions_me: false,
+        reactions: Vec::new(),
     }
+}
+
+/// A reaction chip of a Unicode emoji, for the sheet and the demo.
+pub fn chip(glyph: &str, count: u32, me: bool) -> ReactionChip {
+    ReactionChip {
+        key: format!("u:{glyph}"),
+        glyph: ReactionGlyph::Unicode(glyph.to_owned()),
+        count,
+        me,
+        tip: format!("{glyph} \u{b7} reacted by {count}"),
+    }
+}
+
+/// The emoji picker as a sheet: this server's emojis are named placeholders here (pictures come
+/// from the app's image cache), the Unicode set is the real one.
+fn emoji_picker(s: &G, k: &Kit) -> El {
+    let t = theme_of(k);
+    let server = vec![
+        ServerEmoji { id: 1, name: "smug_cat".into(), animated: false },
+        ServerEmoji { id: 2, name: "party_parrot".into(), animated: true },
+        ServerEmoji { id: 3, name: "shipit".into(), animated: false },
+    ];
+    let recents = vec!["u:\u{1f44d}".to_owned(), "c:2".to_owned(), "u:\u{1f389}".to_owned()];
+    let body = EmojiPicker::new("sheet-emoji", &s.emoji, EmojiScope::All, &server, &recents, EmojiSet::none()).build::<G>(
+        k,
+        |g: &mut G| &mut g.emoji,
+        |g: &mut G, pick, _tx| {
+            g.chat.draft.insert(&pick.text());
+        },
+        |_: &mut G| {},
+    );
+    col()
+        .gap(10.0)
+        .padding(12.0)
+        .radius(radius::MD)
+        .fill(t.bg.color())
+        .child(muted(k, "Search, sections, recents, server and Unicode. Arrows move, Enter picks."))
+        .child(row().justify_center().child(rune_kit::popover::raised(k, body, k.radius.md)))
 }
 
 fn transcript(k: &Kit) -> El {
@@ -301,6 +342,9 @@ fn transcript(k: &Kit) -> El {
         ),
     ];
     g1.truncate(3);
+    g1[0].reactions = vec![chip("\u{1f44d}", 3, true), chip("\u{1f389}", 2, false), chip("\u{1f440}", 1, false)];
+    g1[2].body = "Hovered follow-up: its time shows in the gutter and the action bar floats above it. \u{1f642}".into();
+    let jumbo = sample("s7", BRUNO, 2100, "09:42", "\u{1f389}\u{1f680}\u{2728}");
     let mut mention = sample(
         "s4",
         BRUNO,
@@ -323,6 +367,7 @@ fn transcript(k: &Kit) -> El {
         .child(MessageGroup::new(&g1).force_hover("s3").links::<G>().build(k))
         .child(MessageGroup::new(&[mention]).links::<G>().build(k))
         .child(MessageGroup::new(&g3).links::<G>().build(k))
+        .child(MessageGroup::new(&[jumbo]).links::<G>().build(k))
 }
 
 /// Every construct of the message markup, as messages by one author.

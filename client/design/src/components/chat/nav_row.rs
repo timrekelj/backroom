@@ -37,6 +37,8 @@ struct Row {
     trailing: Option<El>,
     /// Replaces the label as the element key, so a rename keeps the row (and its slide) alive.
     id: Option<String>,
+    /// An emoji drawn in place of the icon (a channel whose icon is an emoji).
+    art: Option<El>,
 }
 
 impl Row {
@@ -56,10 +58,11 @@ impl Row {
             tint: None,
             trailing: None,
             id: None,
+            art: None,
         }
     }
 
-    fn build(self, k: &Kit) -> El {
+    fn build(mut self, k: &Kit) -> El {
         let t = theme_of(k);
         let strong = self.selected || (self.unread && !self.muted);
         let ink = if self.selected {
@@ -128,13 +131,14 @@ impl Row {
         } else if self.state == State::Rest {
             e = e.hover(t.hover.color()).press(t.pressed.color());
         }
-        e = e.child(match &self.avatar {
-            Some(id) => Avatar::new(id.clone(), self.label.clone())
+        e = e.child(match (&self.avatar, self.art.take()) {
+            (_, Some(art)) => row().key("icon").size(size::SM, size::SM).center().child(art),
+            (Some(id), None) => Avatar::new(id.clone(), self.label.clone())
                 .size(20)
                 .backdrop(t.bg.color())
                 .build(k)
                 .key("avatar"),
-            None => icon(glyph, size::SM)
+            (None, None) => icon(glyph, size::SM)
                 .key("icon")
                 .color(icon_ink.color())
                 .a11y_hidden(),
@@ -248,6 +252,12 @@ impl ChannelRow {
     pub fn icon(mut self, glyph: &'static Icon) -> Self {
         self.0.glyph = glyph;
         self.0.glyph_selected = glyph;
+        self
+    }
+    /// An emoji (a built element of about the icon's size) in place of the icon: the channel's
+    /// Unicode or custom emoji icon.
+    pub fn emoji(mut self, art: El) -> Self {
+        self.0.art = Some(art);
         self
     }
     /// Tints the icon with a palette colour and washes the selected highlight with it.

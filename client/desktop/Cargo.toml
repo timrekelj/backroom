@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+image = { version = "0.25.10", default-features = false, features = ["gif", "webp", "png", "jpeg"] }
 rune = { workspace = true, features = ["tooling", "native-file-dialog"] }
 rune-kit = { workspace = true }
 serde = { version = "1", features = ["derive"] }

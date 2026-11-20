@@ -6,12 +6,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::SystemTime;
 
 use rune::TextEdit;
-use thehideout_api::{Channel, ChannelIcon, DmChannel, Guild, GuildLayout, MAX_MESSAGE_CHARS, Message, PaletteColor, Permissions, Role, User};
-use thehideout_design::components::{ConnectionStatus, ToastKind};
+use thehideout_api::{Channel, ChannelIconRef, DmChannel, Emoji, Guild, GuildLayout, MAX_MESSAGE_CHARS, Message, PaletteColor, Permissions, Role, User};
+use thehideout_design::components::{ConnectionStatus, EmojiPickerState, ToastKind};
 
 use crate::backend::{Command, Session};
 pub use crate::forms::{Auth, AuthError, AuthField, AuthMode, ChannelForm, DialogKind, DialogState, Phase, auth_error, check_name, sentence};
 use crate::layout::{self, Item};
+use crate::emoji::{PickerUi, Reduced, SuggestUi};
 use crate::format::{Tz, unix};
 use crate::look::Look;
 use crate::media::MediaCache;
@@ -85,11 +86,16 @@ impl ChannelLog {
         }
     }
 
-    /// Merges a page (newest first, as the API returns it).
+    /// Merges a page (newest first, as the API returns it). A message already here takes the
+    /// page's reactions: the page is what the server says now, and events may have been missed.
     pub fn insert_page(&mut self, mut items: Vec<Message>) {
         items.sort_by_key(|m| m.id);
         for m in items {
-            self.insert(m);
+            if let Ok(at) = self.messages.binary_search_by_key(&m.id, |x| x.id) {
+                self.messages[at].reactions = m.reactions;
+            } else {
+                self.insert(m);
+            }
         }
     }
 }
@@ -137,7 +143,11 @@ pub struct Data {
     /// The roles as they were before an optimistic reorder the server hasn't answered. While one
     /// is out, further reorders wait.
     pub role_undo: HashMap<u64, Vec<Role>>,
-    /// Decoded avatars and server icons by media key.
+    /// Each loaded guild's custom emojis, sorted by name.
+    pub emojis: HashMap<u64, Vec<Emoji>>,
+    /// Guilds whose emojis were asked for and not yet refused.
+    pub emojis_asked: HashSet<u64>,
+    /// Decoded avatars, server icons and emojis by media key.
     pub media: MediaCache,
 }
 
@@ -253,6 +263,16 @@ pub struct Ui {
     /// Text for the next poll to put on the clipboard (a press handler has no `Tx`).
     pub copy_request: Option<String>,
     pub toast_seq: u64,
+    /// The emoji picker, when open.
+    pub picker: Option<PickerUi>,
+    /// The state handlers fall back on while no picker is open.
+    pub idle_picker: EmojiPickerState,
+    pub suggest: SuggestUi,
+    /// Recently used emojis as reaction keys, newest first (saved to the prefs).
+    pub recents: Vec<String>,
+    pub recents_dirty: bool,
+    /// Whether the window is drawing with reduced motion (set by the view each frame).
+    pub reduced: Reduced,
 }
 
 impl Ui {
@@ -283,6 +303,12 @@ impl Ui {
             server_settings: None,
             copy_request: None,
             toast_seq: 0,
+            picker: None,
+            idle_picker: EmojiPickerState::new(),
+            suggest: SuggestUi::default(),
+            recents: Vec::new(),
+            recents_dirty: false,
+            reduced: Reduced::default(),
         }
     }
 }
@@ -330,12 +356,14 @@ impl AppState {
     pub fn reset(&mut self, error: Option<AuthError>) {
         let (server, look, today, tz, now) = (self.server_url(), self.ui.look, self.today, self.tz, self.now);
         let collapsed = std::mem::take(&mut self.ui.collapsed);
+        let recents = std::mem::take(&mut self.ui.recents);
         // The picture cache keeps its decoder (and the waker it was given); the pictures go.
         let mut media = std::mem::take(&mut self.data.media);
         media.clear();
         *self = AppState::new(now, tz);
         self.data.media = media;
         self.ui.collapsed = collapsed;
+        self.ui.recents = recents;
         self.today = today;
         self.auth = Auth::new(&server);
         self.auth.error = error;
@@ -469,6 +497,10 @@ impl AppState {
     pub fn want_media(&mut self) {
         let mut keys: Vec<String> = self.data.users.values().filter_map(|u| u.avatar.clone()).collect();
         keys.extend(self.data.guilds.iter().filter_map(|g| g.icon.clone()));
+        // Only the open server's emojis are fetched; the cache is bounded.
+        if let Some(g) = self.emoji_guild() {
+            keys.extend(self.emojis_of(g).iter().map(|e| e.image.clone()));
+        }
         keys.sort();
         keys.dedup();
         for key in keys {
@@ -555,6 +587,7 @@ impl AppState {
         }
         self.want_members(id);
         self.want_access(id);
+        self.want_emojis(id);
         // Pictures that were pushed out to make room come back when their server is visited.
         self.data.media.forgive();
         self.want_media();
@@ -829,7 +862,7 @@ impl AppState {
                         guild,
                         name,
                         section: f.and_then(|f| f.section),
-                        icon: ChannelIcon::new(f.map_or("", |f| f.icon.as_str())),
+                        icon: f.map_or(ChannelIconRef::Default, ChannelForm::icon_ref),
                         color: PaletteColor::from_key(f.map_or("", |f| f.color)),
                     },
                     Err(e) => return fail(d, e),
@@ -845,6 +878,7 @@ impl AppState {
             },
             DialogKind::DeleteSection { guild, section } => Command::DeleteSection { guild, section },
             DialogKind::DeleteRole { guild, role } => Command::DeleteRole { guild, role },
+            DialogKind::DeleteEmoji { guild, emoji } => Command::DeleteEmoji { guild, emoji },
             DialogKind::Profile => match d.pick.draft.as_ref() {
                 Some(draft) => Command::UploadAvatar { bytes: draft.bytes.clone(), content_type: draft.content_type.clone() },
                 None => {
@@ -867,7 +901,7 @@ impl AppState {
                     guild,
                     channel,
                     name: (old.map(|c| c.name.as_str()) != Some(name.as_str())).then_some(name),
-                    icon: (old.map(|c| c.icon.as_str()) != Some(f.icon.as_str())).then(|| ChannelIcon::new(f.icon.as_str())),
+                    icon: (old.map(|c| &c.icon_ref) != Some(&f.icon_ref())).then(|| f.icon_ref()),
                     color: (old.map(|c| c.color.as_key()) != Some(f.color)).then(|| PaletteColor::from_key(f.color)),
                     topic: (old.map(|c| c.topic.as_str()) != Some(topic.as_str())).then_some(topic),
                 };

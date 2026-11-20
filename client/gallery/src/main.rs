@@ -41,6 +41,8 @@ pub struct G {
     pub edits: [TextEdit; 6],
     pub tooltip_open: bool,
     pub chat: chat_app::ChatDemo,
+    /// The emoji picker on the Chat page's sheet.
+    pub emoji: thehideout_design::components::EmojiPickerState,
 }
 
 fn init() -> G {
@@ -58,6 +60,7 @@ fn init() -> G {
         ],
         tooltip_open: false,
         chat: chat_app::ChatDemo::new(),
+        emoji: thehideout_design::components::EmojiPickerState::new(),
     }
 }
 

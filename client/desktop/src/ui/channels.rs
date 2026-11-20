@@ -145,6 +145,10 @@ fn channel_row(
         .unread(u.count > 0)
         .mentions(u.mentions)
         .on_press(move |a: &mut App| a.act(|s| s.select_channel(id)));
+    // An emoji icon replaces the glyph; a custom one that is gone leaves the plain `#`.
+    if let Some(art) = super::emoji::channel_art(a, k, c, 16.0) {
+        row = row.emoji(art);
+    }
     if manage {
         row = row.trailing(more_button(a, k, layer, MenuTarget::Channel(id), guild));
     }

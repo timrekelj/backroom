@@ -322,7 +322,7 @@ impl Backend for RealBackend {
                 self.call(async move { client.join_guild(&code).await }, Reply::GuildJoined);
             }
             Command::CreateChannel { guild, name, section, icon, color } => {
-                self.call(async move { client.create_channel_with(guild, &name, section, &icon, color).await }, Reply::ChannelCreated);
+                self.call(async move { client.create_channel_with_ref(guild, &name, section, &icon, color).await }, Reply::ChannelCreated);
             }
             Command::LoadAccess { guild } => {
                 self.call(
@@ -349,7 +349,7 @@ impl Backend for RealBackend {
             }
             Command::UpdateChannel { guild, channel, name, icon, color, topic } => {
                 self.call(
-                    async move { client.update_channel(guild, channel, name.as_deref(), icon.as_ref(), color, topic.as_deref()).await },
+                    async move { client.update_channel_ref(guild, channel, name.as_deref(), icon.as_ref(), color, topic.as_deref()).await },
                     move |result| Reply::ChannelSaved { guild, result },
                 );
             }
@@ -402,6 +402,26 @@ impl Backend for RealBackend {
             }
             Command::SetMemberRoles { guild, user, role_ids } => {
                 self.call(async move { client.set_member_roles(guild, user, &role_ids).await }, move |result| Reply::MemberRolesSet { guild, user, result });
+            }
+            Command::LoadEmojis { guild } => {
+                self.call(async move { client.list_emojis(guild).await }, move |result| Reply::Emojis { guild, result });
+            }
+            Command::CreateEmoji { guild, name, bytes, content_type } => {
+                self.call(async move { client.create_emoji(guild, &name, bytes, &content_type).await }, move |result| Reply::EmojiSaved { guild, result });
+            }
+            Command::RenameEmoji { guild, emoji, name } => {
+                self.call(async move { client.rename_emoji(guild, emoji, &name).await }, move |result| Reply::EmojiSaved { guild, result });
+            }
+            Command::DeleteEmoji { guild, emoji } => {
+                self.call(async move { client.delete_emoji(guild, emoji).await }, move |result| Reply::EmojiDeleted { guild, emoji, result });
+            }
+            Command::AddReaction { channel, message, emoji } => {
+                let sent = emoji.clone();
+                self.call(async move { client.add_reaction(channel, message, &sent).await }, move |result| Reply::ReactionSaved { channel, message, emoji, add: true, result });
+            }
+            Command::RemoveReaction { channel, message, emoji } => {
+                let sent = emoji.clone();
+                self.call(async move { client.remove_reaction(channel, message, &sent).await }, move |result| Reply::ReactionSaved { channel, message, emoji, add: false, result });
             }
             Command::SignOut => {
                 self.shared.new_generation();

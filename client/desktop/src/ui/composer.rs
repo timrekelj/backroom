@@ -9,6 +9,7 @@ use thehideout_design::components::{Composer, FOOTER_H};
 use thehideout_design::{theme_of, type_};
 
 use crate::app::App;
+use crate::emoji::PickerTarget;
 use crate::state::Place;
 
 /// The counter shows once this few characters remain.
@@ -39,7 +40,12 @@ pub fn build(a: &App, k: &Kit) -> El {
         Place::Home => format!("Message @{name}"),
         Place::Guild(_) => format!("Message #{name}"),
     };
-    let mut composer = Composer::new(s.composer()).key("composer").placeholder(placeholder).bind(draft, send);
+    let mut composer = Composer::new(s.composer())
+        .key("composer")
+        .placeholder(placeholder)
+        .bind(draft, send)
+        .on_key(super::emoji::composer_key)
+        .on_emoji(|a: &mut App| a.act(|s| s.open_picker(PickerTarget::Composer, "composer-emoji")));
     if let Some(reason) = s.composer_block() {
         composer = composer.disabled_reason(reason);
     }

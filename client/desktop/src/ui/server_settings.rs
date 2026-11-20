@@ -42,6 +42,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32) -> El {
         ServerPage::Overview => overview(a, k, ss),
         ServerPage::Roles => roles(a, k, ss),
         ServerPage::Members => members(a, k, layer, ss),
+        ServerPage::Emojis => super::emoji_settings::page(a, k, ss),
     };
     frame(
         k,
@@ -63,6 +64,7 @@ fn nav(a: &App, k: &Kit, ss: &ServerSettings, name: &str) -> El {
         ),
         (ServerPage::Roles, "Roles", &SHIELD, &icons::fill::SHIELD),
         (ServerPage::Members, "Members", &USERS, &icons::fill::USERS),
+        (ServerPage::Emojis, "Emojis", &icons::SMILEY, &icons::SMILEY),
     ] {
         if !a.state.settings_page_allowed(guild, page) {
             continue;
@@ -83,7 +85,7 @@ fn close(a: &mut App) {
     a.act(|s| s.close_server_settings());
 }
 
-fn page_col(k: &Kit, title: &str) -> El {
+pub(super) fn page_col(k: &Kit, title: &str) -> El {
     col()
         .key(format!("page-server-{}", title.to_lowercase()))
         .w_full()
@@ -93,7 +95,7 @@ fn page_col(k: &Kit, title: &str) -> El {
         .child(header(k, title, close))
 }
 
-fn errors(k: &Kit, e: &Option<String>, key: &str) -> Option<El> {
+pub(super) fn errors(k: &Kit, e: &Option<String>, key: &str) -> Option<El> {
     let t = theme_of(k);
     e.as_ref().map(|e| {
         text(e.clone())

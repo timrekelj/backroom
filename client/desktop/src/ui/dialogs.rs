@@ -3,17 +3,20 @@
 //! motion; these supply the content. Enter submits, the primary button says what it is doing
 //! while it waits, and an error from the server (or from validation) shows under the field.
 
-use rune::{col, icon, row, text, El, Key, TextEdit};
+use rune::{col, icon, row, text, El, Key, TextEdit, Tx};
 use rune_kit::{Kit, Select};
+use thehideout_design::components::chat::emoji::glyph_label;
 use thehideout_design::components::chat::pickers::row_key;
 use thehideout_design::components::{
-    dialog_field, Avatar, Button, ColorSwatches, Dialog, IconButton, IconGrid, PickerTabs, Size,
-    TextInput, ToastKind, Variant, ROW_H,
+    dialog_field, Avatar, Button, ColorSwatches, Dialog, EmojiPicker, EmojiPickerState,
+    EmojiScope, IconButton, IconGrid, PickerTabs, Pick, Size, TextInput, ToastKind, Variant,
+    ROW_H,
 };
 use thehideout_design::icons::{catalog, CHEVRON_DOWN, COPY, HASH, SEARCH, X};
 use thehideout_design::{palette_color, radius, theme_of, type_};
 
 use crate::app::App;
+use crate::emoji::IconEmoji;
 use crate::state::{ChannelForm, DialogKind, DialogState, Phase};
 
 fn dialog_edit(a: &mut App) -> &mut TextEdit {
@@ -115,6 +118,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, window_h: f32) {
         DialogKind::NewDm => new_dm(a, k, layer, d),
         DialogKind::Profile => profile(a, k, layer, d),
         DialogKind::DeleteRole { guild, role } => delete_role(a, k, layer, d, guild, role),
+        DialogKind::DeleteEmoji { guild, emoji } => delete_emoji(a, k, layer, d, guild, emoji),
         DialogKind::Invite { guild } => invite(a, k, layer, guild),
     }
 }
@@ -251,9 +255,9 @@ fn channel_dialog(
     if creating {
         body = body.child(section_field(a, k, layer, f, guild));
     }
-    body = body.child(icon_row(k, f));
+    body = body.child(icon_row(a, k, f, guild));
     if f.picker_open {
-        body = body.child(picker(k, f));
+        body = body.child(picker(a, k, f, guild));
     }
     body = body.child(
         col()
@@ -280,15 +284,18 @@ fn channel_dialog(
 }
 
 /// "Icon": a field-looking button showing the chosen icon; pressing it opens the picker.
-fn icon_row(k: &Kit, f: &ChannelForm) -> El {
+fn icon_row(a: &App, k: &Kit, f: &ChannelForm, guild: u64) -> El {
     let t = theme_of(k);
     let glyph = catalog::by_name(&f.icon).unwrap_or(&thehideout_design::icons::HASH);
     let tone = palette_color(f.color, t).unwrap_or(t.text_muted);
-    let label = if f.icon.is_empty() {
-        "Default".to_owned()
-    } else {
-        f.icon.replace('-', " ")
+    let emoji_art = f.emoji.as_ref().and_then(|e| super::emoji::icon_art(a, k, e, guild, 18.0));
+    let label = match &f.emoji {
+        Some(IconEmoji::Unicode(g)) => glyph_label(g),
+        Some(IconEmoji::Custom(id)) => a.state.emoji(guild, *id).map_or_else(|| "Custom emoji".to_owned(), |e| format!(":{}:", e.name)),
+        None if f.icon.is_empty() => "Default".to_owned(),
+        None => f.icon.replace('-', " "),
     };
+    let has_icon = !f.icon.is_empty() || f.emoji.is_some();
     let field = row()
         .key("icon-field")
         .role("button")
@@ -314,11 +321,12 @@ fn icon_row(k: &Kit, f: &ChannelForm) -> El {
         .hover(t.hover.color())
         .press(t.pressed.color())
         .on_press(|a: &mut App| a.act(|s| s.toggle_picker()))
-        .child(
-            icon(glyph, thehideout_design::icon::SM)
+        .child(match emoji_art {
+            Some(art) => art,
+            None => icon(glyph, thehideout_design::icon::SM)
                 .color(tone.color())
                 .a11y_hidden(),
-        )
+        })
         .child(
             text(label)
                 .font(type_::CONTROL)
@@ -338,7 +346,7 @@ fn icon_row(k: &Kit, f: &ChannelForm) -> El {
         .gap(8.0)
         .center_y()
         .child(field);
-    if !f.icon.is_empty() {
+    if has_icon {
         line = line.child(
             IconButton::new(&X, "Use the default icon")
                 .size(Size::Md)
@@ -354,8 +362,37 @@ fn icon_row(k: &Kit, f: &ChannelForm) -> El {
         .child(line)
 }
 
-/// Tabs, search and the grid. Only Icons is populated; Emoji and Server emoji are coming.
-fn picker(k: &Kit, f: &ChannelForm) -> El {
+/// The emoji picker's state inside the open channel dialog.
+fn icon_emoji_state(a: &mut App) -> &mut EmojiPickerState {
+    match a.state.ui.dialog.as_mut().and_then(|d| d.channel.as_mut()) {
+        Some(f) => &mut f.emoji_pick,
+        None => &mut a.state.ui.idle_picker,
+    }
+}
+
+/// Tabs, then the tab's search and grid: Phosphor icons, Unicode emoji or the server's emojis.
+fn picker(a: &App, k: &Kit, f: &ChannelForm, guild: u64) -> El {
+    let tabs = PickerTabs::new(&[("Icons", true), ("Emoji", true), ("Server emoji", true)], f.tab)
+        .on_pick(|a: &mut App, i: usize| a.act(|s| s.set_picker_tab(i)))
+        .build(k);
+    if f.tab == 0 {
+        return icons_picker(k, f, tabs);
+    }
+    let scope = if f.tab == 1 { EmojiScope::Unicode } else { EmojiScope::Server };
+    let body = EmojiPicker::new("icon-emoji", &f.emoji_pick, scope, &a.state.server_emojis(), &a.state.ui.recents, a.state.emoji_set())
+        .visible_rows(4)
+        .build::<App>(
+            k,
+            icon_emoji_state,
+            |a: &mut App, pick: Pick, _tx: &mut Tx| a.act(|s| s.pick_icon_emoji(pick)),
+            |a: &mut App| a.act(|s| s.toggle_picker()),
+        );
+    let _ = guild;
+    col().key("icon-picker").w_full().gap(8.0).child(tabs).child(row().w_full().justify_center().child(body))
+}
+
+/// The Icons tab: search and the Phosphor grid.
+fn icons_picker(k: &Kit, f: &ChannelForm, tabs: El) -> El {
     let search = TextInput::new(&f.search)
         .placeholder("Search icons")
         .label("Search icons")
@@ -392,20 +429,7 @@ fn picker(k: &Kit, f: &ChannelForm) -> El {
         .key("icon-picker")
         .w_full()
         .gap(8.0)
-        .child(
-            PickerTabs::new(
-                &[("Icons", true), ("Emoji", false), ("Server emoji", false)],
-                f.tab,
-            )
-            .on_pick(|a: &mut App, i: usize| {
-                a.act(|s| {
-                    if let Some(f) = s.channel_form() {
-                        f.tab = i;
-                    }
-                })
-            })
-            .build(k),
-        )
+        .child(tabs)
         .child(search.build(k))
         .child(
             IconGrid::new(f.results.clone(), f.icon.clone())
@@ -684,6 +708,31 @@ fn profile(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState) {
         .footer(
             Button::new(if busy { "Saving\u{2026}" } else { "Save" })
                 .disabled(busy || pick.draft.is_none())
+                .on_press(|a: &mut App| a.act(|s| s.submit_dialog()))
+                .build(k)
+                .key("dialog-submit"),
+        )
+        .on_close(close)
+        .build(k, layer);
+}
+
+fn delete_emoji(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState, guild: u64, emoji: u64) {
+    let t = theme_of(k);
+    let name = a.state.emoji(guild, emoji).map_or_else(String::new, |e| e.name.clone());
+    let busy = d.phase == Phase::Busy;
+    let mut body = col().key("dialog-confirm").w_full().gap(8.0).child(row().gap(10.0).center_y().child(super::emoji::emoji_tile(a, k, guild, emoji, 32.0)).child(text(format!(":{name}:")).font(type_::BODY_STRONG).color(t.text.color())));
+    if let Some(e) = &d.error {
+        body = body.child(text(e.clone()).font(type_::CONTROL).color(t.danger.color()).wrap().w_full());
+    }
+    Dialog::new("dlg", "Delete emoji")
+        .description("It disappears from the picker and from reactions. Old messages that used it show its name instead. This can't be undone.")
+        .open(true)
+        .child(body)
+        .footer(Button::new("Cancel").variant(Variant::Secondary).on_press(close).build(k).key("dialog-cancel"))
+        .footer(
+            Button::new(if busy { "Deleting\u{2026}" } else { "Delete emoji" })
+                .variant(Variant::Danger)
+                .disabled(busy)
                 .on_press(|a: &mut App| a.act(|s| s.submit_dialog()))
                 .build(k)
                 .key("dialog-submit"),

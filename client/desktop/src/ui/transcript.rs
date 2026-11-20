@@ -14,12 +14,15 @@ use std::rc::Rc;
 
 use rune::{Color, El, Pixels, ScrollSpec, SpringPair, Transition, col, el, row, text};
 use rune_kit::Kit;
-use thehideout_design::components::{Button, ChatMessage, DateDivider, DeliveryState, EmptyState, MessageGroup, NewMessagesDivider, Size, Variant};
+use thehideout_api::{Message, ReactionEmoji};
+use thehideout_design::components::chat::emoji::glyph_label;
+use thehideout_design::components::{Button, ChatMessage, DateDivider, DeliveryState, EmptyState, MessageGroup, NewMessagesDivider, ReactionChip, ReactionGlyph, Size, Variant};
 use thehideout_design::icons::{self, CHEVRON_DOWN, CHAT, PLUS};
 use thehideout_design::{motion, palette_text, palette_wash, radius, theme_of, type_};
 
 use crate::app::App;
 use crate::format::{clock_label, day_label, unix};
+use crate::emoji::PickerTarget;
 use crate::state::{AppState, Delivery, DialogKind, Fetch, Marker, Place, chat_id_of};
 
 /// A row of the transcript: the view model plus the server id (outgoing messages have none).
@@ -45,6 +48,7 @@ fn items(s: &AppState, channel: u64) -> Vec<Item> {
                     body: m.content.clone(),
                     delivery: DeliveryState::Sent,
                     mentions_me: m.author_id != me && s.mentions_me(&m.content),
+                    reactions: chips(s, m),
                 },
             });
         }
@@ -62,10 +66,35 @@ fn items(s: &AppState, channel: u64) -> Vec<Item> {
                 body: o.content.clone(),
                 delivery: if o.state == Delivery::Failed { DeliveryState::Failed } else { DeliveryState::Pending },
                 mentions_me: false,
+                reactions: Vec::new(),
             },
         });
     }
     out
+}
+
+/// The chips under a message: each reaction's emoji, count, whether you are among them, and what
+/// hovering says (the server lists counts, not names, so the tip names the emoji and your part).
+fn chips(s: &AppState, m: &Message) -> Vec<ReactionChip> {
+    m.reactions
+        .iter()
+        .map(|r| {
+            let (glyph, label) = match &r.emoji {
+                ReactionEmoji::Unicode(g) => (ReactionGlyph::Unicode(g.clone()), glyph_label(g)),
+                ReactionEmoji::Custom(id) => {
+                    let name = m.guild_id.and_then(|g| s.emoji(g, *id)).map_or_else(|| "emoji".to_owned(), |e| e.name.clone());
+                    (ReactionGlyph::Custom { id: id.to_string(), name: name.clone() }, format!(":{name}:"))
+                }
+            };
+            let who = match (r.me, r.count) {
+                (true, 1) => "you".to_owned(),
+                (true, n) => format!("you and {} other{}", n - 1, if n == 2 { "" } else { "s" }),
+                (false, 1) => "1 person".to_owned(),
+                (false, n) => format!("{n} people"),
+            };
+            ReactionChip { key: r.emoji.key(), glyph, count: r.count, me: r.me, tip: format!("{label} \u{b7} reacted by {who}") }
+        })
+        .collect()
 }
 
 /// What the transcript draws from people rather than messages: their pictures, the colour of
@@ -232,6 +261,7 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
     }
 
     let looks = Looks::of(a, k, list);
+    let emojis = s.emoji_set();
     let marker_at = marker_index(list, s.ui.marker, channel);
     let mut start = 0;
     let mut prev_day: Option<i64> = None;
@@ -257,6 +287,23 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
                 looks
                     .apply(MessageGroup::new(run))
                     .links::<App>()
+                    .emojis(emojis.clone())
+                    .on_react(|a: &mut App, id: &str, key: &str| {
+                        if let Some(emoji) = ReactionEmoji::from_key(key) {
+                            a.act(|s| {
+                                if let Some((channel, message)) = s.message_ref(id) {
+                                    s.toggle_reaction(channel, message, emoji);
+                                }
+                            });
+                        }
+                    })
+                    .on_add_reaction(|a: &mut App, id: &str, anchor: &str| {
+                        a.act(|s| {
+                            if let Some((channel, message)) = s.message_ref(id) {
+                                s.open_picker(PickerTarget::Reaction { channel, message }, anchor);
+                            }
+                        })
+                    })
                     .on_retry(|a: &mut App, id: &str| {
                         if let Some(nonce) = id.strip_prefix("n:") {
                             let nonce = nonce.to_owned();

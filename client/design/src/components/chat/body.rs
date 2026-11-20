@@ -12,10 +12,12 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use rune::{El, Link, LinkPaint, Span, TextStyle, Tx, col, el, row, text};
+use rune::{El, InlineIcon, Link, LinkPaint, Span, TextStyle, Tx, col, el, row, text};
 use rune_kit::Kit;
 use rune_kit::syntax::{SyntaxTheme, highlight};
 
+use super::emoji::{EmojiImage, EmojiSet, JUMBO_MAX, clusters};
+use super::emoji_picker::picture;
 use super::markdown::{self as md, Inlines, Kind};
 use crate::theme_of;
 use crate::tokens::{radius, type_};
@@ -122,8 +124,19 @@ struct Cx<'a> {
     scope: &'a str,
     wire: Option<&'a Wire>,
     mention: Option<&'a MentionInk>,
+    emoji: Option<&'a EmojiSet>,
+    /// The body is one paragraph, so it may turn out to be jumbo.
+    lone: bool,
     spoilers: u32,
 }
+
+/// Side of a custom emoji in a line of text.
+pub const EMOJI_INLINE: f32 = 20.0;
+/// Side of a custom emoji (and the size of a Unicode one) in a message of only emoji.
+pub const EMOJI_JUMBO: f32 = 48.0;
+/// Stands in the text for each custom emoji picture: a zero-width space that wraps like text
+/// and that Rune draws the picture before.
+const SLOT: &str = "\u{200b}";
 
 /// What colours an `@name` chip: given the name (no `@`), the text and wash colours of that
 /// member's role, or `None` for the accent chip every other mention gets.
@@ -141,8 +154,113 @@ pub fn render_with(k: &Kit, body: &str, scope: &str, wire: Option<&Wire>) -> El 
 
 /// [`render_with`], and mention chips of members with a coloured role take that role's colours.
 pub fn render_styled(k: &Kit, body: &str, scope: &str, wire: Option<&Wire>, mention: Option<&MentionInk>) -> El {
-    let mut cx = Cx { k, scope, wire, mention, spoilers: 0 };
-    blocks_el(&mut cx, &md::parse(body), 0, 6.0)
+    render_full(k, body, scope, wire, mention, None)
+}
+
+/// [`render_styled`] with custom emojis: `<:name:id>` tokens `emoji` knows draw as pictures in
+/// the line, the rest stay `:name:` text, and a message of nothing but emoji (at most
+/// [`JUMBO_MAX`]) draws them at [`EMOJI_JUMBO`].
+pub fn render_full(k: &Kit, body: &str, scope: &str, wire: Option<&Wire>, mention: Option<&MentionInk>, emoji: Option<&EmojiSet>) -> El {
+    let blocks = md::parse(body);
+    let lone = matches!(blocks.as_slice(), [md::Block::Paragraph(_)]);
+    let mut cx = Cx { k, scope, wire, mention, emoji, lone, spoilers: 0 };
+    blocks_el(&mut cx, &blocks, 0, 6.0)
+}
+
+/// One emoji of a jumbo message.
+#[derive(Clone)]
+pub enum Jumbo {
+    Unicode(String),
+    Custom(EmojiImage),
+}
+
+/// The emojis of a message that is nothing but emoji and spaces: Unicode ones and custom ones
+/// `set` knows, at least one and at most [`JUMBO_MAX`], with no formatting around them.
+pub fn jumbo(x: &Inlines, set: Option<&EmojiSet>) -> Option<Vec<Jumbo>> {
+    let mut marks: Vec<&md::Mark> = x.marks.iter().collect();
+    if marks.iter().any(|m| !matches!(m.kind, Kind::Emoji { .. })) {
+        return None;
+    }
+    marks.sort_by_key(|m| m.start);
+    let mut out = Vec::new();
+    let mut at = 0;
+    let plain = |a: usize, b: usize, out: &mut Vec<Jumbo>| -> Option<()> {
+        for c in clusters(&x.text[a..b], JUMBO_MAX.saturating_sub(out.len()))? {
+            out.push(Jumbo::Unicode(c.to_owned()));
+        }
+        Some(())
+    };
+    for m in marks {
+        plain(at, m.start, &mut out)?;
+        let Kind::Emoji { id, .. } = &m.kind else { return None };
+        out.push(Jumbo::Custom(set?.get(id)?));
+        at = m.end;
+    }
+    plain(at, x.text.len(), &mut out)?;
+    (!out.is_empty() && out.len() <= JUMBO_MAX).then_some(out)
+}
+
+fn jumbo_el(cx: &Cx, items: Vec<Jumbo>) -> El {
+    let t = theme_of(cx.k);
+    let mut r = row().key("jumbo").w_full().flex_wrap().gap(4.0).items_center();
+    for it in items {
+        r = r.child(match it {
+            Jumbo::Unicode(g) => text(g).font(TextStyle::new(40.0, 400.0).lh(EMOJI_JUMBO)).color(t.text.color()),
+            Jumbo::Custom(img) => match cx.emoji {
+                Some(set) => picture(cx.k, set, &img, EMOJI_JUMBO, false).role("img").label(format!(":{}:", img.name)),
+                None => el(),
+            },
+        });
+    }
+    r
+}
+
+/// `x` with every custom emoji `set` knows swapped for a [`SLOT`], and where the slots are.
+/// Marks keep their meaning over the shortened text; unknown emojis stay `:name:`.
+fn swap_emoji(x: &Inlines, set: &EmojiSet) -> Option<(Inlines, Vec<(usize, EmojiImage)>)> {
+    let mut found: Vec<(usize, usize, EmojiImage)> = x
+        .marks
+        .iter()
+        .filter_map(|m| match &m.kind {
+            Kind::Emoji { id, .. } => set.get(id).map(|img| (m.start, m.end, img)),
+            _ => None,
+        })
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    found.sort_by_key(|f| f.0);
+    found.dedup_by(|b, a| b.0 < a.1);
+    let mut text = String::with_capacity(x.text.len());
+    let mut slots = Vec::new();
+    // Where each found range starts in the new text, and the bytes saved before it.
+    let mut starts = Vec::new();
+    let (mut at, mut saved) = (0usize, 0i64);
+    for (a, b, img) in &found {
+        text.push_str(&x.text[at..*a]);
+        starts.push((*a, *b, text.len(), saved));
+        slots.push((text.len(), img.clone()));
+        text.push_str(SLOT);
+        saved += (*b - *a) as i64 - SLOT.len() as i64;
+        at = *b;
+    }
+    text.push_str(&x.text[at..]);
+    let map = |o: usize| -> usize {
+        let mut saved = 0i64;
+        for &(a, b, new_start, before) in &starts {
+            if o >= b {
+                saved = before + (b - a) as i64 - SLOT.len() as i64;
+            } else if o > a {
+                return new_start;
+            } else {
+                break;
+            }
+        }
+        (o as i64 - saved) as usize
+    };
+    let swapped = |m: &md::Mark| matches!(&m.kind, Kind::Emoji { id, .. } if set.get(id).is_some());
+    let marks = x.marks.iter().filter(|m| !swapped(m)).map(|m| md::Mark { start: map(m.start), end: map(m.end), kind: m.kind.clone() }).collect();
+    Some((Inlines { text, marks }, slots))
 }
 
 fn blocks_el(cx: &mut Cx, blocks: &[md::Block], depth: usize, gap: f32) -> El {
@@ -157,7 +275,14 @@ fn block_el(cx: &mut Cx, b: &md::Block, depth: usize) -> El {
     let k = cx.k;
     let t = theme_of(k);
     match b {
-        md::Block::Paragraph(i) => inline_el(cx, i, type_::BODY, 600.0),
+        md::Block::Paragraph(i) => {
+            if cx.lone
+                && let Some(items) = jumbo(i, cx.emoji)
+            {
+                return jumbo_el(cx, items);
+            }
+            inline_el(cx, i, type_::BODY, 600.0)
+        }
         md::Block::Heading(level, i) => {
             let font = match level {
                 1 => type_::TITLE,
@@ -246,6 +371,11 @@ fn overlaps(a: (usize, usize), b: (usize, usize)) -> bool {
 fn inline_el(cx: &mut Cx, x: &Inlines, font: TextStyle, bold: f32) -> El {
     let k = cx.k;
     let t = theme_of(k);
+    let swapped = cx.emoji.and_then(|set| swap_emoji(x, set));
+    let (x, slots) = match &swapped {
+        Some((x, slots)) => (x, slots.as_slice()),
+        None => (x, &[][..]),
+    };
     let mut marks: Vec<&md::Mark> = x.marks.iter().collect();
     marks.sort_by_key(|m| (m.start, std::cmp::Reverse(m.end)));
 
@@ -347,6 +477,15 @@ fn inline_el(cx: &mut Cx, x: &Inlines, font: TextStyle, bold: f32) -> El {
     for r in uncopied {
         e = e.uncopied(r);
     }
+    // Rune draws an inline image before its byte, in room of its own; only the first frame of an
+    // animated one (see the README's "Custom emojis").
+    for (at, img) in slots {
+        let icon = match &img.live {
+            Some(p) => InlineIcon::image(p.clone()),
+            None => InlineIcon::glyph(&crate::icons::SMILEY).color(t.text_faint.color()),
+        };
+        e = e.inline_icon(*at, icon.size(EMOJI_INLINE).gap(2.0).radius(radius::SM));
+    }
     e.selectable(true).selection_color(k.selection())
 }
 
@@ -430,6 +569,60 @@ mod tests {
         assert!(!has("`@ana`"));
         assert!(!has("```\n@ana\n```"));
         assert!(!has("\\@ana"));
+    }
+
+    // Custom emojis in text and jumbo messages.
+
+    fn set(known: &[(&str, bool)]) -> EmojiSet {
+        let known: Vec<(String, bool)> = known.iter().map(|(id, animated)| ((*id).to_owned(), *animated)).collect();
+        EmojiSet::new(move |id| known.iter().find(|(k, _)| k == id).map(|(_, animated)| EmojiImage { name: format!("e{id}"), animated: *animated, live: None, still: None }))
+    }
+
+    fn only(body: &str) -> Inlines {
+        match md::parse(body).as_slice() {
+            [md::Block::Paragraph(i)] => i.clone(),
+            other => panic!("not one paragraph: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn known_tokens_become_slots_and_unknown_ones_stay_text() {
+        let x = only("hi <:smug:7> and <a:gone:99> **bold <:smug:7>**");
+        let (swapped, slots) = swap_emoji(&x, &set(&[("7", false)])).expect("a known token");
+        assert_eq!(swapped.text, format!("hi {SLOT} and :gone: bold {SLOT}"));
+        assert_eq!(slots.len(), 2);
+        // The slots sit where the text says, and the bold mark still covers "bold <emoji>".
+        for (at, _) in &slots {
+            assert_eq!(&swapped.text[*at..*at + SLOT.len()], SLOT);
+        }
+        let bold = swapped.marks.iter().find(|m| m.kind == Kind::Bold).expect("bold kept");
+        assert_eq!(&swapped.text[bold.start..bold.end], format!("bold {SLOT}"));
+        // The unknown token is still an Emoji mark over `:gone:`, for the fallback.
+        let gone = swapped.marks.iter().find(|m| matches!(&m.kind, Kind::Emoji { id, .. } if id == "99")).expect("unknown kept");
+        assert_eq!(&swapped.text[gone.start..gone.end], ":gone:");
+        assert!(swap_emoji(&x, &EmojiSet::none()).is_none(), "a DM knows no custom emojis");
+        assert!(swap_emoji(&only("plain text"), &set(&[("7", false)])).is_none());
+    }
+
+    #[test]
+    fn a_message_of_only_emoji_is_jumbo() {
+        let s = set(&[("7", false), ("9", true)]);
+        let count = |body: &str| jumbo(&only(body), Some(&s)).map(|v| v.len());
+        assert_eq!(count("<:smug:7>"), Some(1));
+        assert_eq!(count("<:smug:7> <a:parrot:9>"), Some(2));
+        assert_eq!(count("<:smug:7><:smug:7><:smug:7>"), Some(3));
+        assert_eq!(count("\u{1f389}\u{1f389}\u{1f389}"), Some(3), "Unicode emoji go jumbo too");
+        assert_eq!(count("\u{1f44d}\u{1f3fd} <:smug:7> \u{1f1f8}\u{1f1ee}"), Some(3), "mixed, tones and flags whole");
+        assert_eq!(count("   <:smug:7>   "), Some(1), "spaces around don't matter");
+        assert_eq!(count("hi <:smug:7>"), None, "words break it");
+        assert_eq!(count("<:smug:7>!"), None);
+        assert_eq!(count("<:nope:1>"), None, "an unknown token is text, not an emoji");
+        assert_eq!(count("**<:smug:7>**"), None, "formatting breaks it");
+        assert_eq!(count(&"\u{1f600}".repeat(27)), Some(27));
+        assert_eq!(count(&"\u{1f600}".repeat(28)), None, "more than 27 is not jumbo");
+        assert_eq!(count("<:smug:7>"), Some(1));
+        assert!(jumbo(&only("<:smug:7>"), None).is_none(), "no emoji set, no jumbo custom");
+        assert!(jumbo(&only("\u{1f600}"), None).is_some(), "Unicode needs no set");
     }
 
     // Presses on rendered links and spoilers, through the real runtime.

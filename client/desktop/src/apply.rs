@@ -138,6 +138,7 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
             Err(e) => dialog_failed(s, &e),
         },
         Reply::Media { key, result } => match result {
+            Ok(bytes) if s.is_emoji_image(&key) => s.data.media.insert_emoji(&key, bytes),
             Ok(bytes) => s.data.media.insert(&key, bytes),
             Err(_) => s.data.media.fail(&key),
         },
@@ -239,6 +240,16 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
                 }
             }
         }
+        Reply::Emojis { guild, result } => match result {
+            Ok(list) => s.set_emojis(guild, list),
+            // Asked again the next time the server is opened.
+            Err(_) => {
+                s.data.emojis_asked.remove(&guild);
+            }
+        },
+        Reply::EmojiSaved { guild, result } => s.emoji_saved(guild, result),
+        Reply::EmojiDeleted { guild, emoji, result } => s.emoji_deleted(guild, emoji, result),
+        Reply::ReactionSaved { channel, message, emoji, add, result } => s.reaction_saved(channel, message, &emoji, add, result),
         Reply::SignedOut => {}
         Reply::Gateway(update) => gateway(s, update, tx),
     }
@@ -374,6 +385,10 @@ fn refreshed(s: &mut AppState, init: Initial) {
     };
     s.data.members.retain(|g, _| Some(*g) == open);
     s.data.members_asked.retain(|g| Some(*g) == open);
+    // Emoji changes missed while away: the open server's list is fetched again now (what is shown
+    // stays until it lands), the others when visited.
+    s.data.emojis.retain(|g, _| Some(*g) == open);
+    s.data.emojis_asked.retain(|g| Some(*g) == open);
     match open {
         Some(g) if s.guild(g).is_none() => s.go_home(),
         Some(g) => {
@@ -384,6 +399,8 @@ fn refreshed(s: &mut AppState, init: Initial) {
             }
             s.outbox.push(Command::LoadMembers { guild: g });
             s.data.members_asked.insert(g);
+            s.data.emojis_asked.insert(g);
+            s.outbox.push(Command::LoadEmojis { guild: g });
             s.want_access(g);
         }
         None => {}
@@ -574,11 +591,11 @@ fn gateway(s: &mut AppState, update: GatewayUpdate, tx: &mut Tx) {
 fn event(s: &mut AppState, e: Event, tx: &mut Tx) {
     match e {
         Event::Heartbeat => {}
-        // handled in the emoji, reactions and attachments tasks
-        Event::EmojisUpdated { .. }
-        | Event::ReactionAdded { .. }
-        | Event::ReactionRemoved { .. }
-        | Event::MessageUpdated(_) => {}
+        Event::EmojisUpdated { guild_id, emojis } => s.set_emojis(guild_id, emojis),
+        Event::ReactionAdded { channel_id, message_id, emoji, user_id } => s.reaction_event(channel_id, message_id, &emoji, user_id, true),
+        Event::ReactionRemoved { channel_id, message_id, emoji, user_id } => s.reaction_event(channel_id, message_id, &emoji, user_id, false),
+        // handled in the attachments task
+        Event::MessageUpdated(_) => {}
         Event::GuildUpdated(g) => s.set_guild(g),
         Event::ChannelUpdated(c) => update_channel(s, c),
         Event::UserUpdated(u) => user_updated(s, u),

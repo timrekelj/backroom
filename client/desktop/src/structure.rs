@@ -83,13 +83,26 @@ impl AppState {
         if f.picker_open {
             f.search.replace_text("");
             f.research();
+            f.emoji_pick = thehideout_design::components::EmojiPickerState::new();
+            f.emoji_pick.search.focused = f.tab != 0;
+            f.search.focused = f.tab == 0;
         }
+    }
+
+    /// Switches the picker's tab (0 Icons, 1 Emoji, 2 Server emoji) and puts the cursor in its search.
+    pub fn set_picker_tab(&mut self, tab: usize) {
+        let Some(f) = self.channel_form() else { return };
+        f.tab = tab.min(2);
+        f.emoji_pick = thehideout_design::components::EmojiPickerState::new();
+        f.emoji_pick.search.focused = f.tab != 0;
+        f.search.focused = f.tab == 0;
     }
 
     /// Chooses an icon (`""`: the default `#`) and closes the picker.
     pub fn pick_icon(&mut self, name: &str) {
         if let Some(f) = self.channel_form() {
             f.icon = name.to_owned();
+            f.emoji = None;
         }
         if self.channel_form().is_some_and(|f| f.picker_open) {
             self.toggle_picker();

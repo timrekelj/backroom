@@ -18,6 +18,11 @@ pub const BUDGET_BYTES: usize = 64 * 1024 * 1024;
 /// The least a cached picture is charged. The server stores 256x256 pictures, whose decoded
 /// pixels and mip levels come to a little over 256 KiB; a bigger encoded file is charged its size.
 pub const COST_FLOOR: usize = 256 * 1024;
+/// The least a cached emoji is charged: a 128x128 picture with its mip levels is about 87 KiB, so
+/// two hundred of them fit in a quarter of the budget.
+pub const EMOJI_FLOOR: usize = 96 * 1024;
+/// An animated emoji decodes to every frame at once: its encoded size understates it by about this much.
+const ANIMATION_FACTOR: usize = 8;
 
 /// Extensions the pickers and the drop zones accept.
 pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
@@ -50,8 +55,21 @@ pub fn read_image(path: &Path) -> Result<(Vec<u8>, String), ApiError> {
 
 struct Entry {
     image: Image,
+    /// The first frame of an animated picture, drawn when motion is reduced and while at rest in
+    /// the picker. Freed with the entry.
+    still: Option<Image>,
     cost: usize,
     used: Cell<u64>,
+}
+
+/// The first frame of a GIF as straight RGBA, decoded here (a GIF's first frame is cheap) so a
+/// still can sit beside the animation. `None` for anything else, or a GIF that doesn't decode.
+pub fn first_frame(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    if !bytes.starts_with(b"GIF8") {
+        return None;
+    }
+    let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Gif).ok()?.into_rgba8();
+    Some((img.width(), img.height(), img.into_raw()))
 }
 
 /// Decoded pictures by media key. Views read it (`pixels`, which only stamps recency); the
@@ -146,14 +164,27 @@ impl MediaCache {
     /// `key`'s downloaded bytes: handed to the decoder, and the oldest pictures pushed out
     /// while the cache is over budget (never the one just added).
     pub fn insert(&mut self, key: &str, bytes: Vec<u8>) {
+        self.insert_charged(key, bytes, COST_FLOOR, false);
+    }
+
+    /// [`insert`](Self::insert) for a custom emoji: charged [`EMOJI_FLOOR`] (more when animated),
+    /// and an animated one also gets its still.
+    pub fn insert_emoji(&mut self, key: &str, bytes: Vec<u8>) {
+        self.insert_charged(key, bytes, EMOJI_FLOOR, true);
+    }
+
+    fn insert_charged(&mut self, key: &str, bytes: Vec<u8>, floor: usize, with_still: bool) {
         self.pending.remove(key);
-        let cost = bytes.len().max(COST_FLOOR);
+        let animated = bytes.starts_with(b"GIF8");
+        let cost = if animated { bytes.len() * ANIMATION_FACTOR } else { bytes.len() }.max(floor);
+        let still = with_still.then(|| first_frame(&bytes)).flatten().map(|(w, h, raw)| self.images.rgba(w, h, raw));
         let image = self.images.load(bytes);
         let stamp = self.touch();
         if let Some(old) = self.entries.insert(
             key.to_owned(),
             Entry {
                 image,
+                still,
                 cost,
                 used: Cell::new(stamp),
             },
@@ -188,6 +219,12 @@ impl MediaCache {
         Some(e.image.pixels().clone())
     }
 
+    /// The first frame of the animated picture `key`, when it has one (see [`first_frame`]).
+    pub fn still(&self, key: &str) -> Option<Pixels> {
+        let e = self.entries.get(key)?;
+        e.still.as_ref().map(|s| s.pixels().clone())
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn contains(&self, key: &str) -> bool {
         self.entries.contains_key(key)
@@ -202,6 +239,9 @@ impl MediaCache {
     pub fn settle(&self) {
         for e in self.entries.values() {
             let _ = e.image.wait();
+            if let Some(s) = &e.still {
+                let _ = s.wait();
+            }
         }
     }
 
@@ -304,6 +344,64 @@ pub fn generated_png(seed: u64, side: u32) -> Vec<u8> {
             mix(from[1], to[1]),
             mix(from[2], to[2]),
         ]
+    })
+}
+
+/// A deterministic static emoji for `seed`: a round face on a transparent square, so scenes see
+/// how emojis sit in a line of text.
+pub fn generated_emoji(seed: u64, side: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let frame = emoji_frame(seed, side, 0.0);
+    let enc = image::codecs::png::PngEncoder::new(&mut out);
+    image::ImageEncoder::write_image(enc, frame.as_raw(), side, side, image::ExtendedColorType::Rgba8).expect("encodes in memory");
+    out
+}
+
+/// A deterministic animated GIF emoji: the same face bobbing over `frames` frames.
+pub fn generated_animated_emoji(seed: u64, side: u32, frames: u32) -> Vec<u8> {
+    use image::{Delay, Frame, codecs::gif::{GifEncoder, Repeat}};
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.set_repeat(Repeat::Infinite).expect("encodes in memory");
+        for i in 0..frames {
+            let phase = i as f32 / frames as f32 * std::f32::consts::TAU;
+            let delay = Delay::from_numer_denom_ms(80, 1);
+            enc.encode_frame(Frame::from_parts(emoji_frame(seed, side, phase), 0, 0, delay)).expect("encodes in memory");
+        }
+    }
+    out
+}
+
+/// One frame of the generated emoji: a disc in the seed's hue with eyes and a mouth; `phase` moves
+/// the face up and down and squashes the mouth.
+fn emoji_frame(seed: u64, side: u32, phase: f32) -> image::RgbaImage {
+    let hue = ((seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 40) % 360) as f32;
+    let (c, x) = (0.9 * 0.6, 0.9 * 0.6 * (1.0 - ((hue / 60.0) % 2.0 - 1.0).abs()));
+    let m = 0.9 - c;
+    let (r, g, b) = match (hue / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let body = [((r + m) * 255.0) as u8, ((g + m) * 255.0) as u8, ((b + m) * 255.0) as u8];
+    let s = side as f32;
+    let bob = phase.sin() * s * 0.04;
+    image::RgbaImage::from_fn(side, side, |px, py| {
+        let (fx, fy) = ((px as f32 + 0.5) / s - 0.5, (py as f32 + 0.5) / s - 0.5 - bob / s);
+        let d = fx.hypot(fy);
+        let eye = |ex: f32| (fx - ex).hypot(fy + 0.1) < 0.07;
+        let mouth = fy > 0.08 && fy < 0.08 + 0.1 * (0.6 + 0.4 * phase.cos().abs()) && fx.abs() < 0.2 && (fx * fx / 0.04 + (fy - 0.08).powi(2) / 0.01) < 1.6;
+        if d > 0.46 {
+            image::Rgba([0, 0, 0, 0])
+        } else if eye(-0.15) || eye(0.15) || mouth {
+            image::Rgba([40, 30, 30, 255])
+        } else {
+            image::Rgba([body[0], body[1], body[2], 255])
+        }
     })
 }
 

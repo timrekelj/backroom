@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use rune::prefs::Prefs;
 use rune::{Key, Runtime};
-use thehideout_api::{ChannelIcon, GuildLayout, PaletteColor};
+use thehideout_api::{ChannelIcon, ChannelIconRef, GuildLayout, PaletteColor};
 use thehideout_design::components::ToastKind;
 use thehideout_design::icons::catalog;
 
@@ -625,7 +625,7 @@ fn channel_settings_save_sends_only_what_changed_and_shows_the_result() {
         (name, icon, color, topic),
         (
             None,
-            Some(ChannelIcon::new("house")),
+            Some(ChannelIconRef::Phosphor("house".into())),
             Some(PaletteColor::Pink),
             Some("The lobby".to_owned())
         )
@@ -745,7 +745,7 @@ fn the_icon_picker_searches_names_and_tags_and_picks_with_the_keyboard() {
 }
 
 #[test]
-fn emoji_tabs_are_not_yet_available() {
+fn the_emoji_tabs_are_enabled_and_take_the_pick() {
     let (mut rt, _) = tim();
     act(&mut rt, |s| {
         s.open_dialog(DialogKind::ChannelSettings {
@@ -756,16 +756,12 @@ fn emoji_tabs_are_not_yet_available() {
     act(&mut rt, |s| s.toggle_picker());
     settle(&mut rt, 6);
     assert!(has(&rt, "picker-tab-0"));
-    for tab in ["picker-tab-1", "picker-tab-2"] {
-        if let Some(at) = rt.find(tab) {
-            crate::tests::click_at(&mut rt, at);
-        }
+    for (tab, n) in [("picker-tab-1", 1), ("picker-tab-2", 2)] {
+        let at = rt.find(tab).expect("the tab is there");
+        crate::tests::click_at(&mut rt, at);
+        settle(&mut rt, 3);
+        assert_eq!(rt.state.state.channel_form().unwrap().tab, n, "{tab} is enabled");
     }
-    assert_eq!(
-        rt.state.state.channel_form().unwrap().tab,
-        0,
-        "disabled tabs do not take the pick"
-    );
 }
 
 #[test]

@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use thehideout_api::{
-    ApiError, Channel, ChannelIcon, ChannelIconRef, DmChannel, Event, GatewayUpdate, Guild, GuildLayout, LayoutEntry, Member, Message, Page,
-    PaletteColor, Permissions, Role, RoleList, Section, User,
+    ApiError, Channel, ChannelIcon, ChannelIconRef, DmChannel, Emoji, Event, GatewayUpdate, Guild, GuildLayout, LayoutEntry, Member, Message, Page,
+    PaletteColor, Permissions, Reaction, ReactionEmoji, Role, RoleList, Section, User,
 };
 
 use crate::backend::{Backend, Command, GuildAccess, Initial, Reply, Session};
@@ -55,6 +55,15 @@ pub const BAND_DRUMMER: u64 = 2003;
 pub const BAND_ROADIE: u64 = 2001;
 pub const BAND_GUEST: u64 = 2002;
 pub const BAND_FAN: u64 = 2004;
+/// The ids of The Hideout's custom emojis (the animated ones are `PARROT`, `DANCE_CAT` and `WOBBLE`).
+pub const SMUG_CAT: u64 = 7001;
+pub const PARROT: u64 = 7002;
+pub const SHIPIT: u64 = 7003;
+pub const BLOB_LOVE: u64 = 7004;
+pub const DANCE_CAT: u64 = 7005;
+pub const WOBBLE: u64 = 7006;
+/// Garage Band's two (one animated).
+pub const DRUM_SOLO: u64 = 7101;
 pub const DM_ANA: u64 = 50;
 pub const DM_BRUNO: u64 = 51;
 pub const TIM: u64 = 1;
@@ -108,6 +117,11 @@ struct World {
     /// Stored pictures by media key (uploads); `gen-N` keys are generated on demand.
     media: HashMap<String, Vec<u8>>,
     next_media: u64,
+    /// Each guild's custom emojis; their pictures are `emoji-<id>` keys generated on demand.
+    emojis: HashMap<u64, Vec<Emoji>>,
+    next_emoji: u64,
+    /// The next `n` reaction calls fail with a network error.
+    fail_reactions: u32,
 }
 
 impl Default for World {
@@ -218,9 +232,13 @@ impl World {
             next_role: 5000,
             media: HashMap::new(),
             next_media: 0,
+            emojis: HashMap::new(),
+            next_emoji: 7200,
+            fail_reactions: 0,
         };
         f.seed_structure();
         f.seed();
+        f.seed_emojis();
         f
     }
 
@@ -267,7 +285,7 @@ impl World {
             2,
             vec![
                 role(BAND_DRUMMER, 2, "Drummer", C::Orange, 3, Permissions::NONE),
-                role(BAND_ROADIE, 2, "Roadie", C::Blue, 2, Permissions::MANAGE_ROLES | crate::perms::MANAGE_EMOJIS),
+                role(BAND_ROADIE, 2, "Roadie", C::Blue, 2, Permissions::MANAGE_ROLES | Permissions::MANAGE_EMOJIS),
                 role(BAND_GUEST, 2, "Guest", C::Slate, 1, Permissions::NONE),
                 role(BAND_FAN, 2, "Fan", C::None, 0, Permissions::NONE),
             ],
@@ -282,6 +300,151 @@ impl World {
         for g in [1, 2, 3] {
             self.sync_channels(g);
         }
+    }
+
+    /// Custom emojis, messages that use them and reactions: #memes shows them all, and the last
+    /// messages of #general carry a few reactions.
+    fn seed_emojis(&mut self) {
+        let emoji = |id: u64, guild: u64, name: &str, animated: bool, by: u64| Emoji {
+            id,
+            guild_id: guild,
+            name: name.into(),
+            animated,
+            image: format!("emoji-{id}"),
+            creator_id: by,
+            created_at: time(utc(2026, 2, 3, 10, 0) + id as i64 * 60),
+        };
+        self.emojis.insert(
+            HIDEOUT,
+            vec![
+                emoji(BLOB_LOVE, HIDEOUT, "blob_love", false, ANA),
+                emoji(DANCE_CAT, HIDEOUT, "dance_cat", true, BRUNO),
+                emoji(PARROT, HIDEOUT, "party_parrot", true, TIM),
+                emoji(SHIPIT, HIDEOUT, "shipit", false, TIM),
+                emoji(SMUG_CAT, HIDEOUT, "smug_cat", false, CVETKA),
+                emoji(WOBBLE, HIDEOUT, "wobble", true, ANA),
+            ],
+        );
+        self.emojis.insert(2, vec![emoji(DRUM_SOLO, 2, "drum_solo", false, ANA)]);
+        let mut at = now_unix() - 3 * 3600;
+        let mut say = |f: &mut World, who: u64, text: &str| {
+            at += 40;
+            f.push(MEMES, who, at, text);
+        };
+        say(self, ANA, "okay but the new emoji pack <:blob_love:7004>");
+        say(self, BRUNO, "look at this guy <a:dance_cat:7005> and this one <:smug_cat:7001>");
+        say(self, TIM, "shipping the release tonight <:shipit:7003>");
+        say(self, CVETKA, "<a:party_parrot:7002>");
+        say(self, ANA, "<:smug_cat:7001> <:blob_love:7004> <:shipit:7003>");
+        say(self, BRUNO, "\u{1f389}\u{1f389}\u{1f389}");
+        say(self, TIM, "unknown ones stay text: <:gone:99999> and a flag \u{1f1f8}\u{1f1ee}");
+        say(self, CVETKA, "**bold** with <:smug_cat:7001> inline, and a long enough line to wrap over to the next row so you can see how pictures sit in the text flow");
+        let unicode = |e: &str| ReactionEmoji::Unicode(e.into());
+        let r = |emoji: ReactionEmoji, count: u32, me: bool| Reaction { emoji, count, me };
+        let memes = self.messages.entry(MEMES).or_default();
+        let n = memes.len();
+        memes[n - 8].reactions = vec![r(unicode("\u{2764}\u{fe0f}"), 3, true), r(ReactionEmoji::Custom(BLOB_LOVE), 2, false), r(unicode("\u{1f44d}"), 1, false)];
+        memes[n - 7].reactions = vec![r(ReactionEmoji::Custom(DANCE_CAT), 4, true), r(ReactionEmoji::Custom(SMUG_CAT), 1, false), r(unicode("\u{1f602}"), 6, false)];
+        memes[n - 6].reactions = vec![r(unicode("\u{1f680}"), 2, false), r(ReactionEmoji::Custom(SHIPIT), 5, true)];
+        memes[n - 5].reactions = vec![r(ReactionEmoji::Custom(PARROT), 12, false), r(unicode("\u{1f389}"), 7, true)];
+        let general = self.messages.entry(GENERAL).or_default();
+        let n = general.len();
+        general[n - 3].reactions = vec![r(unicode("\u{1f44d}"), 2, false), r(unicode("\u{1f440}"), 1, true)];
+        general[n - 5].reactions = vec![r(unicode("\u{1f602}"), 3, false)];
+    }
+
+    fn emojis_sorted(&self, guild: u64) -> Vec<Emoji> {
+        let mut list = self.emojis.get(&guild).cloned().unwrap_or_default();
+        list.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        list
+    }
+
+    fn emojis_event(&self, guild: u64) -> Reply {
+        Reply::Gateway(GatewayUpdate::Event(Event::EmojisUpdated { guild_id: guild, emojis: self.emojis_sorted(guild) }))
+    }
+
+    /// What the server checks when an emoji is added: permission, name, the 200 cap, the size, the format.
+    fn create_emoji(&mut self, guild: u64, me: u64, name: &str, bytes: Vec<u8>, content_type: &str) -> Result<Emoji, ApiError> {
+        if !self.has_perm(guild, me, Permissions::MANAGE_EMOJIS) {
+            return Err(ApiError::PermissionDenied);
+        }
+        if !crate::emoji::valid_name(name) {
+            return Err(ApiError::InvalidArgument("emoji name must match [a-z0-9_]{2,32}".into()));
+        }
+        if bytes.len() > thehideout_api::MAX_EMOJI_BYTES {
+            return Err(ApiError::TooLarge);
+        }
+        check_image(&bytes, content_type)?;
+        let list = self.emojis.entry(guild).or_default();
+        if list.len() >= crate::emoji::MAX_EMOJIS {
+            return Err(ApiError::Precondition("a server can have at most 200 emojis".into()));
+        }
+        if list.iter().any(|e| e.name == name) {
+            return Err(ApiError::AlreadyExists);
+        }
+        self.next_emoji += 1;
+        self.next_media += 1;
+        let (id, key) = (self.next_emoji, format!("up-{}", self.next_media));
+        let animated = bytes.starts_with(b"GIF8");
+        self.media.insert(key.clone(), bytes);
+        let e = Emoji { id, guild_id: guild, name: name.into(), animated, image: key, creator_id: me, created_at: time(now_unix()) };
+        self.emojis.entry(guild).or_default().push(e.clone());
+        Ok(e)
+    }
+
+    fn rename_emoji(&mut self, guild: u64, me: u64, emoji: u64, name: &str) -> Result<Emoji, ApiError> {
+        if !self.has_perm(guild, me, Permissions::MANAGE_EMOJIS) {
+            return Err(ApiError::PermissionDenied);
+        }
+        if !crate::emoji::valid_name(name) {
+            return Err(ApiError::InvalidArgument("emoji name must match [a-z0-9_]{2,32}".into()));
+        }
+        let list = self.emojis.entry(guild).or_default();
+        if list.iter().any(|e| e.id != emoji && e.name == name) {
+            return Err(ApiError::AlreadyExists);
+        }
+        let e = list.iter_mut().find(|e| e.id == emoji).ok_or(ApiError::NotFound)?;
+        e.name = name.into();
+        Ok(e.clone())
+    }
+
+    /// Adds or removes `user`'s reaction like the server: idempotent, at most 20 distinct emojis
+    /// a message, a custom emoji must belong to the channel's guild (and none in a DM).
+    fn react(&mut self, channel: u64, message: u64, user: u64, emoji: &ReactionEmoji, add: bool) -> Result<(), ApiError> {
+        let guild = self.channels.iter().find(|c| c.id == channel).map(|c| c.guild_id);
+        if let ReactionEmoji::Custom(id) = emoji
+            && !guild.is_some_and(|g| self.emojis.get(&g).is_some_and(|l| l.iter().any(|e| e.id == *id)))
+        {
+            return Err(ApiError::InvalidArgument("that emoji can't be used in this channel".into()));
+        }
+        let m = self.messages.get_mut(&channel).and_then(|v| v.iter_mut().find(|m| m.id == message)).ok_or(ApiError::NotFound)?;
+        let mine = user == self.me.id;
+        let at = m.reactions.iter().position(|r| &r.emoji == emoji);
+        match (at, add) {
+            (Some(i), true) => {
+                if !(mine && m.reactions[i].me) {
+                    m.reactions[i].count += 1;
+                    m.reactions[i].me |= mine;
+                }
+            }
+            (None, true) => {
+                if m.reactions.len() >= thehideout_design::components::MAX_REACTIONS {
+                    return Err(ApiError::Precondition("a message can have at most 20 different reactions".into()));
+                }
+                m.reactions.push(Reaction { emoji: emoji.clone(), count: 1, me: mine });
+            }
+            (Some(i), false) => {
+                if !mine || m.reactions[i].me {
+                    m.reactions[i].count = m.reactions[i].count.saturating_sub(1);
+                    m.reactions[i].me &= !mine;
+                    if m.reactions[i].count == 0 {
+                        m.reactions.remove(i);
+                    }
+                }
+            }
+            (None, false) => {}
+        }
+        Ok(())
     }
 
     /// Channels carry their place too; keep it in step with the layout.
@@ -793,7 +956,8 @@ impl World {
                                 c.name = n;
                             }
                             if let Some(i) = icon {
-                                c.icon = i;
+                                c.icon = ChannelIcon::new(i.phosphor_name());
+                                c.icon_ref = i;
                             }
                             if let Some(col) = color {
                                 c.color = col;
@@ -916,8 +1080,8 @@ impl World {
                         created_at: time(now_unix()),
                         section_id: section,
                         position: 0,
-                        icon_ref: ChannelIconRef::from(&icon),
-                        icon,
+                        icon: ChannelIcon::new(icon.phosphor_name()),
+                        icon_ref: icon,
                         color,
                         topic: String::new(),
                     };
@@ -975,12 +1139,69 @@ impl World {
                 };
                 vec![Reply::DmOpened(r)]
             }
+            Command::LoadEmojis { guild } => {
+                let result = if self.members.get(&guild).is_some_and(|m| m.contains(&me)) { Ok(self.emojis_sorted(guild)) } else { Err(ApiError::NotFound) };
+                vec![Reply::Emojis { guild, result }]
+            }
+            Command::CreateEmoji { guild, name, bytes, content_type } => {
+                let r = self.create_emoji(guild, me, &name, bytes, &content_type);
+                let echo = r.is_ok().then(|| self.emojis_event(guild));
+                std::iter::once(Reply::EmojiSaved { guild, result: r }).chain(echo).collect()
+            }
+            Command::RenameEmoji { guild, emoji, name } => {
+                let r = self.rename_emoji(guild, me, emoji, &name);
+                let echo = r.is_ok().then(|| self.emojis_event(guild));
+                std::iter::once(Reply::EmojiSaved { guild, result: r }).chain(echo).collect()
+            }
+            Command::DeleteEmoji { guild, emoji } => {
+                let r = if !self.has_perm(guild, me, Permissions::MANAGE_EMOJIS) {
+                    Err(ApiError::PermissionDenied)
+                } else {
+                    let list = self.emojis.entry(guild).or_default();
+                    match list.iter().position(|e| e.id == emoji) {
+                        Some(i) => {
+                            list.remove(i);
+                            Ok(())
+                        }
+                        None => Err(ApiError::NotFound),
+                    }
+                };
+                let echo = r.is_ok().then(|| self.emojis_event(guild));
+                std::iter::once(Reply::EmojiDeleted { guild, emoji, result: r }).chain(echo).collect()
+            }
+            Command::AddReaction { channel, message, emoji } => {
+                let result = if self.fail_reactions > 0 {
+                    self.fail_reactions -= 1;
+                    Err(ApiError::Network("simulated outage".into()))
+                } else {
+                    self.react(channel, message, me, &emoji, true)
+                };
+                let echo = result.is_ok().then(|| Reply::Gateway(GatewayUpdate::Event(Event::ReactionAdded { channel_id: channel, message_id: message, emoji: emoji.clone(), user_id: me })));
+                std::iter::once(Reply::ReactionSaved { channel, message, emoji, add: true, result }).chain(echo).collect()
+            }
+            Command::RemoveReaction { channel, message, emoji } => {
+                let result = if self.fail_reactions > 0 {
+                    self.fail_reactions -= 1;
+                    Err(ApiError::Network("simulated outage".into()))
+                } else {
+                    self.react(channel, message, me, &emoji, false)
+                };
+                let echo = result.is_ok().then(|| Reply::Gateway(GatewayUpdate::Event(Event::ReactionRemoved { channel_id: channel, message_id: message, emoji: emoji.clone(), user_id: me })));
+                std::iter::once(Reply::ReactionSaved { channel, message, emoji, add: false, result }).chain(echo).collect()
+            }
             Command::FetchMedia { key } => {
                 let result = match self.media.get(&key) {
                     Some(bytes) => Ok(bytes.clone()),
                     None => match key.strip_prefix("gen-").and_then(|n| n.parse::<u64>().ok()) {
                         Some(seed) => Ok(crate::media::generated_png(seed, 64)),
-                        None => Err(ApiError::NotFound),
+                        None => match key.strip_prefix("emoji-").and_then(|n| n.parse::<u64>().ok()) {
+                            Some(id) => match self.emojis.values().flatten().find(|e| e.id == id) {
+                                Some(e) if e.animated => Ok(crate::media::generated_animated_emoji(id, 64, 8)),
+                                Some(_) => Ok(crate::media::generated_emoji(id, 64)),
+                                None => Err(ApiError::NotFound),
+                            },
+                            None => Err(ApiError::NotFound),
+                        },
                     },
                 };
                 vec![Reply::Media { key, result }]
@@ -1344,6 +1565,52 @@ impl FakeBackend {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn channel(&self, id: u64) -> Option<Channel> {
         self.0.borrow().channels.iter().find(|c| c.id == id).cloned()
+    }
+
+    /// The server's custom emojis of `guild`, by name (tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn emojis(&self, guild: u64) -> Vec<Emoji> {
+        self.0.borrow().emojis_sorted(guild)
+    }
+
+    /// Fills `guild` with generated emojis up to `n` in all (tests of the 200 cap).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn fill_emojis(&self, guild: u64, n: usize) {
+        let mut w = self.0.borrow_mut();
+        let have = w.emojis.get(&guild).map_or(0, Vec::len);
+        for i in have..n {
+            w.next_emoji += 1;
+            let id = w.next_emoji;
+            let e = Emoji { id, guild_id: guild, name: format!("filler_{i}"), animated: false, image: format!("emoji-{id}"), creator_id: TIM, created_at: time(now_unix()) };
+            w.emojis.entry(guild).or_default().push(e);
+        }
+    }
+
+    /// `user` reacts (or takes the reaction back) on a message, announced on the gateway (tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn react_as(&self, channel: u64, message: u64, emoji: ReactionEmoji, user: u64, add: bool) {
+        let mut w = self.0.borrow_mut();
+        let _ = w.react(channel, message, user, &emoji, add);
+        let event = if add { Event::ReactionAdded { channel_id: channel, message_id: message, emoji, user_id: user } } else { Event::ReactionRemoved { channel_id: channel, message_id: message, emoji, user_id: user } };
+        w.enqueue(Reply::Gateway(GatewayUpdate::Event(event)));
+    }
+
+    /// `user` reacts, but the gateway never says so: the client is away and only a fetch finds it (tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn react_missed(&self, channel: u64, message: u64, emoji: ReactionEmoji, user: u64, add: bool) {
+        let _ = self.0.borrow_mut().react(channel, message, user, &emoji, add);
+    }
+
+    /// Makes the next `n` reaction calls fail, as a network error (tests of the rollback).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn fail_reactions(&self, n: u32) {
+        self.0.borrow_mut().fail_reactions = n;
+    }
+
+    /// The server's copy of a message (tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn message(&self, channel: u64, id: u64) -> Option<Message> {
+        self.0.borrow().messages.get(&channel)?.iter().find(|m| m.id == id).cloned()
     }
 
     /// `author` posts `content` in `channel`, as the gateway would deliver it.

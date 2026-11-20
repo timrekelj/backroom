@@ -7,7 +7,8 @@
 //! IconButton while there is text and a disabled Ghost while there is none; the fill moves
 //! between them on `motion::CONTROL`. Pressing it squeezes it 4% (`press_scale`, Rune's press
 //! spring). With `.disabled_reason("Reconnecting\u{2026}")` the box shows the reason instead
-//! of a field and every button is disabled.
+//! of a field and every button is disabled. The emoji button is keyed `<key>-emoji` so the app can
+//! anchor its picker on it.
 
 use std::rc::Rc;
 
@@ -32,6 +33,7 @@ pub struct Composer {
     bind: Option<(Applier, Applier, Applier)>,
     add: Option<Applier>,
     emoji: Option<Applier>,
+    field_key: Option<Applier>,
 }
 
 impl Composer {
@@ -44,6 +46,7 @@ impl Composer {
             bind: None,
             add: None,
             emoji: None,
+            field_key: None,
         }
     }
     /// The root key; give each composer in a window its own (default "composer").
@@ -92,6 +95,12 @@ impl Composer {
         self.add = Some(Box::new(move |e| e.on_press(f)));
         self
     }
+    /// Sees keys before the field does (the app's autocomplete takes Tab, Enter, Escape and the
+    /// arrows while its list is open): return true to consume one.
+    pub fn on_key<S: 'static>(mut self, f: impl Fn(&mut S, &rune::KeyEvent, &mut Tx) -> bool + 'static) -> Self {
+        self.field_key = Some(Box::new(move |e| e.on_input_key(f)));
+        self
+    }
     pub fn on_emoji<S: 'static>(mut self, f: impl Fn(&mut S) + 'static) -> Self {
         self.emoji = Some(Box::new(move |e| e.on_press(f)));
         self
@@ -124,6 +133,9 @@ impl Composer {
                 None => (None, None),
             };
             if let Some(f) = field_bind {
+                field = f(field);
+            }
+            if let Some(f) = self.field_key {
                 field = f(field);
             }
             return finish(
@@ -165,7 +177,7 @@ fn finish(
     if let (Some(a), false) = (add, blocked) {
         plus = a(plus);
     }
-    let mut smile = IconButton::new(&SMILEY, "Emoji").disabled(blocked).build(k);
+    let mut smile = IconButton::new(&SMILEY, "Emoji").disabled(blocked).build(k).key(format!("{key}-emoji"));
     if let (Some(a), false) = (emoji, blocked) {
         smile = a(smile);
     }

@@ -6,6 +6,8 @@ pub mod auth;
 pub mod channels;
 pub mod composer;
 pub mod dialogs;
+pub mod emoji;
+pub mod emoji_settings;
 pub mod members;
 pub mod rail;
 pub mod server_settings;

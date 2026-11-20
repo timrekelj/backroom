@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use thehideout_api::{
-    ApiError, Channel, ChannelIcon, DmChannel, GatewayUpdate, Guild, GuildLayout, Member, Message, Page, PaletteColor, Permissions, Role, RoleList, Section,
-    User,
+    ApiError, Channel, ChannelIconRef, DmChannel, Emoji, GatewayUpdate, Guild, GuildLayout, Member, Message, Page, PaletteColor, Permissions, ReactionEmoji, Role,
+    RoleList, Section, User,
 };
 
 /// What a picked picture is for.
@@ -16,6 +16,8 @@ use thehideout_api::{
 pub enum ImagePurpose {
     Avatar,
     GuildIcon { guild: u64 },
+    /// A custom emoji to add to `guild`.
+    Emoji { guild: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,7 +57,7 @@ pub enum Command {
         guild: u64,
         name: String,
         section: Option<u64>,
-        icon: ChannelIcon,
+        icon: ChannelIconRef,
         color: PaletteColor,
     },
     /// The guild's roles and who holds which: what decides the controls shown.
@@ -85,7 +87,7 @@ pub enum Command {
         guild: u64,
         channel: u64,
         name: Option<String>,
-        icon: Option<ChannelIcon>,
+        icon: Option<ChannelIconRef>,
         color: Option<PaletteColor>,
         topic: Option<String>,
     },
@@ -150,6 +152,38 @@ pub enum Command {
         guild: u64,
         user: u64,
         role_ids: Vec<u64>,
+    },
+    /// The guild's custom emojis.
+    LoadEmojis {
+        guild: u64,
+    },
+    /// Uploads a custom emoji (PNG, JPEG, WebP or GIF, at most 2 MiB; the name is `[a-z0-9_]{2,32}`).
+    CreateEmoji {
+        guild: u64,
+        name: String,
+        bytes: Vec<u8>,
+        content_type: String,
+    },
+    RenameEmoji {
+        guild: u64,
+        emoji: u64,
+        name: String,
+    },
+    DeleteEmoji {
+        guild: u64,
+        emoji: u64,
+    },
+    /// Adds your reaction (idempotent).
+    AddReaction {
+        channel: u64,
+        message: u64,
+        emoji: ReactionEmoji,
+    },
+    /// Takes your reaction back (idempotent).
+    RemoveReaction {
+        channel: u64,
+        message: u64,
+        emoji: ReactionEmoji,
     },
     SignOut,
     /// Launch: validate the saved session, if there is one.
@@ -272,6 +306,29 @@ pub enum Reply {
         guild: u64,
         user: u64,
         result: R<Member>,
+    },
+    /// Answer to `LoadEmojis`.
+    Emojis {
+        guild: u64,
+        result: R<Vec<Emoji>>,
+    },
+    /// Answer to `CreateEmoji` and `RenameEmoji`.
+    EmojiSaved {
+        guild: u64,
+        result: R<Emoji>,
+    },
+    EmojiDeleted {
+        guild: u64,
+        emoji: u64,
+        result: R<()>,
+    },
+    /// Answer to `AddReaction` (`add`) and `RemoveReaction`.
+    ReactionSaved {
+        channel: u64,
+        message: u64,
+        emoji: ReactionEmoji,
+        add: bool,
+        result: R<()>,
     },
     SignedOut,
     /// Answer to `Resume`: no saved session, a valid one (its server URL and the session), or why

@@ -10,6 +10,7 @@
 //! | [`MessageGroup`], [`ChatMessage`] | `message`, `body`, `markdown` |
 //! | [`DateDivider`], [`NewMessagesDivider`] | `dividers` |
 //! | [`Composer`] | `composer` |
+//! | [`EmojiPicker`], [`EmojiSuggest`], [`EmojiSet`] | `emoji_picker`, `emoji` |
 //! | [`ChannelHeader`], [`MemberRow`], [`EmptyState`] | `header`, `member_row`, `empty_state` |
 //! | [`Dialog`], [`Toast`], [`ConnectionStatus`] | `dialog`, `toast`, `connection` |
 
@@ -27,6 +28,8 @@ pub mod composer;
 pub mod connection;
 pub mod dialog;
 pub mod dividers;
+pub mod emoji;
+pub mod emoji_picker;
 pub mod empty_state;
 pub mod guild_badge;
 pub mod header;
@@ -43,11 +46,13 @@ pub use composer::Composer;
 pub use connection::{ConnectionPill, ConnectionStatus};
 pub use dialog::{Dialog, dialog_field};
 pub use dividers::{DateDivider, NewMessagesDivider};
+pub use emoji::{EmojiImage, EmojiSet, Pick, ServerEmoji, Suggestion};
+pub use emoji_picker::{EmojiPicker, EmojiPickerState, EmojiSuggest, Scope as EmojiScope};
 pub use empty_state::EmptyState;
 pub use guild_badge::{GuildBadge, RailTile};
 pub use header::ChannelHeader;
 pub use member_row::MemberRow;
-pub use message::{ChatMessage, DeliveryState, GROUP_WINDOW_SECS, MessageGroup, collapses_into};
+pub use message::{ChatMessage, DeliveryState, GROUP_WINDOW_SECS, MAX_REACTIONS, MessageGroup, ReactionChip, ReactionGlyph, collapses_into};
 pub use nav_row::{ChannelRow, NavRow};
 pub use pickers::{ColorSwatches, IconGrid, PickerTabs};
 pub use segmented::Segmented;

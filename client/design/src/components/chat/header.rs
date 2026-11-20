@@ -18,6 +18,7 @@ pub struct ChannelHeader {
     actions: Vec<El>,
     glyph: &'static Icon,
     tint: Option<Tone>,
+    art: Option<El>,
 }
 
 impl ChannelHeader {
@@ -29,6 +30,7 @@ impl ChannelHeader {
             actions: Vec::new(),
             glyph: &HASH,
             tint: None,
+            art: None,
         }
     }
     /// The breadcrumb variant: "Guild / # channel" (no topic).
@@ -44,6 +46,11 @@ impl ChannelHeader {
         self.tint = tint;
         self
     }
+    /// An emoji (a built element about 18pt square) in place of the icon.
+    pub fn emoji(mut self, art: El) -> Self {
+        self.art = Some(art);
+        self
+    }
     pub fn topic(mut self, topic: impl Into<String>) -> Self {
         self.topic = Some(topic.into());
         self
@@ -56,9 +63,12 @@ impl ChannelHeader {
 
     pub fn build(self, k: &Kit) -> El {
         let t = theme_of(k);
-        let hash = icon(self.glyph, size::MD)
-            .color(self.tint.unwrap_or(t.text_faint).color())
-            .a11y_hidden();
+        let hash = match self.art {
+            Some(art) => row().size(size::MD, size::MD).center().child(art),
+            None => icon(self.glyph, size::MD)
+                .color(self.tint.unwrap_or(t.text_faint).color())
+                .a11y_hidden(),
+        };
         let mut left = row().grow(1.0).shrink().min_w(0.0).gap(8.0).center_y();
         if let Some(g) = &self.guild {
             left = left

@@ -15,11 +15,13 @@
 use std::rc::Rc;
 
 use rune::{col, el, row, text, El, SpringPair, Transition};
-use rune_kit::Kit;
+use rune_kit::{Kit, RollingText};
 
 use super::body;
+use super::emoji::EmojiSet;
+use super::emoji_picker::picture;
 use crate::components::{Avatar, IconButton, Size};
-use crate::icons::{COPY, DOTS_THREE, REPLY};
+use crate::icons::{COPY, DOTS_THREE, PLUS, REPLY, SMILEY};
 use crate::theme_of;
 use crate::tokens::{motion, radius, type_};
 
@@ -43,7 +45,32 @@ pub enum DeliveryState {
     Failed,
 }
 
+/// Distinct emojis a message may carry reactions for; past it the "+" chip is disabled.
+pub const MAX_REACTIONS: usize = 20;
+/// Side of a custom emoji in a reaction chip.
+const CHIP_EMOJI: f32 = 18.0;
+
+/// The emoji of a reaction chip.
 #[derive(Clone, Debug, PartialEq)]
+pub enum ReactionGlyph {
+    Unicode(String),
+    /// A custom emoji: its id (to find the picture) and its name (the fallback label).
+    Custom { id: String, name: String },
+}
+
+/// One chip under a message: an emoji, how many reacted, whether you did.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReactionChip {
+    /// The reaction's key (`u:…` / `c:…`), handed back when the chip is pressed.
+    pub key: String,
+    pub glyph: ReactionGlyph,
+    pub count: u32,
+    pub me: bool,
+    /// The hover text: who reacted, or at least the emoji's name.
+    pub tip: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct ChatMessage {
     pub id: String,
     pub author_id: String,
@@ -55,6 +82,7 @@ pub struct ChatMessage {
     pub body: String,
     pub delivery: DeliveryState,
     pub mentions_me: bool,
+    pub reactions: Vec<ReactionChip>,
 }
 
 /// Whether `next` joins the group `prev` ends: same author, at most five minutes later.
@@ -63,6 +91,8 @@ pub fn collapses_into(prev: &ChatMessage, next: &ChatMessage) -> bool {
 }
 
 type Hook = Box<dyn Fn(El, &str) -> El>;
+/// Hooks the chips: the message id and the reaction key.
+type ChipHook = Box<dyn Fn(El, &str, &str) -> El>;
 /// Looks something up by author id: their picture, or their name's colour.
 type ById<T> = Rc<dyn Fn(&str) -> Option<T>>;
 
@@ -73,6 +103,9 @@ pub struct MessageGroup {
     copy: Option<Hook>,
     more: Option<Hook>,
     retry: Option<Hook>,
+    react: Option<ChipHook>,
+    add_reaction: Option<ChipHook>,
+    emojis: Option<EmojiSet>,
     wire: Option<body::Wire>,
     avatar: Option<ById<rune::Pixels>>,
     name_color: Option<ById<rune::Color>>,
@@ -97,11 +130,42 @@ impl MessageGroup {
             copy: None,
             more: None,
             retry: None,
+            react: None,
+            add_reaction: None,
+            emojis: None,
             wire: None,
             avatar: None,
             name_color: None,
             mention: None,
         }
+    }
+
+    /// How custom emojis in bodies and reaction chips find their pictures.
+    pub fn emojis(mut self, set: EmojiSet) -> Self {
+        self.emojis = Some(set);
+        self
+    }
+
+    /// A chip was pressed: toggles your reaction. Called with the message id and the reaction key.
+    pub fn on_react<S: 'static>(mut self, f: impl Fn(&mut S, &str, &str) + 'static) -> Self {
+        let f = Rc::new(f);
+        self.react = Some(Box::new(move |e, id, key| {
+            let (f, id, key) = (f.clone(), id.to_owned(), key.to_owned());
+            e.on_press(move |s: &mut S| f(s, &id, &key))
+        }));
+        self
+    }
+
+    /// The "+" chip or the hover bar's React button was pressed: the app opens its picker, hung
+    /// from the element keyed by the second argument (`react-add-<id>` or `react-bar-<id>`).
+    /// Called with the message id and that key.
+    pub fn on_add_reaction<S: 'static>(mut self, f: impl Fn(&mut S, &str, &str) + 'static) -> Self {
+        let f = Rc::new(f);
+        self.add_reaction = Some(Box::new(move |e, id, anchor| {
+            let (f, id, anchor) = (f.clone(), id.to_owned(), anchor.to_owned());
+            e.on_press(move |s: &mut S| f(s, &id, &anchor))
+        }));
+        self
     }
 
     /// Each author's picture (by `ChatMessage::author_id`), drawn over their initials.
@@ -235,11 +299,14 @@ impl MessageGroup {
             1.0
         };
         content = content.child(
-            body::render_styled(k, &m.body, &m.id, self.wire.as_ref(), self.mention.as_ref())
+            body::render_full(k, &m.body, &m.id, self.wire.as_ref(), self.mention.as_ref(), self.emojis.as_ref())
                 .key("body")
                 .opacity(dim)
                 .opacity_motion(motion::CONTROL),
         );
+        if !m.reactions.is_empty() {
+            content = content.child(self.chips(k, m));
+        }
         if m.delivery == DeliveryState::Failed {
             let mut retry = text("Retry")
                 .font(type_::CONTROL_STRONG)
@@ -305,6 +372,82 @@ impl MessageGroup {
         r.child(self.actions(k, &m.id, forced))
     }
 
+    /// The chips under a body, then "+".
+    fn chips(&self, k: &Kit, m: &ChatMessage) -> El {
+        let t = theme_of(k);
+        let none = EmojiSet::none();
+        let set = self.emojis.as_ref().unwrap_or(&none);
+        // A chip pops in when its emoji is first reacted with; a count change rolls.
+        let pop = Transition::scale(0.8)
+            .combined(Transition::opacity())
+            .springs(SpringPair::new(motion::POP, motion::CONTROL));
+        let mut line = row().key("reactions").w_full().flex_wrap().gap(4.0).pt(2.0).items_center();
+        for c in &m.reactions {
+            let art = match &c.glyph {
+                ReactionGlyph::Unicode(g) => text(g.clone()).font(rune::TextStyle::new(15.0, 400.0).lh(20.0)).a11y_hidden(),
+                ReactionGlyph::Custom { id, name } => match set.get(id) {
+                    Some(img) => picture(k, set, &img, CHIP_EMOJI, false),
+                    None => text(format!(":{name}:")).font(type_::CAPTION).color(t.text_muted.color()).a11y_hidden(),
+                },
+            };
+            let ink = if c.me { t.accent_text } else { t.text_muted };
+            let count = RollingText::new(format!("rxc-{}-{}", m.id, c.key), c.count.to_string())
+                .value(f64::from(c.count))
+                .font(type_::CONTROL_STRONG)
+                .color(ink.color())
+                .build(k);
+            let mut chip = row()
+                .key(format!("rx-{}-{}", m.id, c.key))
+                .role("button")
+                .label(format!("{}, {} {}{}", c.tip, c.count, if c.count == 1 { "reaction" } else { "reactions" }, if c.me { ", you reacted" } else { "" }))
+                .focus_selected(c.me)
+                .h(24.0)
+                .px(6.0)
+                .gap(5.0)
+                .center_y()
+                .radius(radius::MD)
+                .focusable(true)
+                .focus_ring(2.0, 1.0, k.c.border_focus)
+                .help(c.tip.clone())
+                .transition(pop)
+                .token_motion(motion::CONTROL)
+                .child(art)
+                .child(count);
+            chip = if c.me {
+                chip.fill(t.accent_subtle.color()).border(1.0, t.accent.color())
+            } else {
+                chip.fill(t.surface_raised.color()).border(1.0, t.border_subtle.color()).hover(t.hover.color()).press(t.pressed.color())
+            };
+            if let Some(h) = &self.react {
+                chip = h(chip, &m.id, &c.key);
+            }
+            line = line.child(chip);
+        }
+        let full = m.reactions.len() >= MAX_REACTIONS;
+        let mut add = row()
+            .key(format!("react-add-{}", m.id))
+            .role("button")
+            .label(if full { "Add reaction (limit reached)" } else { "Add reaction" })
+            .size(28.0, 24.0)
+            .center()
+            .radius(radius::MD)
+            .border(1.0, t.border_subtle.color())
+            .focusable(!full)
+            .focus_ring(2.0, 1.0, k.c.border_focus)
+            .help(if full { format!("A message can have {MAX_REACTIONS} different reactions") } else { "Add reaction".to_owned() })
+            .child(rune::icon(&PLUS, crate::tokens::icon::XS).color(t.text_muted.color()).a11y_hidden());
+        add = if full {
+            add.layer_opacity(0.5).disabled(true)
+        } else {
+            let a = add.hover(t.hover.color()).press(t.pressed.color());
+            match &self.add_reaction {
+                Some(h) => h(a, &m.id, &format!("react-add-{}", m.id)),
+                None => a,
+            }
+        };
+        line.child(add)
+    }
+
     fn actions(&self, k: &Kit, id: &str, forced: bool) -> El {
         let t = theme_of(k);
         let btn = |g: &'static rune::Icon, label: &str, h: &Option<Hook>| {
@@ -322,6 +465,13 @@ impl MessageGroup {
             .radius(radius::MD)
             .fill(t.surface_overlay.color())
             .border(1.0, t.border.color())
+            .child({
+                let b = IconButton::new(&SMILEY, "Add reaction").size(Size::Sm).build(k).key(format!("react-bar-{id}"));
+                match &self.add_reaction {
+                    Some(h) => h(b, id, &format!("react-bar-{id}")),
+                    None => b,
+                }
+            })
             .child(btn(&REPLY, "Reply", &self.reply))
             .child(btn(&COPY, "Copy text", &self.copy))
             .child(btn(&DOTS_THREE, "More", &self.more));
@@ -354,6 +504,7 @@ mod tests {
             body: String::new(),
             delivery: DeliveryState::Sent,
             mentions_me: false,
+            reactions: Vec::new(),
         }
     }
 

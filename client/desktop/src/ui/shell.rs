@@ -122,6 +122,9 @@ fn header(a: &App, k: &Kit, lay: Layout) -> El {
             if let Some(c) = s.current_guild_channel() {
                 let glyph = catalog::by_name(c.icon.as_str()).unwrap_or(&HASH);
                 h = h.glyph(glyph, palette_color(c.color.as_key(), t));
+                if let Some(art) = super::emoji::channel_art(a, k, c, 18.0) {
+                    h = h.emoji(art);
+                }
                 if !c.topic.is_empty() {
                     h = h.topic(c.topic.clone());
                 }

@@ -20,6 +20,8 @@ impl Permissions {
     pub const MANAGE_CHANNELS: Self = Self(4);
     /// Create / update / delete / reorder roles and assign them to members.
     pub const MANAGE_ROLES: Self = Self(8);
+    /// Create / rename / delete custom emojis.
+    pub const MANAGE_EMOJIS: Self = Self(16);
 
     pub const fn bits(self) -> u64 {
         self.0

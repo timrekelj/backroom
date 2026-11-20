@@ -14,7 +14,7 @@ use thehideout_design::icons::{self, BELL, PLUS, SEARCH, USERS};
 use thehideout_design::{radius, theme_of, type_};
 
 use crate::G;
-use crate::chat::sample;
+use crate::chat::{chip, sample};
 
 const DAY: i64 = 86_400;
 const CHANNELS: [(&str, bool, u32, bool); 5] = [
@@ -59,6 +59,14 @@ impl ChatDemo {
             "Also bumping the client crate to `0.0.2`.",
         );
         failed.delivery = DeliveryState::Failed;
+        let mut gateway = sample(
+            "m5",
+            ANA,
+            d(0, 9 * 3600 + 180),
+            "09:03",
+            "Gateway looks fine. It backs off to `5s`, then `30s`.",
+        );
+        gateway.reactions = vec![chip("\u{1f44d}", 2, false), chip("\u{1f389}", 1, true)];
         let messages = vec![
             sample(
                 "m1",
@@ -89,13 +97,7 @@ impl ChatDemo {
                 "On it. Is `backoff_ms` capped? Here is what I read:\n```rust\nlet delay = (base << attempt).min(30_000);\n```",
             ),
             ask,
-            sample(
-                "m5",
-                ANA,
-                d(0, 9 * 3600 + 180),
-                "09:03",
-                "Gateway looks fine. It backs off to `5s`, then `30s`.",
-            ),
+            gateway,
             sample(
                 "m6",
                 ANA,
@@ -345,6 +347,16 @@ fn transcript(s: &G, k: &Kit) -> El {
                         m.delivery = DeliveryState::Pending;
                     }
                 })
+                .on_react(|g: &mut G, id: &str, key: &str| toggle_reaction(&mut g.chat.messages, id, key))
+                .on_add_reaction(|g: &mut G, id: &str, _anchor: &str| {
+                    // The app opens its picker here; the demo reacts with a rocket.
+                    if let Some(m) = g.chat.messages.iter_mut().find(|m| m.id == id)
+                        && !m.reactions.iter().any(|r| r.key == "u:\u{1f680}")
+                        && m.reactions.len() < thehideout_design::components::MAX_REACTIONS
+                    {
+                        m.reactions.push(chip("\u{1f680}", 1, true));
+                    }
+                })
                 .on_reply(|_: &mut G, _: &str| {})
                 .on_copy(|_: &mut G, _: &str| {})
                 .on_more(|_: &mut G, _: &str| {})
@@ -364,6 +376,23 @@ fn transcript(s: &G, k: &Kit) -> El {
         .scroll(ScrollSpec { stick_bottom: true })
         .child(el().h(8.0))
         .child(body)
+}
+
+/// A chip was pressed: your reaction flips, and a chip nobody holds any more goes.
+fn toggle_reaction(messages: &mut [ChatMessage], id: &str, key: &str) {
+    let Some(m) = messages.iter_mut().find(|m| m.id == id) else { return };
+    let Some(at) = m.reactions.iter().position(|r| r.key == key) else { return };
+    let r = &mut m.reactions[at];
+    if r.me {
+        r.me = false;
+        r.count = r.count.saturating_sub(1);
+        if r.count == 0 {
+            m.reactions.remove(at);
+        }
+    } else {
+        r.me = true;
+        r.count += 1;
+    }
 }
 
 fn day_label(day: i64) -> &'static str {

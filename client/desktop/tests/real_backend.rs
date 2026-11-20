@@ -11,6 +11,8 @@
 mod apply;
 #[path = "../src/backend.rs"]
 mod backend;
+#[path = "../src/emoji.rs"]
+mod emoji;
 #[path = "../src/forms.rs"]
 mod forms;
 #[path = "../src/format.rs"]
@@ -520,7 +522,7 @@ fn a_dropped_gateway_refetches_what_was_missed() {
 /// client's gateway: what one user edits, the other sees as events.
 #[test]
 fn sections_icons_and_layout_reach_a_second_client() {
-    use thehideout_api::{ChannelIcon, PaletteColor};
+    use thehideout_api::{ChannelIconRef, PaletteColor};
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let server = rt.block_on(Server::start());
@@ -562,7 +564,7 @@ fn sections_icons_and_layout_reach_a_second_client() {
     // A channel with its own icon and colour, created straight into the section.
     let dev = alice
         .ask(
-            Command::CreateChannel { guild, name: "dev".into(), section: Some(section.id), icon: ChannelIcon::new("code"), color: PaletteColor::Blue },
+            Command::CreateChannel { guild, name: "dev".into(), section: Some(section.id), icon: ChannelIconRef::Phosphor("code".into()), color: PaletteColor::Blue },
             |r| match r {
                 Reply::ChannelCreated(c) => Some(c.clone()),
                 _ => None,
@@ -601,7 +603,7 @@ fn sections_icons_and_layout_reach_a_second_client() {
     // Icon, colour and topic change; bob's gateway carries the new channel.
     let updated = alice
         .ask(
-            Command::UpdateChannel { guild, channel: dev.id, name: None, icon: Some(ChannelIcon::new("rocket")), color: Some(PaletteColor::Pink), topic: Some("ship it".into()) },
+            Command::UpdateChannel { guild, channel: dev.id, name: None, icon: Some(ChannelIconRef::Phosphor("rocket".into())), color: Some(PaletteColor::Pink), topic: Some("ship it".into()) },
             |r| match r {
                 Reply::ChannelSaved { result, .. } => Some(result.clone()),
                 _ => None,
@@ -869,6 +871,229 @@ fn an_uploaded_avatar_reaches_a_second_client_and_can_be_fetched() {
         .expect("remove avatar");
     bob.wait("the removal on bob's gateway", |r| match r {
         Reply::Gateway(GatewayUpdate::Event(Event::UserUpdated(u))) if u.id == a.me.id && u.avatar.is_none() => Some(()),
+        _ => None,
+    });
+
+    rt.block_on(server.cleanup());
+    std::fs::remove_file(&alice.prefs).ok();
+    std::fs::remove_file(&bob.prefs).ok();
+}
+
+/// Custom emojis, reactions and an emoji channel icon through the real server: an upload reaches
+/// the second client as `EmojisUpdated` and its picture can be fetched; one user's reaction is seen
+/// by the other; the channel's `icon_ref` can be a custom emoji, and deleting the emoji says so.
+#[test]
+fn emojis_reactions_and_an_emoji_channel_icon_reach_a_second_client() {
+    use thehideout_api::{ChannelIconRef, ReactionEmoji};
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(Server::start_with_media());
+    let mut alice = Peer::new(&server.url);
+    let mut bob = Peer::new(&server.url);
+    let a = alice.sign_up("alice");
+    alice.initial();
+    alice.connected();
+    let guild = alice
+        .ask(Command::CreateGuild { name: "friends".into() }, |r| match r {
+            Reply::GuildCreated(g) => Some(g.clone()),
+            _ => None,
+        })
+        .expect("create guild");
+    let b = bob.sign_up("bob");
+    bob.initial();
+    bob.connected();
+    bob.ask(Command::JoinGuild { code: guild.invite_code.clone() }, |r| matches!(r, Reply::GuildJoined(Ok(_))).then_some(()));
+    let g = guild.id;
+    bob.seen.clear();
+
+    // Nothing yet. Bob (a plain member) may not add one: MANAGE_EMOJIS is the owner's here.
+    let none = alice
+        .ask(Command::LoadEmojis { guild: g }, |r| match r {
+            Reply::Emojis { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("list emojis");
+    assert!(none.is_empty());
+    let png = media::generated_emoji(5, 64);
+    let denied = bob.ask(Command::CreateEmoji { guild: g, name: "nope".into(), bytes: png.clone(), content_type: "image/png".into() }, |r| match r {
+        Reply::EmojiSaved { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(denied.map(|_| ()), Err(ApiError::PermissionDenied));
+    // A bad name is the server's `INVALID_ARGUMENT` too, whatever the client checks first.
+    let bad = alice.ask(Command::CreateEmoji { guild: g, name: "Bad Name".into(), bytes: png.clone(), content_type: "image/png".into() }, |r| match r {
+        Reply::EmojiSaved { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert!(matches!(bad, Err(ApiError::InvalidArgument(_))));
+
+    // Alice uploads a static one and an animated one; bob's gateway carries the full list each time.
+    let cat = alice
+        .ask(Command::CreateEmoji { guild: g, name: "smug_cat".into(), bytes: png.clone(), content_type: "image/png".into() }, |r| match r {
+            Reply::EmojiSaved { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("create emoji");
+    assert_eq!((cat.name.as_str(), cat.animated, cat.guild_id, cat.creator_id), ("smug_cat", false, g, a.me.id));
+    let seen = bob.wait("the new emoji on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::EmojisUpdated { guild_id, emojis })) if *guild_id == g && emojis.iter().any(|e| e.id == cat.id) => Some(emojis.clone()),
+        _ => None,
+    });
+    assert_eq!(seen.len(), 1);
+    let gif = media::generated_animated_emoji(6, 64, 6);
+    let parrot = alice
+        .ask(Command::CreateEmoji { guild: g, name: "party_parrot".into(), bytes: gif, content_type: "image/gif".into() }, |r| match r {
+            Reply::EmojiSaved { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("create the animated emoji");
+    assert!(parrot.animated, "a GIF with several frames is animated");
+    bob.wait("the second emoji on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::EmojisUpdated { emojis, .. })) if emojis.len() == 2 => Some(()),
+        _ => None,
+    });
+    // A taken name is refused.
+    let dup = alice.ask(Command::CreateEmoji { guild: g, name: "smug_cat".into(), bytes: png.clone(), content_type: "image/png".into() }, |r| match r {
+        Reply::EmojiSaved { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(dup.map(|_| ()), Err(ApiError::AlreadyExists));
+
+    // Bob lists them and fetches the picture by its key: it decodes, and the animated one is a GIF.
+    let listed = bob
+        .ask(Command::LoadEmojis { guild: g }, |r| match r {
+            Reply::Emojis { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("bob lists emojis");
+    assert_eq!(listed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["party_parrot", "smug_cat"], "by name");
+    let fetch = |peer: &mut Peer, key: &str| {
+        peer.ask(Command::FetchMedia { key: key.to_owned() }, |r| match r {
+            Reply::Media { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("fetch the emoji")
+    };
+    let bytes = fetch(&mut bob, &cat.image);
+    let cache = media::MediaCache::default();
+    assert!(cache.preview(bytes).wait().is_ok(), "the fetched picture decodes");
+    let moving = fetch(&mut bob, &parrot.image);
+    assert!(moving.starts_with(b"GIF8"), "animated emojis are served as GIFs");
+    assert!(media::first_frame(&moving).is_some(), "so the client can make its still");
+
+    // A rename and its event.
+    let renamed = alice
+        .ask(Command::RenameEmoji { guild: g, emoji: cat.id, name: "smug_dog".into() }, |r| match r {
+            Reply::EmojiSaved { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("rename");
+    assert_eq!(renamed.name, "smug_dog");
+    bob.wait("the rename on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::EmojisUpdated { emojis, .. })) if emojis.iter().any(|e| e.id == cat.id && e.name == "smug_dog") => Some(()),
+        _ => None,
+    });
+
+    // A message, and reactions: alice's thumbs-up and a custom one reach bob; bob adds his own.
+    let (channels, _) = alice
+        .ask(Command::LoadChannels { guild: g }, |r| match r {
+            Reply::Channels { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("channels");
+    let channel = channels[0].id;
+    let message = alice
+        .ask(Command::Send { channel, content: "look <:smug_dog:1>".replace('1', &cat.id.to_string()), nonce: "n1".into() }, |r| match r {
+            Reply::Sent { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("send")
+        .id;
+    bob.seen.clear();
+    let thumbs = ReactionEmoji::Unicode("\u{1f44d}".into());
+    let react = |peer: &mut Peer, emoji: ReactionEmoji, add: bool| {
+        let cmd = if add { Command::AddReaction { channel, message, emoji } } else { Command::RemoveReaction { channel, message, emoji } };
+        peer.ask(cmd, |r| match r {
+            Reply::ReactionSaved { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+    };
+    react(&mut alice, thumbs.clone(), true).expect("add");
+    react(&mut alice, ReactionEmoji::Custom(cat.id), true).expect("add custom");
+    let user = bob.wait("alice's reaction on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::ReactionAdded { message_id, emoji, user_id, .. })) if *message_id == message && *emoji == thumbs => Some(*user_id),
+        _ => None,
+    });
+    assert_eq!(user, a.me.id, "the event carries who reacted");
+    // Idempotent: the same again changes nothing and is not an error.
+    react(&mut alice, thumbs.clone(), true).expect("idempotent add");
+    react(&mut bob, thumbs.clone(), true).expect("bob adds the same emoji");
+    let page = bob
+        .ask(Command::LoadMessages { channel, before: None }, |r| match r {
+            Reply::Messages { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("messages");
+    let m = page.items.iter().find(|m| m.id == message).unwrap();
+    let t = m.reactions.iter().find(|r| r.emoji == thumbs).unwrap();
+    assert_eq!((t.count, t.me), (2, true), "two reacted, and bob is one of them");
+    let c = m.reactions.iter().find(|r| r.emoji == ReactionEmoji::Custom(cat.id)).unwrap();
+    assert_eq!((c.count, c.me), (1, false));
+    alice.wait("bob's reaction on alice's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::ReactionAdded { emoji, user_id, .. })) if *emoji == thumbs && *user_id == b.me.id => Some(()),
+        _ => None,
+    });
+    react(&mut bob, thumbs.clone(), false).expect("remove");
+    alice.wait("bob taking it back", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::ReactionRemoved { emoji, user_id, .. })) if *emoji == thumbs && *user_id == b.me.id => Some(()),
+        _ => None,
+    });
+    // A custom emoji from nowhere is refused.
+    let foreign = react(&mut bob, ReactionEmoji::Custom(1), true);
+    assert!(matches!(foreign, Err(ApiError::InvalidArgument(_)) | Err(ApiError::NotFound)), "{foreign:?}");
+
+    // The channel's icon is the custom emoji; bob sees the update; it can go back to the default.
+    let saved = alice
+        .ask(Command::UpdateChannel { guild: g, channel, name: None, icon: Some(ChannelIconRef::Custom(cat.id)), color: None, topic: None }, |r| match r {
+            Reply::ChannelSaved { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("set the icon");
+    assert_eq!(saved.icon_ref, ChannelIconRef::Custom(cat.id));
+    bob.wait("the new icon on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::ChannelUpdated(c))) if c.id == channel && c.icon_ref == ChannelIconRef::Custom(cat.id) => Some(()),
+        _ => None,
+    });
+    let uni = alice
+        .ask(Command::UpdateChannel { guild: g, channel, name: None, icon: Some(ChannelIconRef::Unicode("\u{1f680}".into())), color: None, topic: None }, |r| match r {
+            Reply::ChannelSaved { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("set a Unicode icon");
+    assert_eq!(uni.icon_ref, ChannelIconRef::Unicode("\u{1f680}".into()));
+    let created = alice
+        .ask(Command::CreateChannel { guild: g, name: "party".into(), section: None, icon: ChannelIconRef::Custom(parrot.id), color: Default::default() }, |r| match r {
+            Reply::ChannelCreated(c) => Some(c.clone()),
+            _ => None,
+        })
+        .expect("a channel created with an emoji icon");
+    assert_eq!(created.icon_ref, ChannelIconRef::Custom(parrot.id));
+    // An emoji of another guild (here: one that doesn't exist) is not a valid icon.
+    let bogus = alice.ask(Command::UpdateChannel { guild: g, channel, name: None, icon: Some(ChannelIconRef::Custom(1)), color: None, topic: None }, |r| match r {
+        Reply::ChannelSaved { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert!(matches!(bogus, Err(ApiError::InvalidArgument(_))), "{bogus:?}");
+
+    // Delete: bob's gateway carries the shorter list.
+    alice
+        .ask(Command::DeleteEmoji { guild: g, emoji: cat.id }, |r| match r {
+            Reply::EmojiDeleted { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("delete");
+    bob.wait("the deletion on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::EmojisUpdated { emojis, .. })) if emojis.len() == 1 && emojis[0].id == parrot.id => Some(()),
         _ => None,
     });
 

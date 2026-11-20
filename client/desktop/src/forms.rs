@@ -4,7 +4,10 @@
 use std::rc::Rc;
 
 use rune::TextEdit;
-use thehideout_api::{ApiError, Channel};
+use thehideout_api::{ApiError, Channel, ChannelIconRef};
+use thehideout_design::components::EmojiPickerState;
+
+use crate::emoji::IconEmoji;
 use thehideout_design::icons::catalog::{self, CatalogIcon};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -99,6 +102,8 @@ pub enum DialogKind {
     Profile,
     /// A confirmation: no field, only "Delete role".
     DeleteRole { guild: u64, role: u64 },
+    /// A confirmation: no field, only "Delete emoji".
+    DeleteEmoji { guild: u64, emoji: u64 },
 }
 
 /// The look and place fields of the channel dialogs (create and settings): where the channel
@@ -107,13 +112,17 @@ pub struct ChannelForm {
     /// `None` = top level. Only the create dialog offers the choice.
     pub section: Option<u64>,
     pub section_open: bool,
-    /// Phosphor name, `""` = the default `#`.
+    /// Phosphor name, `""` = the default `#` (unless `emoji` is set).
     pub icon: String,
+    /// An emoji icon (Unicode, or one of the server's): it replaces `icon`.
+    pub emoji: Option<IconEmoji>,
+    /// The Emoji and Server emoji tabs' search and highlight.
+    pub emoji_pick: EmojiPickerState,
     /// Palette key, `""` = none.
     pub color: &'static str,
     pub topic: TextEdit,
     pub picker_open: bool,
-    /// The picker tab; only 0 (Icons) is populated so far.
+    /// The picker tab: 0 Icons, 1 Emoji, 2 Server emoji.
     pub tab: usize,
     pub search: TextEdit,
     /// The keyboard-chosen result in `results`.
@@ -129,6 +138,8 @@ impl ChannelForm {
             section,
             section_open: false,
             icon: String::new(),
+            emoji: None,
+            emoji_pick: EmojiPickerState::new(),
             color: "",
             topic: TextEdit::new(""),
             picker_open: false,
@@ -142,11 +153,25 @@ impl ChannelForm {
 
     pub fn of(c: &Channel) -> ChannelForm {
         let mut f = ChannelForm::new(c.section_id);
-        f.icon = c.icon.0.clone();
+        match &c.icon_ref {
+            ChannelIconRef::Unicode(g) => f.emoji = Some(IconEmoji::Unicode(g.clone())),
+            ChannelIconRef::Custom(id) => f.emoji = Some(IconEmoji::Custom(*id)),
+            ChannelIconRef::Phosphor(name) => f.icon = name.clone(),
+            ChannelIconRef::Default => f.icon = c.icon.0.clone(),
+        }
         f.color = thehideout_design::PALETTE_KEYS.iter().copied().find(|k| *k == c.color.as_key()).unwrap_or("");
         f.topic = TextEdit::new(&c.topic);
         f.original = Some(c.clone());
         f
+    }
+
+    /// The icon the form describes, as the server stores it.
+    pub fn icon_ref(&self) -> ChannelIconRef {
+        match (&self.emoji, self.icon.is_empty()) {
+            (Some(e), _) => e.to_ref(),
+            (None, true) => ChannelIconRef::Default,
+            (None, false) => ChannelIconRef::Phosphor(self.icon.clone()),
+        }
     }
 
     /// Recomputes `results` after the search text changed, and puts the highlight on the best one.
