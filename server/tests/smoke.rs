@@ -1,6 +1,6 @@
 mod common;
 
-use backroom_server::proto::backroom::v1::{AuthServiceClient, GetMeRequest};
+use thehideout_server::proto::thehideout::v1::{AuthServiceClient, GetMeRequest};
 use common::TestApp;
 use connectrpc::ErrorCode;
 

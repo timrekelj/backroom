@@ -1,4 +1,4 @@
-# backroom
+# thehideout
 A Discord-style chat app for me and my friends, built to learn handling lots of data
 
 ## Development
@@ -22,4 +22,4 @@ cd server && cargo test
 ```
 
 Requires `buf` on `PATH` for protobuf codegen. Configuration is via env vars:
-`BACKROOM_LISTEN_ADDR`, `BACKROOM_SCYLLA_NODES`, `BACKROOM_KEYSPACE`, `BACKROOM_WORKER_ID`, and `RUST_LOG`.
+`THEHIDEOUT_LISTEN_ADDR`, `THEHIDEOUT_SCYLLA_NODES`, `THEHIDEOUT_KEYSPACE`, `THEHIDEOUT_WORKER_ID`, and `RUST_LOG`.

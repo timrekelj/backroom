@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use backroom_server::snowflake::Snowflake;
-use backroom_server::{AppState, build_app, migrations};
+use thehideout_server::snowflake::Snowflake;
+use thehideout_server::{AppState, build_app, migrations};
 use connectrpc::client::{ClientConfig, HttpClient};
 use rand::Rng;
 use scylla::client::caching_session::CachingSession;

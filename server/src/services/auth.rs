@@ -9,7 +9,7 @@ use crate::auth::{
     verify_password,
 };
 use crate::convert::{id_from_db, id_to_db, snowflake_datetime, user_to_proto};
-use crate::proto::backroom::v1::*;
+use crate::proto::thehideout::v1::*;
 
 const PASSWORD_LEN: std::ops::RangeInclusive<usize> = 8..=128;
 const USERNAME_LEN: std::ops::RangeInclusive<usize> = 2..=32;

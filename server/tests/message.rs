@@ -1,12 +1,12 @@
 mod common;
 
-use backroom_server::convert::{id_to_db, snowflake_datetime};
-use backroom_server::proto::backroom::v1::{
+use thehideout_server::convert::{id_to_db, snowflake_datetime};
+use thehideout_server::proto::thehideout::v1::{
     AuthServiceClient, CreateGuildRequest, GuildServiceClient, ListChannelsRequest,
     ListMessagesRequest, ListMessagesResponse, Message, MessageServiceClient, SendMessageRequest,
     SignUpRequest,
 };
-use backroom_server::snowflake::{BUCKET_MS, bucket_of, make_id};
+use thehideout_server::snowflake::{BUCKET_MS, bucket_of, make_id};
 use common::TestApp;
 use connectrpc::{ConnectError, ErrorCode};
 
@@ -161,7 +161,7 @@ async fn send_then_list_returns_message() {
     assert!(!got.edited_at.is_set());
     assert!(got.created_at.is_set());
     assert_eq!(got.created_at, sent.created_at);
-    let expected = backroom_server::convert::datetime_to_proto(snowflake_datetime(got.id));
+    let expected = thehideout_server::convert::datetime_to_proto(snowflake_datetime(got.id));
     assert_eq!(*got.created_at, expected);
 
     let no_nonce = send(&app, &alice, channel_id, "x", None).await.unwrap();

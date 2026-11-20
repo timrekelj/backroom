@@ -12,8 +12,8 @@ use crate::AppState;
 use crate::auth::{authenticate, bearer_token, hash_token, internal, session_exists};
 use crate::convert::{id_from_db, id_to_db, system_time_to_proto};
 use crate::events::{EventPayload, UserControl};
-use crate::proto::backroom::v1::event::Payload;
-use crate::proto::backroom::v1::*;
+use crate::proto::thehideout::v1::event::Payload;
+use crate::proto::thehideout::v1::*;
 
 pub struct GatewaySvc {
     state: AppState,

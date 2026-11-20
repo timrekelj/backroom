@@ -6,7 +6,7 @@ use crate::access::require_channel_member;
 use crate::auth::{authenticate, internal};
 use crate::convert::{datetime_to_proto, id_from_db, id_to_db, snowflake_datetime};
 use crate::events::EventPayload;
-use crate::proto::backroom::v1::*;
+use crate::proto::thehideout::v1::*;
 use crate::snowflake::{bucket_of, current_bucket};
 
 const MAX_CONTENT_CHARS: usize = 4000;

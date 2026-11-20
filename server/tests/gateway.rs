@@ -2,8 +2,8 @@ mod common;
 
 use std::time::Duration;
 
-use backroom_server::proto::backroom::v1::event::Payload;
-use backroom_server::proto::backroom::v1::{
+use thehideout_server::proto::thehideout::v1::event::Payload;
+use thehideout_server::proto::thehideout::v1::{
     AuthServiceClient, CreateChannelRequest, CreateGuildRequest, Event, GatewayServiceClient, GetMeRequest,
     Guild, GuildServiceClient, JoinGuildRequest, ListChannelsRequest, MessageServiceClient,
     SendMessageRequest, SignUpRequest, SubscribeRequest,
@@ -310,7 +310,7 @@ async fn stream_ends_when_the_session_expires() {
     next_event!(stream); // first heartbeat
 
     // Simulate TTL expiry: delete the session row directly.
-    let token_hash = backroom_server::auth::hash_token(&token);
+    let token_hash = thehideout_server::auth::hash_token(&token);
     app.state
         .session
         .execute_unpaged("DELETE FROM sessions WHERE token_hash = ?", (&token_hash,))

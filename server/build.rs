@@ -5,7 +5,7 @@ use std::process::Command;
 // for the protos, so build the descriptor set with it and feed that in.
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let descriptor = out_dir.join("backroom.binpb");
+    let descriptor = out_dir.join("thehideout.binpb");
 
     let status = Command::new("buf")
         .current_dir("..")
@@ -18,11 +18,11 @@ fn main() {
     connectrpc_build::Config::new()
         .descriptor_set(&descriptor)
         .files(&[
-            "backroom/v1/auth_service.proto",
-            "backroom/v1/gateway_service.proto",
-            "backroom/v1/guild_service.proto",
-            "backroom/v1/message_service.proto",
-            "backroom/v1/types.proto",
+            "thehideout/v1/auth_service.proto",
+            "thehideout/v1/gateway_service.proto",
+            "thehideout/v1/guild_service.proto",
+            "thehideout/v1/message_service.proto",
+            "thehideout/v1/types.proto",
         ])
         .include_file("_connectrpc.rs")
         .compile()

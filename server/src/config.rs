@@ -15,23 +15,23 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let listen_addr = var("BACKROOM_LISTEN_ADDR", "0.0.0.0:8080")
+        let listen_addr = var("THEHIDEOUT_LISTEN_ADDR", "0.0.0.0:8080")
             .parse()
-            .context("invalid BACKROOM_LISTEN_ADDR")?;
-        let scylla_nodes = var("BACKROOM_SCYLLA_NODES", "127.0.0.1:9042")
+            .context("invalid THEHIDEOUT_LISTEN_ADDR")?;
+        let scylla_nodes = var("THEHIDEOUT_SCYLLA_NODES", "127.0.0.1:9042")
             .split(',')
             .map(|s| s.trim().to_owned())
             .filter(|s| !s.is_empty())
             .collect();
-        let keyspace = var("BACKROOM_KEYSPACE", "backroom");
-        let worker_id = var("BACKROOM_WORKER_ID", "0")
+        let keyspace = var("THEHIDEOUT_KEYSPACE", "thehideout");
+        let worker_id = var("THEHIDEOUT_WORKER_ID", "0")
             .parse()
-            .context("invalid BACKROOM_WORKER_ID")?;
-        let heartbeat_secs: u64 = var("BACKROOM_HEARTBEAT_SECS", "30")
+            .context("invalid THEHIDEOUT_WORKER_ID")?;
+        let heartbeat_secs: u64 = var("THEHIDEOUT_HEARTBEAT_SECS", "30")
             .parse()
-            .context("invalid BACKROOM_HEARTBEAT_SECS")?;
+            .context("invalid THEHIDEOUT_HEARTBEAT_SECS")?;
         if heartbeat_secs == 0 {
-            bail!("BACKROOM_HEARTBEAT_SECS must be at least 1");
+            bail!("THEHIDEOUT_HEARTBEAT_SECS must be at least 1");
         }
         Ok(Self {
             listen_addr,

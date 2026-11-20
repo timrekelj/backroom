@@ -1,9 +1,9 @@
 mod common;
 
-use backroom_server::proto::backroom::v1::{
+use thehideout_server::proto::thehideout::v1::{
     AuthServiceClient, GetMeRequest, LoginRequest, SignUpRequest, User,
 };
-use backroom_server::services::auth::LOGIN_IP_MAX;
+use thehideout_server::services::auth::LOGIN_IP_MAX;
 use common::TestApp;
 use connectrpc::ErrorCode;
 

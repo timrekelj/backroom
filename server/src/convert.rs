@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use buffa_types::google::protobuf::Timestamp;
 use chrono::{DateTime, Utc};
 
-use crate::proto::backroom::v1::User;
+use crate::proto::thehideout::v1::User;
 use crate::snowflake;
 
 /// Reinterprets a Snowflake as the signed `bigint` CQL stores it in.

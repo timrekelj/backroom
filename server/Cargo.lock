@@ -129,32 +129,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "backroom-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "axum",
- "base64",
- "buffa",
- "buffa-types",
- "chrono",
- "connectrpc",
- "connectrpc-build",
- "futures",
- "rand",
- "scylla",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tokio-stream",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1526,6 +1500,32 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "thehideout-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "base64",
+ "buffa",
+ "buffa-types",
+ "chrono",
+ "connectrpc",
+ "connectrpc-build",
+ "futures",
+ "rand",
+ "scylla",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-stream",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

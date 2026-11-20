@@ -1,11 +1,11 @@
 mod common;
 
-use backroom_server::proto::backroom::v1::{
+use thehideout_server::proto::thehideout::v1::{
     AuthServiceClient, Channel, CreateChannelRequest, CreateGuildRequest, Guild, GuildServiceClient,
     JoinGuildRequest, ListChannelsRequest, ListGuildMembersRequest, ListMyGuildsRequest,
     SignUpRequest,
 };
-use backroom_server::services::guild::{GUILD_CREATE_MAX, JOIN_IP_MAX};
+use thehideout_server::services::guild::{GUILD_CREATE_MAX, JOIN_IP_MAX};
 use common::TestApp;
 use connectrpc::{ConnectError, ErrorCode};
 
@@ -91,9 +91,9 @@ async fn create_guild_has_invite_and_general_channel() {
     let app = TestApp::start().await;
     let alice = sign_up(&app, "alice").await;
 
-    let guild = create_guild(&app, &alice, "  Backroom  ").await.expect("create guild");
+    let guild = create_guild(&app, &alice, "  TheHideout  ").await.expect("create guild");
     assert_ne!(guild.id, 0);
-    assert_eq!(guild.name, "Backroom");
+    assert_eq!(guild.name, "TheHideout");
     assert_eq!(guild.invite_code.len(), 8);
     assert!(guild.invite_code.bytes().all(|b| b.is_ascii_alphanumeric()));
     assert!(guild.created_at.is_set());

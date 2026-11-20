@@ -13,7 +13,7 @@ use crate::convert::{
     datetime_to_proto, id_from_db, id_to_db, snowflake_datetime, user_to_proto,
 };
 use crate::events::EventPayload;
-use crate::proto::backroom::v1::*;
+use crate::proto::thehideout::v1::*;
 
 const GUILD_NAME_LEN: std::ops::RangeInclusive<usize> = 1..=100;
 const CHANNEL_NAME_LEN: std::ops::RangeInclusive<usize> = 1..=100;

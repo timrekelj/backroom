@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use backroom_server::config::Config;
-use backroom_server::snowflake::Snowflake;
-use backroom_server::{AppState, build_app, migrations};
+use thehideout_server::config::Config;
+use thehideout_server::snowflake::Snowflake;
+use thehideout_server::{AppState, build_app, migrations};
 use scylla::client::caching_session::CachingSession;
 use scylla::client::session_builder::SessionBuilder;
 use tracing_subscriber::EnvFilter;
@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::from_env()?;
-    tracing::info!(?config, "starting backroom-server");
+    tracing::info!(?config, "starting thehideout-server");
 
     let session = SessionBuilder::new()
         .known_nodes(&config.scylla_nodes)

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::broadcast;
 
-use crate::proto::backroom::v1::{Channel, GuildMemberJoined, Message};
+use crate::proto::thehideout::v1::{Channel, GuildMemberJoined, Message};
 
 /// Messages buffered per guild channel before slow receivers start lagging.
 const GUILD_CHANNEL_CAPACITY: usize = 1024;

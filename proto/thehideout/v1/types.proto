@@ -1,10 +1,10 @@
 syntax = "proto3";
 
-package backroom.v1;
+package thehideout.v1;
 
 import "google/protobuf/timestamp.proto";
 
-// A registered Backroom user.
+// A registered TheHideout user.
 message User {
   // Unique Snowflake ID of the user.
   uint64 id = 1;
