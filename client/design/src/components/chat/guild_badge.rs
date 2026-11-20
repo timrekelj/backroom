@@ -178,10 +178,9 @@ fn mention_corner(k: &Kit, count: u32) -> El {
 
 /// A rail tile with an icon on a neutral face: Home and "Add a server". Same size, rail and
 /// states as [`GuildBadge`]. Selected is the rail bar plus an `accent_subtle` face with an
-/// `accent_text` fill icon; `outline` makes the face a ghost with a border (the add button).
+/// `accent_text` icon; `outline` makes the face a ghost with a border (the add button).
 pub struct RailTile {
     glyph: &'static Icon,
-    glyph_selected: &'static Icon,
     label: String,
     size: u32,
     selected: bool,
@@ -196,12 +195,10 @@ impl RailTile {
     /// `glyph_selected` is the fill twin shown when selected.
     pub fn new(
         glyph: &'static Icon,
-        glyph_selected: &'static Icon,
-        label: impl Into<String>,
+            label: impl Into<String>,
     ) -> RailTile {
         RailTile {
             glyph,
-            glyph_selected,
             label: label.into(),
             size: 40,
             selected: false,
@@ -252,11 +249,7 @@ impl RailTile {
         } else {
             (t.surface_raised.color(), t.text_muted.color())
         };
-        let glyph = if self.selected {
-            self.glyph_selected
-        } else {
-            self.glyph
-        };
+        let glyph = self.glyph;
         let mut face = row()
             .key("face")
             .role("button")

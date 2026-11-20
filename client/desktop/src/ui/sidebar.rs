@@ -168,7 +168,7 @@ fn home_rows(a: &App, k: &Kit) -> El {
                 .build(k),
         );
     }
-    let new_dm = NavRow::new("New message", &PLUS, &PLUS)
+    let new_dm = NavRow::new("New message", &PLUS)
         .highlight_group("home-actions")
         .on_press(|a: &mut App| a.act(|s| s.open_dialog(DialogKind::NewDm)))
         .build(k)

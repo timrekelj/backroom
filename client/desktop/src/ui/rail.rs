@@ -5,7 +5,7 @@
 use rune::{col, el, El, ScrollSpec};
 use rune_kit::{Kit, Menu, MenuItem};
 use thehideout_design::components::{GuildBadge, RailTile};
-use thehideout_design::icons::{self, HOUSE, LINK, PLUS};
+use thehideout_design::icons::{HOUSE, LINK, PLUS};
 
 use crate::app::App;
 use crate::state::{DialogKind, Menu as MenuState, Place};
@@ -32,7 +32,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
             .build(k);
         guilds = guilds.child(el().key(format!("guild-{id}")).child(badge));
     }
-    let plus = RailTile::new(&PLUS, &PLUS, "Add a server")
+    let plus = RailTile::new(&PLUS, "Add a server")
         .outline(true)
         .on_press(|a: &mut App| {
             a.state.ui.menu = if a.state.ui.menu == MenuState::Add {
@@ -87,7 +87,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
 /// Home: the same tile as a server, a house on a neutral face.
 fn home(a: &App, k: &Kit) -> El {
     let u = a.state.home_unread();
-    let tile = RailTile::new(&HOUSE, &icons::fill::HOUSE, "Home, direct messages")
+    let tile = RailTile::new(&HOUSE, "Home, direct messages")
         .selected(a.state.ui.place == Place::Home)
         .unread(u.count > 0)
         .mentions(u.mentions)

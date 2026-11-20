@@ -206,7 +206,7 @@ Data in, callbacks out: no app state types, every one takes the `Kit` like the c
 | Component | For | States |
 |---|---|---|
 | `GuildBadge`, `RailTile` | The server icon, sizes 24/32/40, avatar radii, deterministic warm fill; `RailTile` is the same tile with an icon on a neutral face (Home, and the outlined "+"). A left rail holds the indicator. | rest, hover (short bar), selected (tall accent bar; `RailTile` adds an `accent_subtle` face), unread (4pt dot), mention count on the corner (overhangs the face 2pt; the rail gap is 12) |
-| `NavRow`, `ChannelRow` | Sidebar rows, 32pt (`ROW_H`), 2pt apart, 8pt padding, 16pt icon, `radius-md`. Nav rows take an icon + its fill twin (fill only when selected); `NavRow::person` shows the user's 20pt `Avatar` instead; channels show `#` or their own Phosphor icon (`.icon`, always regular), tinted by a palette colour (`.tint`; the selected highlight takes a 12% wash of it), and a `.trailing` "more" button that fades in on hover. | selected (highlight + strong text), unread (brighter, heavier, dot), mentions (pill), muted (faint), hover |
+| `NavRow`, `ChannelRow` | Sidebar rows, 32pt (`ROW_H`), 2pt apart, 8pt padding, 16pt icon, `radius-md`. Nav rows take an icon and a label (`NavRow::new(label, &icons::HOUSE)`); `NavRow::person` shows the user's 20pt `Avatar` instead; channels show `#` or their own Phosphor icon (`.icon`), tinted by a palette colour (`.tint`; the selected highlight takes a 12% wash of it), and a `.trailing` "more" button that fades in on hover. | selected (highlight, strong text, `accent_text` icon; a channel's own tint wins), unread (brighter, heavier, dot), mentions (pill), muted (faint), hover |
 | `SidebarSection` | A collapsible group header (28pt) with a chevron, a hover "+" and an optional hover "more" button (`.more`); `.decorate_header` lets the app add a context menu or a drag to the title. | open, closed, add shown |
 | `MessageGroup`, `ChatMessage` | Avatar (`.avatars(..)` supplies pictures by author id), author (`.name_colors(..)`: the colour of their role, as `palette_text`), time, one or more bodies (`.mention_ink(..)` colours `@name` chips of coloured members). `MessageGroup::runs` splits a transcript: same author, at most 5 minutes (`GROUP_WINDOW_SECS`) apart. Follow-ups show their time in the gutter on hover. Bodies are markup (see "Message markup"). `links::<S>()` makes links and spoilers pressable. | `Sent`, `Pending` (body at 0.55, no spinner), `Failed` ("Failed to send · Retry"), mentions you (`accent_wash` + 2pt accent bar), hover (row highlight + floating reply/copy/more) |
 | `DateDivider`, `NewMessagesDivider` | A hairline with the date; an accent line with a "New" tag. | static |
@@ -347,11 +347,14 @@ the entrance again.
 **Phosphor Icons** (`@phosphor-icons/core` 2.1.1, MIT, Copyright (c) 2023 Phosphor Icons; licence text in
 `src/icons/LICENSES/phosphor-MIT.txt`). Generated Rust, no runtime dependency.
 
-- **Weights.** Regular is the default: `icons::HASH`. Fill is only the active/selected state of nav-style icons
-  (house, bell, chat, users, gear and the like): `icons::fill::HOUSE`. Never use fill for `hash`; Phosphor's
-  hash-fill is a solid square. A selected channel is shown by the row highlight and heavier text, with the regular hash.
-- **Sizes** (`thehideout_design::icon`): `XS`=14 (inside 24pt controls, 0.875pt stroke), `SM`=16 (default, 1pt stroke),
-  `MD`=20 (standalone, toolbars). Button and IconButton use `XS` at Sm and `SM` at Md. Icons take the ink of their
+- **Weight.** Fill, for every icon (chrome and channel icons), with no setting and no regular twin in the binary.
+  Phosphor's fill glyphs are solid: chevrons are triangles, `plus`, `x` and `hash` are rounded squares with the mark
+  cut out, `check` is a tick in a square. Channel icons are stored on the server as a plain Phosphor name
+  (`"game-controller"`, no weight); the app just renders the fill glyph for it.
+- **Selection rule.** Selected or active is never a weight swap. Use the row highlight, stronger text and an
+  `accent_text` icon (nav rows, rail Home, the members toggle, Ghost `IconButton::selected`). A channel with a palette
+  colour keeps its tint and takes the 12% wash on the highlight.
+- **Sizes** (`thehideout_design::icon`): `XS`=14 (inside 24pt controls), `SM`=16 (default), `MD`=20 (standalone, toolbars). Button and IconButton use `XS` at Sm and `SM` at Md. Icons take the ink of their
   label, or `icon_muted` in a Ghost IconButton.
 - **Add an icon.** Append `("our-name", "phosphor-file-stem")` to the `ICONS` list at the top of `tools/gen_icons.py`
   and rerun it from `client/design` (the package is read as data, never executed):
@@ -360,9 +363,10 @@ the entrance again.
   python3 -I tools/gen_icons.py --phosphor /path/to/@phosphor-icons/core --out src/icons
   ```
 
-  It writes `src/icons/regular.rs` and `src/icons/fill.rs` (both weights for every entry, each with an `ALL` list).
+  It writes `src/icons/curated.rs` (the fill glyph for every entry, with an `ALL` list). To make a new icon available to
+  channels you need nothing: the catalog already holds every Phosphor icon.
   Names are kebab-case in `Icon::name` and `SCREAMING_SNAKE` as the const (`chevron-up-down` is `CHEVRON_UP_DOWN`).
-  The gallery's Icons page lists the catalog from `icons::ALL`. The same run also writes the full catalog
+  The gallery's Icons page lists the curated set from `icons::ALL`. The same run also writes the full catalog
   (`src/icons/catalog/part_N.rs`, tags read from the package's `dist/index.mjs` as data); run `rustfmt --edition 2024`
   over `src/icons` afterwards.
 
@@ -381,12 +385,12 @@ and `surface_overlay`, under a hover or pressed row, under the mention wash (`ac
 chip wash (`palette_wash`, the icon tone at 16%). It is what a role-coloured name and an `@mention` of such a
 member use. A test checks it on all 320 looks x 12 keys x 4 surfaces x 5 grounds.
 
-**Full catalog** (`icons::catalog`): all 1512 Phosphor regular icons with their search tags, generated into
-`src/icons/catalog/part_{0..3}.rs` (sorted by name; ~860 KB of source; the release desktop binary grew from 37.06 MB to 40.40 MB, +3.3 MB, for the SVG paths and tags).
+**Full catalog** (`icons::catalog`): all 1512 Phosphor fill icons with their search tags, generated into
+`src/icons/catalog/part_{0..3}.rs` (sorted by name; same names and tags as Phosphor's regular set).
 `by_name(&str) -> Option<&'static Icon>` is what a channel's stored icon name resolves through (unknown name:
 fall back to `#`); `entry`, `all()` and `search(query)` (every word must match the name or a tag; exact name,
 name prefix, name substring, then tag-only) serve the picker. The curated `icons::*` constants stay the app's own
-chrome.
+chrome. The regular weight is not shipped (release desktop binary 47,295,328 bytes before, 47,184,880 after).
 
 ## Kit mapping (`kit.rs`)
 

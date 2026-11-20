@@ -26,7 +26,7 @@ pub fn page(s: &G, k: &Kit, layer: &mut Vec<El>) -> El {
         .gap(20.0)
         .w(560.0)
         .child(section(k, "GuildBadge", "Rail on the left: dot = unread, short bar = hover, tall accent bar = selected. Count sits on the corner.", guild_badges(k)))
-        .child(section(k, "NavRow, ChannelRow", "Selected moves between rows as one highlight (matched, motion-reflow). Nav rows use the fill icon; channels keep the regular #.", rows(k)))
+        .child(section(k, "NavRow, ChannelRow", "Selected moves between rows as one highlight (matched, motion-reflow). Every icon is fill; selected is the highlight, strong text and an accent icon.", rows(k)))
         .child(section(k, "SidebarSection", "Chevron turns on motion-disclosure; rows fade on the same spring. The + shows on hover.", sections(k)))
         .child(section(k, "ChannelHeader", "Title and topic; the breadcrumb variant for narrow layouts.", headers(k)))
         .child(section(k, "Composer", "Grows to 8 lines, then scrolls. Send is primary once there is text.", composers(k)))
@@ -73,25 +73,25 @@ fn rows(k: &Kit) -> El {
         .w(220.0)
         .child(muted(k, "Nav rows"))
         .child(
-            NavRow::new("Home", &icons::HOUSE, &icons::fill::HOUSE)
+            NavRow::new("Home", &icons::HOUSE)
                 .highlight_group("sheet-nav")
                 .selected(true)
                 .build(k),
         )
         .child(
-            NavRow::new("Mentions", &icons::BELL, &icons::fill::BELL)
+            NavRow::new("Mentions", &icons::BELL)
                 .highlight_group("sheet-nav")
                 .mentions(3)
                 .build(k),
         )
         .child(
-            NavRow::new("Friends", &icons::USERS, &icons::fill::USERS)
+            NavRow::new("Friends", &icons::USERS)
                 .highlight_group("sheet-nav")
                 .state(State::Hover)
                 .build(k),
         )
         .child(
-            NavRow::new("Settings", &GEAR, &icons::fill::GEAR)
+            NavRow::new("Settings", &GEAR)
                 .highlight_group("sheet-nav")
                 .muted(true)
                 .build(k),

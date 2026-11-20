@@ -56,22 +56,17 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32) -> El {
 fn nav(a: &App, k: &Kit, ss: &ServerSettings, name: &str) -> El {
     let guild = ss.guild;
     let mut rows = Vec::new();
-    for (page, label, glyph, fill) in [
-        (
-            ServerPage::Overview,
-            "Overview",
-            &icons::INFO,
-            &icons::fill::INFO,
-        ),
-        (ServerPage::Roles, "Roles", &SHIELD, &icons::fill::SHIELD),
-        (ServerPage::Members, "Members", &USERS, &icons::fill::USERS),
-        (ServerPage::Emojis, "Emojis", &icons::SMILEY, &icons::SMILEY),
+    for (page, label, glyph) in [
+        (ServerPage::Overview, "Overview", &icons::INFO),
+        (ServerPage::Roles, "Roles", &SHIELD),
+        (ServerPage::Members, "Members", &USERS),
+        (ServerPage::Emojis, "Emojis", &icons::SMILEY),
     ] {
         if !a.state.settings_page_allowed(guild, page) {
             continue;
         }
         rows.push(
-            thehideout_design::components::NavRow::new(label, glyph, fill)
+            thehideout_design::components::NavRow::new(label, glyph)
                 .selected(ss.page == page)
                 .highlight_group("server-settings-nav")
                 .on_press(move |a: &mut App| a.act(|s| s.server_page(page)))

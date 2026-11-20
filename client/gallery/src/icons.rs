@@ -1,10 +1,10 @@
-//! The `icons` page: our Phosphor catalog (regular), the fill variants for active states, the
+//! The `icons` page: our Phosphor catalog (fill weight throughout), how a selected icon is shown, the
 //! size tokens, and the icons in context (sidebar nav, channel list, composer).
 
 use rune::{El, Icon, col, el, icon, row, text};
 use rune_kit::Kit;
 use thehideout_design::components::{IconButton, Size, Variant};
-use thehideout_design::icons::{self, fill};
+use thehideout_design::icons;
 use thehideout_design::type_::{CAPTION, CONTROL, CONTROL_STRONG, LABEL};
 use thehideout_design::{icon as size, radius, theme_of};
 
@@ -16,12 +16,12 @@ pub fn page(k: &Kit) -> El {
         .child(page_title(
             k,
             "Icons",
-            "Phosphor (MIT). Regular is the default weight; fill is only the active state of nav icons, never for hash.",
+            "Phosphor (MIT), fill weight everywhere. There is no weight setting and no regular twin.",
         ))
         .child(section(
             k,
             "Catalog",
-            "Regular weight at 16pt (icon::SM, a 1pt stroke) in text_muted. Add one in tools/gen_icons.py.",
+            "Fill weight at 16pt (icon::SM) in text_muted. Add one in tools/gen_icons.py.",
             catalog(k),
         ))
         .child(
@@ -31,8 +31,8 @@ pub fn page(k: &Kit) -> El {
                 .child(
                     section(
                         k,
-                        "Fill: active state",
-                        "Regular at rest, fill when the nav item is selected. hash is excluded: its fill is a solid square.",
+                        "Selected state",
+                        "The weight never changes: rest is text_muted, selected is accent_text on the row highlight.",
                         fills(k),
                     )
                     .w(560.0),
@@ -48,7 +48,7 @@ pub fn page(k: &Kit) -> El {
         .child(section(
             k,
             "Full Phosphor catalog",
-            "icons::catalog: every Phosphor regular icon with search tags (what channel icons are chosen from). The first 120 of them.",
+            "icons::catalog: every Phosphor fill icon with search tags (what channel icons are chosen from). The first 120 of them.",
             full_catalog(k),
         ))
         .child(section(k, "In context", "Real components: nav, channel list, composer, icon buttons.", context(k)))
@@ -76,19 +76,19 @@ fn catalog(k: &Kit) -> El {
     g
 }
 
-/// Regular next to fill for the icons that have an active state.
+/// Each icon at rest (text_muted) and selected (accent_text on the highlight).
 fn fills(k: &Kit) -> El {
     let t = theme_of(k);
-    let pairs: [(&'static Icon, &'static Icon); 6] = [
-        (&icons::HOUSE, &fill::HOUSE),
-        (&icons::BELL, &fill::BELL),
-        (&icons::CHAT, &fill::CHAT),
-        (&icons::USERS, &fill::USERS),
-        (&icons::GEAR, &fill::GEAR),
-        (&icons::LOCK, &fill::LOCK),
+    let glyphs: [&'static Icon; 6] = [
+        &icons::HOUSE,
+        &icons::BELL,
+        &icons::CHAT,
+        &icons::USERS,
+        &icons::GEAR,
+        &icons::LOCK,
     ];
     let mut r = row().gap(8.0).flex_wrap();
-    for (rest, active) in pairs {
+    for rest in glyphs {
         r = r.child(
             col()
                 .w(76.0)
@@ -100,7 +100,13 @@ fn fills(k: &Kit) -> El {
                         .gap(10.0)
                         .center_y()
                         .child(icon(rest, size::SM).color(t.text_muted.color()))
-                        .child(icon(active, size::SM).color(t.text.color())),
+                        .child(
+                            el().size(28.0, 28.0)
+                                .center()
+                                .radius(radius::MD)
+                                .fill(t.pressed.color())
+                                .child(icon(rest, size::SM).color(t.accent_text.color())),
+                        ),
                 )
                 .child(
                     text(rest.name.to_owned())
@@ -154,13 +160,13 @@ fn panel(k: &Kit, w: f32) -> El {
         .border(1.0, t.border_subtle.color())
 }
 
-/// A 28pt row: icon, label, selected = raised fill, strong text.
+/// A 28pt row: icon, label, selected = raised fill, strong text, accent icon.
 fn nav_row(k: &Kit, glyph: &'static Icon, name: &str, selected: bool) -> El {
     let t = theme_of(k);
-    let (ink, face) = if selected {
-        (t.text.color(), CONTROL_STRONG)
+    let (ink, icon_ink, face) = if selected {
+        (t.text.color(), t.accent_text.color(), CONTROL_STRONG)
     } else {
-        (t.text_muted.color(), CONTROL)
+        (t.text_muted.color(), t.text_muted.color(), CONTROL)
     };
     let mut r = row()
         .w_full()
@@ -169,7 +175,7 @@ fn nav_row(k: &Kit, glyph: &'static Icon, name: &str, selected: bool) -> El {
         .gap(8.0)
         .center_y()
         .radius(radius::MD)
-        .child(icon(glyph, size::SM).color(ink))
+        .child(icon(glyph, size::SM).color(icon_ink))
         .child(text(name.to_owned()).font(face).color(ink));
     if selected {
         r = r.fill(t.surface_raised.color());
@@ -188,12 +194,12 @@ fn section_label(k: &Kit, s: &str) -> El {
 fn context(k: &Kit) -> El {
     let t = theme_of(k);
     let sidebar = panel(k, 232.0)
-        .child(nav_row(k, &fill::HOUSE, "Home", true))
+        .child(nav_row(k, &icons::HOUSE, "Home", true))
         .child(nav_row(k, &icons::BELL, "Activity", false))
         .child(nav_row(k, &icons::CHAT, "Direct messages", false))
         .child(nav_row(k, &icons::USERS, "People", false))
         .child(nav_row(k, &icons::GEAR, "Settings", false));
-    // Selected channel: regular hash, raised row and stronger text. Never the fill hash.
+    // Selected channel: raised row, stronger text, accent icon.
     let channels = panel(k, 232.0)
         .child(section_label(k, "Channels"))
         .child(nav_row(k, &icons::HASH, "general", true))

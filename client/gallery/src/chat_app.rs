@@ -266,13 +266,13 @@ pub fn preview(s: &G, k: &Kit, _layer: &mut Vec<El>) -> El {
                         col()
                             .gap(2.0)
                             .child(
-                                NavRow::new("Mentions", &BELL, &icons::fill::BELL)
+                                NavRow::new("Mentions", &BELL)
                                     .highlight_group("nav")
                                     .mentions(3)
                                     .build(k),
                             )
                             .child(
-                                NavRow::new("Members", &USERS, &icons::fill::USERS)
+                                NavRow::new("Members", &USERS)
                                     .highlight_group("nav")
                                     .build(k),
                             ),

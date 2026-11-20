@@ -153,7 +153,7 @@ fn nav(k: &Kit, page: AdminPage) -> El {
         (AdminPage::Audit, "Audit log", icon("clipboard-text")),
     ] {
         rows.push(
-            thehideout_design::components::NavRow::new(label, glyph, glyph)
+            thehideout_design::components::NavRow::new(label, glyph)
                 .selected(page == p)
                 .highlight_group("admin-nav")
                 .on_press(move |a: &mut App| a.act(|s| s.admin_page(p)))

@@ -4,8 +4,8 @@
 //!
 //! Selected: the highlight is its own element (`matched`), so when the selection moves the
 //! highlight travels to the new row on `motion::REFLOW` instead of fading in place. Rows that
-//! share a list share a `.highlight_group(..)`. Nav rows switch to the Phosphor fill icon when
-//! selected; channels keep the regular `#` (README: never fill `hash`).
+//! share a list share a `.highlight_group(..)`. Every icon is the fill weight, so selection is the
+//! highlight, stronger text and an `accent_text` icon (a channel's own tint wins).
 
 use rune::{El, Icon, Transition, el, icon, row, text};
 use rune_kit::{Kit, State};
@@ -21,7 +21,6 @@ use crate::tokens::{icon as size, motion, radius, type_};
 struct Row {
     label: String,
     glyph: &'static Icon,
-    glyph_selected: &'static Icon,
     /// A user (id, name) drawn as a 20pt avatar in place of the icon.
     avatar: Option<String>,
     selected: bool,
@@ -42,11 +41,10 @@ struct Row {
 }
 
 impl Row {
-    fn new(label: String, glyph: &'static Icon, glyph_selected: &'static Icon) -> Row {
+    fn new(label: String, glyph: &'static Icon) -> Row {
         Row {
             label,
             glyph,
-            glyph_selected,
             avatar: None,
             selected: false,
             unread: false,
@@ -77,7 +75,7 @@ impl Row {
         let icon_ink = if let Some(tone) = self.tint {
             tone.alpha(if self.muted { 0.55 } else { 1.0 })
         } else if self.selected {
-            t.text
+            t.accent_text
         } else if self.muted {
             t.text_faint
         } else if self.unread {
@@ -85,11 +83,7 @@ impl Row {
         } else {
             t.text_muted
         };
-        let glyph = if self.selected {
-            self.glyph_selected
-        } else {
-            self.glyph
-        };
+        let glyph = self.glyph;
         let font = if strong {
             type_::CONTROL_STRONG
         } else {
@@ -214,23 +208,19 @@ macro_rules! row_api {
     };
 }
 
-/// A nav row: an icon, its fill twin for the selected state, and a label.
+/// A nav row: an icon and a label.
 pub struct NavRow(Row);
 
 impl NavRow {
-    pub fn new(
-        label: impl Into<String>,
-        glyph: &'static Icon,
-        glyph_selected: &'static Icon,
-    ) -> NavRow {
-        NavRow(Row::new(label.into(), glyph, glyph_selected))
+    pub fn new(label: impl Into<String>, glyph: &'static Icon) -> NavRow {
+        NavRow(Row::new(label.into(), glyph))
     }
 }
 impl NavRow {
     /// A row for a person: their 20pt avatar (colour from `id`, initials from `label`) instead of
     /// an icon, so a conversation list reads as people.
     pub fn person(label: impl Into<String>, id: impl Into<String>) -> NavRow {
-        let mut r = Row::new(label.into(), &HASH, &HASH);
+        let mut r = Row::new(label.into(), &HASH);
         r.avatar = Some(id.into());
         NavRow(r)
     }
@@ -242,16 +232,15 @@ pub struct ChannelRow(Row);
 
 impl ChannelRow {
     pub fn new(name: impl Into<String>) -> ChannelRow {
-        ChannelRow(Row::new(name.into(), &HASH, &HASH))
+        ChannelRow(Row::new(name.into(), &HASH))
     }
 }
 row_api!(ChannelRow);
 
 impl ChannelRow {
-    /// A Phosphor icon in place of `#` (the channel's own), regular weight even when selected.
+    /// A Phosphor icon in place of `#` (the channel's own).
     pub fn icon(mut self, glyph: &'static Icon) -> Self {
         self.0.glyph = glyph;
-        self.0.glyph_selected = glyph;
         self
     }
     /// An emoji (a built element of about the icon's size) in place of the icon: the channel's

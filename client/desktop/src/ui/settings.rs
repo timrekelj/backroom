@@ -84,7 +84,7 @@ fn nav(k: &Kit, section: Section) -> El {
         k,
         "Settings",
         vec![
-            NavRow::new("Appearance", &icons::SUN, &icons::fill::SUN)
+            NavRow::new("Appearance", &icons::SUN)
                 .selected(section == Section::Appearance)
                 .highlight_group("settings-nav")
                 .on_press(|a: &mut App| a.act(|s| s.ui.settings = Some(Section::Appearance)))
