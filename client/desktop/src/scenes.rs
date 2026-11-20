@@ -6,8 +6,9 @@ use thehideout_design::components::ToastKind;
 use thehideout_design::{AccentPreset, Appearance, BackgroundPreset, ThemeSpec};
 
 use crate::app::{fake_now, App};
-use crate::fake::{FakeBackend, ANA, ARCHIVE, BRUNO, CVETKA, DESIGN, DEV, DM_ANA, GENERAL, MUSIC, PLANS, RANDOM};
+use crate::fake::{FakeBackend, ANA, ARCHIVE, BRUNO, CVETKA, DESIGN, DEV, DM_ANA, GENERAL, HIDEOUT_DESIGNERS, HIDEOUT_MODS, MUSIC, PLANS, RANDOM};
 use crate::format::Tz;
+use crate::server_settings::ServerPage;
 use crate::state::{auth_error, AppState, AuthMode, DialogKind, Menu};
 
 /// A signed-in app on the fake world, in the given theme, with The Hideout's #general open.
@@ -183,6 +184,73 @@ fn reorder_menu(a: &mut App, dark: bool) {
     a.state.ui.menu = Menu::Channel { id: DESIGN, at: Some((110, 330)) };
 }
 
+/// The busy main screen with pictures: every member has an avatar, The Hideout an icon, role
+/// colours show in the transcript and the member panel, and a mention of coloured members.
+fn avatars_screen(dark: bool) -> (App, FakeBackend) {
+    let (mut a, fake) = main_screen(dark);
+    fake.give_avatars();
+    fake.give_icon(1);
+    fake.incoming(GENERAL, BRUNO, "@ana @cvetka the mockups are in #design, could you both take a look?");
+    fake.incoming(GENERAL, CVETKA, "on it. @bruno thanks for the heads up");
+    fake.incoming(GENERAL, ANA, "@tim you can merge when ready");
+    a.pump();
+    a.state.data.media.settle();
+    (a, fake)
+}
+
+fn main_avatars(a: &mut App, dark: bool) {
+    let (mut app, _fake) = avatars_screen(dark);
+    app.state.ui.members_open = true;
+    *a = app;
+}
+
+/// The server settings page on `page`, for the owner of The Hideout.
+fn server_settings(a: &mut App, dark: bool, page: ServerPage, role: Option<u64>) {
+    let (mut app, _fake) = avatars_screen(dark);
+    app.act(|s| {
+        s.open_server_settings(1);
+        s.server_page(page);
+        if let Some(r) = role {
+            s.select_role(r);
+        }
+    });
+    app.pump();
+    *a = app;
+}
+
+/// The same as Tim, a Roadie in Garage Band: roles above his own are locked.
+fn server_settings_limited(a: &mut App, dark: bool) {
+    let (mut app, fake) = booted(dark);
+    fake.give_avatars();
+    app.act(|s| s.go_guild(2));
+    app.pump();
+    app.act(|s| {
+        s.open_server_settings(2);
+        s.select_role(crate::fake::BAND_DRUMMER);
+    });
+    app.pump();
+    app.state.data.media.settle();
+    *a = app;
+}
+
+/// The profile dialog with a picture chosen and waiting to be saved.
+fn profile_dialog(a: &mut App, dark: bool) {
+    let (mut app, _fake) = avatars_screen(dark);
+    let path = std::env::temp_dir().join(format!("thehideout-profile-scene-{}.png", std::process::id()));
+    std::fs::write(&path, crate::media::generated_png(41, 96)).ok();
+    app.act(|s| {
+        s.open_profile();
+        s.pick_image(crate::backend::ImagePurpose::Avatar, &path);
+    });
+    app.pump();
+    app.state.data.media.settle();
+    if let Some(d) = app.state.ui.dialog.as_ref().and_then(|d| d.pick.draft.as_ref()) {
+        let _ = d.preview.wait();
+    }
+    std::fs::remove_file(&path).ok();
+    *a = app;
+}
+
 type Scene = (&'static str, fn(&mut App));
 
 pub const SCENES: &[Scene] = &[
@@ -227,6 +295,18 @@ pub const SCENES: &[Scene] = &[
     ("icon-picker-search-light", |a| channel_settings(a, false, "game")),
     ("reorder-menu", |a| reorder_menu(a, true)),
     ("reorder-menu-light", |a| reorder_menu(a, false)),
+    ("main-avatars", |a| main_avatars(a, true)),
+    ("main-avatars-light", |a| main_avatars(a, false)),
+    ("server-settings-overview", |a| server_settings(a, true, ServerPage::Overview, None)),
+    ("server-settings-overview-light", |a| server_settings(a, false, ServerPage::Overview, None)),
+    ("server-settings-roles", |a| server_settings(a, true, ServerPage::Roles, Some(HIDEOUT_MODS))),
+    ("server-settings-roles-light", |a| server_settings(a, false, ServerPage::Roles, Some(HIDEOUT_DESIGNERS))),
+    ("server-settings-roles-limited", |a| server_settings_limited(a, true)),
+    ("server-settings-roles-limited-light", |a| server_settings_limited(a, false)),
+    ("server-settings-members", |a| server_settings(a, true, ServerPage::Members, None)),
+    ("server-settings-members-light", |a| server_settings(a, false, ServerPage::Members, None)),
+    ("profile-dialog", |a| profile_dialog(a, true)),
+    ("profile-dialog-light", |a| profile_dialog(a, false)),
     ("main-small", |a| main_(a, true)),
     ("main-small-light", |a| main_(a, false)),
 ];

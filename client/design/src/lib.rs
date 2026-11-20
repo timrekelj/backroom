@@ -20,7 +20,7 @@ pub use kit::{kit, kit_for, theme_of};
 pub use tokens::accent::AccentPreset;
 pub use tokens::background::BackgroundPreset;
 pub use tokens::spec::{Appearance, Contrast, ThemeSpec};
-pub use tokens::palette::{PALETTE_KEYS, palette_color};
+pub use tokens::palette::{PALETTE_KEYS, palette_color, palette_text, palette_wash};
 pub use tokens::theme::{Theme, theme, theme_for};
 pub use tokens::{accent, background, color, spec, elevation, icon, motion, radius, space, type_};
 

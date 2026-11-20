@@ -19,7 +19,9 @@ pub const GRID_COLS: usize = 10;
 /// A grid cell's side.
 pub const CELL: f32 = 36.0;
 /// The grid's visible height: six rows.
-pub const GRID_H: f32 = CELL * 6.0;
+pub const GRID_H: f32 = CELL * GRID_ROWS as f32;
+/// Rows the grid shows unless told otherwise.
+pub const GRID_ROWS: usize = 6;
 
 /// The grid row that holds result `index`.
 pub fn row_of(index: usize) -> usize {
@@ -136,6 +138,7 @@ pub struct IconGrid {
     selected: String,
     highlight: Option<usize>,
     pick: Option<PickIcon>,
+    visible_rows: usize,
 }
 
 impl IconGrid {
@@ -145,7 +148,13 @@ impl IconGrid {
             selected: selected.into(),
             highlight: None,
             pick: None,
+            visible_rows: GRID_ROWS,
         }
+    }
+    /// How many rows are visible (default [`GRID_ROWS`]); the rest scroll.
+    pub fn visible_rows(mut self, rows: usize) -> Self {
+        self.visible_rows = rows.max(1);
+        self
     }
     pub fn highlight(mut self, index: Option<usize>) -> Self {
         self.highlight = index;
@@ -163,13 +172,14 @@ impl IconGrid {
     pub fn build<S: 'static>(self, k: &Kit) -> El {
         let t = theme_of(k);
         if self.results.is_empty() {
-            return col().key("icon-grid").w_full().h(GRID_H).center().child(
+            return col().key("icon-grid").w_full().h(CELL * self.visible_rows as f32).center().child(
                 text("No icons match")
                     .font(type_::CONTROL)
                     .color(t.text_faint.color()),
             );
         }
         let rows = self.results.len().div_ceil(GRID_COLS);
+        let height = CELL * self.visible_rows as f32;
         let (results, selected, highlight, pick) = (
             self.results.clone(),
             self.selected,
@@ -230,7 +240,7 @@ impl IconGrid {
         col()
             .key("icon-grid")
             .w_full()
-            .h(GRID_H)
+            .h(height)
             .scroll(ScrollSpec {
                 stick_bottom: false,
             })
@@ -270,6 +280,7 @@ impl ColorSwatches {
             .label("Colour")
             .focus_group()
             .w_full()
+            .flex_wrap()
             .gap(6.0)
             .center_y();
         for key in std::iter::once("").chain(PALETTE_KEYS) {

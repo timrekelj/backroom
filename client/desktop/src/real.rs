@@ -329,7 +329,8 @@ impl Backend for RealBackend {
                     async move {
                         let (roles, members) = tokio::join!(client.list_roles(guild), client.list_members(guild));
                         let member_roles = members?.into_iter().map(|m| (m.user.id, m.role_ids)).collect();
-                        Ok(GuildAccess { roles: roles?.roles, member_roles })
+                        let list = roles?;
+                        Ok(GuildAccess { roles: list.roles, version: list.version, member_roles })
                     },
                     move |result| Reply::Access { guild, result },
                 );
@@ -357,6 +358,50 @@ impl Backend for RealBackend {
             }
             Command::OpenDm { user_id } => {
                 self.call(async move { client.open_dm(user_id).await }, Reply::DmOpened);
+            }
+            Command::FetchMedia { key } => {
+                let fetched = key.clone();
+                self.call(async move { client.fetch_media(&fetched).await }, move |result| Reply::Media { key, result });
+            }
+            Command::ReadImage { path, purpose } => {
+                // The file is read on a blocking thread of the runtime, never where frames are drawn.
+                self.call(
+                    async move { tokio::task::spawn_blocking(move || crate::media::read_image(&path)).await.map_err(|e| ApiError::Other(e.to_string()))? },
+                    move |result| Reply::ImageRead { purpose, result },
+                );
+            }
+            Command::UploadAvatar { bytes, content_type } => {
+                self.call(async move { client.upload_avatar(bytes, &content_type).await }, Reply::AvatarSaved);
+            }
+            Command::RemoveAvatar => {
+                self.call(async move { client.remove_avatar().await }, Reply::AvatarSaved);
+            }
+            Command::UploadGuildIcon { guild, bytes, content_type } => {
+                self.call(async move { client.upload_guild_icon(guild, bytes, &content_type).await }, move |result| Reply::GuildSaved { guild, result });
+            }
+            Command::RemoveGuildIcon { guild } => {
+                self.call(async move { client.remove_guild_icon(guild).await }, move |result| Reply::GuildSaved { guild, result });
+            }
+            Command::RenameGuild { guild, name } => {
+                self.call(async move { client.update_guild(guild, Some(&name)).await }, move |result| Reply::GuildSaved { guild, result });
+            }
+            Command::CreateRole { guild, name, color, permissions } => {
+                self.call(async move { client.create_role(guild, &name, color, permissions).await }, move |result| Reply::RoleCreated { guild, result });
+            }
+            Command::UpdateRole { guild, role, name, color, permissions } => {
+                self.call(
+                    async move { client.update_role(guild, role, name.as_deref(), color, permissions).await },
+                    move |result| Reply::RoleUpdated { guild, result },
+                );
+            }
+            Command::DeleteRole { guild, role } => {
+                self.call(async move { client.delete_role(guild, role).await }, move |result| Reply::RoleDeleted { guild, role, result });
+            }
+            Command::ReorderRoles { guild, expected_version, role_ids } => {
+                self.call(async move { client.reorder_roles(guild, expected_version, &role_ids).await }, move |result| Reply::RolesReordered { guild, result });
+            }
+            Command::SetMemberRoles { guild, user, role_ids } => {
+                self.call(async move { client.set_member_roles(guild, user, &role_ids).await }, move |result| Reply::MemberRolesSet { guild, user, result });
             }
             Command::SignOut => {
                 self.shared.new_generation();

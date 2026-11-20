@@ -4,9 +4,19 @@
 
 use std::collections::HashMap;
 
+use std::path::PathBuf;
+
 use thehideout_api::{
-    ApiError, Channel, ChannelIcon, DmChannel, GatewayUpdate, Guild, GuildLayout, Message, Page, PaletteColor, Role, Section, User,
+    ApiError, Channel, ChannelIcon, DmChannel, GatewayUpdate, Guild, GuildLayout, Member, Message, Page, PaletteColor, Permissions, Role, RoleList, Section,
+    User,
 };
+
+/// What a picked picture is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImagePurpose {
+    Avatar,
+    GuildIcon { guild: u64 },
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -85,6 +95,62 @@ pub enum Command {
     OpenDm {
         user_id: u64,
     },
+    /// Downloads a stored picture (`User::avatar`, `Guild::icon`).
+    FetchMedia {
+        key: String,
+    },
+    /// Reads a picked file off the UI thread: answered with `ImageRead`.
+    ReadImage {
+        path: PathBuf,
+        purpose: ImagePurpose,
+    },
+    UploadAvatar {
+        bytes: Vec<u8>,
+        content_type: String,
+    },
+    RemoveAvatar,
+    UploadGuildIcon {
+        guild: u64,
+        bytes: Vec<u8>,
+        content_type: String,
+    },
+    RemoveGuildIcon {
+        guild: u64,
+    },
+    RenameGuild {
+        guild: u64,
+        name: String,
+    },
+    CreateRole {
+        guild: u64,
+        name: String,
+        color: PaletteColor,
+        permissions: Permissions,
+    },
+    /// `None` fields stay as they are.
+    UpdateRole {
+        guild: u64,
+        role: u64,
+        name: Option<String>,
+        color: Option<PaletteColor>,
+        permissions: Option<Permissions>,
+    },
+    DeleteRole {
+        guild: u64,
+        role: u64,
+    },
+    /// The full order, most senior first, based on `expected_version`; a stale one is `Conflict`.
+    ReorderRoles {
+        guild: u64,
+        expected_version: u64,
+        role_ids: Vec<u64>,
+    },
+    /// Replaces the roles a member holds.
+    SetMemberRoles {
+        guild: u64,
+        user: u64,
+        role_ids: Vec<u64>,
+    },
     SignOut,
     /// Launch: validate the saved session, if there is one.
     Resume,
@@ -113,6 +179,8 @@ type R<T> = Result<T, ApiError>;
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct GuildAccess {
     pub roles: Vec<Role>,
+    /// The roles' version, for `Command::ReorderRoles`.
+    pub version: u64,
     pub member_roles: HashMap<u64, Vec<u64>>,
 }
 
@@ -166,6 +234,45 @@ pub enum Reply {
         result: R<Vec<User>>,
     },
     DmOpened(R<DmChannel>),
+    /// Answer to `FetchMedia`.
+    Media {
+        key: String,
+        result: R<Vec<u8>>,
+    },
+    /// Answer to `ReadImage`: the bytes and their content type.
+    ImageRead {
+        purpose: ImagePurpose,
+        result: R<(Vec<u8>, String)>,
+    },
+    /// Answer to `UploadAvatar` and `RemoveAvatar`.
+    AvatarSaved(R<User>),
+    /// Answer to `UploadGuildIcon`, `RemoveGuildIcon` and `RenameGuild`.
+    GuildSaved {
+        guild: u64,
+        result: R<Guild>,
+    },
+    RoleCreated {
+        guild: u64,
+        result: R<(Role, u64)>,
+    },
+    RoleUpdated {
+        guild: u64,
+        result: R<Role>,
+    },
+    RoleDeleted {
+        guild: u64,
+        role: u64,
+        result: R<u64>,
+    },
+    RolesReordered {
+        guild: u64,
+        result: R<RoleList>,
+    },
+    MemberRolesSet {
+        guild: u64,
+        user: u64,
+        result: R<Member>,
+    },
     SignedOut,
     /// Answer to `Resume`: no saved session, a valid one (its server URL and the session), or why
     /// it couldn't be used (`Unauthenticated`: the token was refused and is forgotten).

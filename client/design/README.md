@@ -163,7 +163,7 @@ Every control takes `&Kit`, and shows `State::{Rest, Hover, Pressed, Focus, Disa
 | `TextInput` | `rune_kit` | 28pt (`.large()` = 32pt, the Md control height, used in dialogs and the auth card), `radius-md`, 1px `border_strong` ring; focus swaps it for `focus`; invalid uses `danger`. |
 | `switch(on)` | `rune_kit::Switch` `.web()` | 24x16, 4pt corners, accent when on. |
 | `Checkbox` | own | 16x16, `radius-sm`, off: `border_strong`; on / mixed: accent fill with `accent_fg` mark. |
-| `Avatar` | own | Sizes 20/24/32/40, rounded squares (radius sm/sm/md/lg), initials on one of eight warm fills chosen by FNV-1a of the user id (all take the same ink at 4.5:1+), `Presence::{None, Online, Idle, Offline}` dot (offline is hollow). |
+| `Avatar` | own | Sizes 20/24/32/40, rounded squares (radius sm/sm/md/lg), initials on one of eight warm fills chosen by FNV-1a of the user id (all take the same ink at 4.5:1+), `Presence::{None, Online, Idle, Offline}` dot (offline is hollow). `.image(Some(pixels))` draws the user's picture (`rune::Pixels`, cropped to fill) over the initials, which stay visible while it decodes and if it never does; `GuildBadge` and `MemberRow` take it the same way. |
 | `Badge` | own | 18pt, `radius-xs`, `Neutral`, `Accent`, `Success`, `Warning`, `Danger`, `Info`. |
 | `UnreadDot` / `MentionPill` | own | Unread: quiet 6pt dot in `text`. Mention: accent pill, tabular count, `99+` cap. |
 | `Kbd` | own | 18pt keycaps, `radius-xs`, raised fill, 1px border. |
@@ -181,14 +181,14 @@ Data in, callbacks out: no app state types, every one takes the `Kit` like the c
 | `GuildBadge`, `RailTile` | The server icon, sizes 24/32/40, avatar radii, deterministic warm fill; `RailTile` is the same tile with an icon on a neutral face (Home, and the outlined "+"). A left rail holds the indicator. | rest, hover (short bar), selected (tall accent bar; `RailTile` adds an `accent_subtle` face), unread (4pt dot), mention count on the corner (overhangs the face 2pt; the rail gap is 12) |
 | `NavRow`, `ChannelRow` | Sidebar rows, 32pt (`ROW_H`), 2pt apart, 8pt padding, 16pt icon, `radius-md`. Nav rows take an icon + its fill twin (fill only when selected); `NavRow::person` shows the user's 20pt `Avatar` instead; channels show `#` or their own Phosphor icon (`.icon`, always regular), tinted by a palette colour (`.tint`; the selected highlight takes a 12% wash of it), and a `.trailing` "more" button that fades in on hover. | selected (highlight + strong text), unread (brighter, heavier, dot), mentions (pill), muted (faint), hover |
 | `SidebarSection` | A collapsible group header (28pt) with a chevron, a hover "+" and an optional hover "more" button (`.more`); `.decorate_header` lets the app add a context menu or a drag to the title. | open, closed, add shown |
-| `MessageGroup`, `ChatMessage` | Avatar, author, time, one or more bodies. `MessageGroup::runs` splits a transcript: same author, at most 5 minutes (`GROUP_WINDOW_SECS`) apart. Follow-ups show their time in the gutter on hover. Bodies are markup (see "Message markup"). `links::<S>()` makes links and spoilers pressable. | `Sent`, `Pending` (body at 0.55, no spinner), `Failed` ("Failed to send · Retry"), mentions you (`accent_wash` + 2pt accent bar), hover (row highlight + floating reply/copy/more) |
+| `MessageGroup`, `ChatMessage` | Avatar (`.avatars(..)` supplies pictures by author id), author (`.name_colors(..)`: the colour of their role, as `palette_text`), time, one or more bodies (`.mention_ink(..)` colours `@name` chips of coloured members). `MessageGroup::runs` splits a transcript: same author, at most 5 minutes (`GROUP_WINDOW_SECS`) apart. Follow-ups show their time in the gutter on hover. Bodies are markup (see "Message markup"). `links::<S>()` makes links and spoilers pressable. | `Sent`, `Pending` (body at 0.55, no spinner), `Failed` ("Failed to send · Retry"), mentions you (`accent_wash` + 2pt accent bar), hover (row highlight + floating reply/copy/more) |
 | `DateDivider`, `NewMessagesDivider` | A hairline with the date; an accent line with a "New" tag. | static |
 | `Composer` | The message box: "+", a field that grows to 8 lines then scrolls, smiley, Send. `bind` wires the field and send; Enter sends, Shift+Enter breaks the line; whitespace never sends. | empty (Send ghost, disabled), text (Send primary), focused (focus ring), disabled with a reason |
 | `ChannelHeader` | `#` + name + topic + trailing IconButtons; `breadcrumb` gives "Guild / # channel". | static |
-| `MemberRow` | Avatar with presence, name, crown for the owner. | online, idle, offline (faint), hover |
+| `MemberRow` | Avatar (with a picture if given) and presence, the name (in a role colour if given), crown for the owner. | online, idle, offline (faint), hover |
 | `EmptyState` | Icon tile, title, body, optional action `Button`. | static |
-| `PickerTabs`, `IconGrid`, `ColorSwatches` | The channel look pickers: tabs (Icons, Emoji and Server emoji disabled with "Soon"), the Phosphor catalog as a virtualized 10-column grid (only rows near the viewport are built; a `highlight` for keyboard choice, the search field keeps focus), and the 12 palette swatches plus "none" (selected: ring and check). | rest, hover, selected, highlighted |
-| `Dialog` | Modal: scrim, panel (24 padding; title to body 16, label to field 6, field to field 16, body to footer 24), title, body, right-aligned footer. Rune's modal stack gives the focus trap, Esc, scrim click and focus restore. `preview()` draws the panel inline. | closed, open |
+| `PickerTabs`, `IconGrid`, `ColorSwatches` | The channel look pickers: tabs (Icons, Emoji and Server emoji disabled with "Soon"), the Phosphor catalog as a virtualized 10-column grid (six rows high, or `.visible_rows(n)`; only rows near the viewport are built; a `highlight` for keyboard choice, the search field keeps focus), and the 12 palette swatches plus "none" (selected: ring and check; they wrap in a narrow column). | rest, hover, selected, highlighted |
+| `Dialog` | Modal (`.body_max_h(h)` makes the body scroll past `h`, so a tall form fits a short window): scrim, panel (24 padding; title to body 16, label to field 6, field to field 16, body to footer 24), title, body, right-aligned footer. Rune's modal stack gives the focus trap, Esc, scrim click and focus restore. `preview()` draws the panel inline. | closed, open |
 | `Toast` | Bottom-centre notice, info / success / danger. `Toast::host` is its inert overlay layer; the caller dismisses. | kinds |
 | `ConnectionPill` | Connected, Connecting…, Reconnecting in Ns, Offline. | status |
 | `dialog_field` | A labelled field that spans the dialog body, with an inline error under it. | valid, error |
@@ -302,7 +302,13 @@ the entrance again.
 One lightness per appearance (dark L .76, light L .53) and a chroma and hue per key, so the twelve read as a
 family and contrast is a property of L: every tone has at least **3:1** (non-text) on `bg`, `surface`,
 `surface_raised` and under the selected-row wash in **all 320 looks**, stays in gamut, and is distinct from
-the others (`palette_tests`). Use it only for icon ink and swatches, never for text.
+the others (`palette_tests`). Use it only for icon ink, dots and swatches, never for text.
+
+**Text-safe variant** (`palette_text(key, theme)`): the same hue and chroma with the lightness moved just far
+enough that the colour reads as *text*: 4.5:1 (7:1 on High contrast) on `bg`, `surface`, `surface_raised`
+and `surface_overlay`, under a hover or pressed row, under the mention wash (`accent_wash`) and inside its own
+chip wash (`palette_wash`, the icon tone at 16%). It is what a role-coloured name and an `@mention` of such a
+member use. A test checks it on all 320 looks x 12 keys x 4 surfaces x 5 grounds.
 
 **Full catalog** (`icons::catalog`): all 1512 Phosphor regular icons with their search tags, generated into
 `src/icons/catalog/part_{0..3}.rs` (sorted by name; ~860 KB of source; the release desktop binary grew from 37.06 MB to 40.40 MB, +3.3 MB, for the SVG paths and tags).

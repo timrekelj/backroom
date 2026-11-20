@@ -3,12 +3,12 @@
 //! dot when unread, a short bar on hover, a tall accent bar when selected. A mention count
 //! sits on its bottom-right corner.
 
-use rune::{El, Icon, TextStyle, el, icon, row, text};
+use rune::{el, icon, row, text, El, Icon, TextStyle};
 use rune_kit::{Kit, State};
 
+use crate::components::avatar::{avatar_tones, initials, tone_index, AVATAR_INK};
+use crate::components::util::{paint, Acts, Surface};
 use crate::components::MentionPill;
-use crate::components::avatar::{AVATAR_INK, avatar_tones, initials, tone_index};
-use crate::components::util::{Acts, Surface, paint};
 use crate::theme_of;
 use crate::tokens::{icon as size, motion, radius, type_};
 
@@ -24,6 +24,7 @@ pub struct GuildBadge {
     mentions: u32,
     state: State,
     acts: Acts,
+    image: Option<rune::Pixels>,
 }
 
 impl GuildBadge {
@@ -38,7 +39,13 @@ impl GuildBadge {
             mentions: 0,
             state: State::Rest,
             acts: Acts::default(),
+            image: None,
         }
+    }
+    /// The server's icon, drawn over the initials (which stay while it loads or if it fails).
+    pub fn image(mut self, image: Option<rune::Pixels>) -> Self {
+        self.image = image;
+        self
     }
     pub fn size(mut self, size: u32) -> Self {
         self.size = size;
@@ -87,7 +94,7 @@ impl GuildBadge {
             initials(&self.name)
         };
         let fill = avatar_tones(t.spec.accent)[tone_index(&self.id)].color();
-        let face = row()
+        let mut face = row()
             .key("face")
             .role("button")
             .label(self.name.clone())
@@ -100,6 +107,9 @@ impl GuildBadge {
                     .color(AVATAR_INK.color())
                     .a11y_hidden(),
             );
+        if let Some(p) = &self.image {
+            face = face.child(crate::components::avatar::picture(p, s, r));
+        }
         let surface = Surface {
             fill,
             hover: t.hover.color(),
@@ -108,13 +118,7 @@ impl GuildBadge {
         let mut face = paint(k, face, surface, self.state, (2.0, 2.0));
         face = self.acts.apply(face, true);
 
-        let rail = indicator(
-            t,
-            s,
-            self.selected,
-            self.unread,
-            self.state == State::Hover,
-        );
+        let rail = indicator(t, s, self.selected, self.unread, self.state == State::Hover);
 
         let mut root = row().hover_group().w(RAIL + s).h(s).child(rail).child(face);
         if self.mentions > 0 {
@@ -126,7 +130,13 @@ impl GuildBadge {
 
 /// The rail beside a face of side `s`: a tall accent bar when selected, a 4pt dot when unread,
 /// a short bar on hover. Shared by every tile in the rail so they read as one family.
-fn indicator(t: &crate::tokens::theme::Theme, s: f32, selected: bool, unread: bool, forced_hover: bool) -> El {
+fn indicator(
+    t: &crate::tokens::theme::Theme,
+    s: f32,
+    selected: bool,
+    unread: bool,
+    forced_hover: bool,
+) -> El {
     let (h, ink, shown) = if selected {
         ((s * 0.6).round(), t.accent, 1.0)
     } else if unread {
@@ -184,7 +194,11 @@ pub struct RailTile {
 
 impl RailTile {
     /// `glyph_selected` is the fill twin shown when selected.
-    pub fn new(glyph: &'static Icon, glyph_selected: &'static Icon, label: impl Into<String>) -> RailTile {
+    pub fn new(
+        glyph: &'static Icon,
+        glyph_selected: &'static Icon,
+        label: impl Into<String>,
+    ) -> RailTile {
         RailTile {
             glyph,
             glyph_selected,
@@ -238,7 +252,11 @@ impl RailTile {
         } else {
             (t.surface_raised.color(), t.text_muted.color())
         };
-        let glyph = if self.selected { self.glyph_selected } else { self.glyph };
+        let glyph = if self.selected {
+            self.glyph_selected
+        } else {
+            self.glyph
+        };
         let mut face = row()
             .key("face")
             .role("button")

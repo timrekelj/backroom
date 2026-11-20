@@ -19,10 +19,14 @@ mod format;
 mod layout;
 #[path = "../src/look.rs"]
 mod look;
+#[path = "../src/media.rs"]
+mod media;
 #[path = "../src/perms.rs"]
 mod perms;
 #[path = "../src/real.rs"]
 mod real;
+#[path = "../src/server_settings.rs"]
+mod server_settings;
 #[path = "../src/state.rs"]
 mod state;
 #[path = "../src/structure.rs"]
@@ -39,7 +43,9 @@ use rune::prefs::Prefs;
 use scylla::client::caching_session::CachingSession;
 use scylla::client::session_builder::SessionBuilder;
 use thehideout_api::{ApiError, Event, GatewayUpdate};
+use thehideout_server::config::S3Config;
 use thehideout_server::snowflake::Snowflake;
+use thehideout_server::storage::Storage;
 use thehideout_server::{AppState, build_app, migrations};
 use tokio::net::TcpListener;
 
@@ -53,6 +59,26 @@ struct Server {
 
 impl Server {
     async fn start() -> Self {
+        Self::boot(false).await
+    }
+
+    /// With the S3-compatible store attached, for pictures (`docker compose up -d`).
+    async fn start_with_media() -> Self {
+        Self::boot(true).await
+    }
+
+    async fn boot(media: bool) -> Self {
+        let storage = if media {
+            let config = S3Config::from_env().expect("S3 config");
+            let storage = Storage::s3(&config).expect("configure S3 storage");
+            storage
+                .check()
+                .await
+                .unwrap_or_else(|e| panic!("object storage at {} is not reachable ({e:#}); run `docker compose up -d`", config.endpoint));
+            Some(storage)
+        } else {
+            None
+        };
         let session = SessionBuilder::new()
             .known_node("127.0.0.1:9042")
             .build()
@@ -61,7 +87,8 @@ impl Server {
         let keyspace = format!("test_{:016x}", rand::rng().random::<u64>());
         migrations::run(&session, &keyspace).await.expect("run migrations");
         let session = Arc::new(CachingSession::from(session, 64));
-        let state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, Duration::from_millis(200));
+        let mut state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, Duration::from_millis(200));
+        state.storage = storage;
         let app = build_app(state.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -72,6 +99,15 @@ impl Server {
     }
 
     async fn cleanup(self) {
+        if let Some(storage) = &self.state.storage
+            && let Ok(result) = self.state.session.execute_unpaged("SELECT key FROM media_objects", ()).await
+            && let Ok(rows) = result.into_rows_result()
+            && let Ok(rows) = rows.rows::<(String,)>()
+        {
+            for (key,) in rows.flatten() {
+                let _ = storage.delete(&key).await;
+            }
+        }
         let _ = self.state.session.get_session().query_unpaged(format!("DROP KEYSPACE IF EXISTS {}", self.state.keyspace), ()).await;
     }
 }
@@ -602,6 +638,239 @@ fn sections_icons_and_layout_reach_a_second_client() {
         .expect("delete section");
     assert!(after.sections.is_empty());
     assert!(layout::channels_in(&after, None).contains(&dev.id));
+
+    rt.block_on(server.cleanup());
+    std::fs::remove_file(&alice.prefs).ok();
+    std::fs::remove_file(&bob.prefs).ok();
+}
+
+/// A role with a colour and MANAGE_CHANNELS, handed to a second user: who could not touch the
+/// layout before now reorders it. Role order goes through the real server too, stale version and all.
+#[test]
+fn a_role_with_manage_channels_lets_a_second_user_reorder_the_layout() {
+    use thehideout_api::{PaletteColor, Permissions};
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(Server::start());
+    let mut alice = Peer::new(&server.url);
+    let mut bob = Peer::new(&server.url);
+    alice.sign_up("alice");
+    alice.initial();
+    alice.connected();
+    let guild = alice
+        .ask(Command::CreateGuild { name: "friends".into() }, |r| match r {
+            Reply::GuildCreated(g) => Some(g.clone()),
+            _ => None,
+        })
+        .expect("create guild");
+    let b = bob.sign_up("bob");
+    bob.initial();
+    bob.connected();
+    bob.ask(Command::JoinGuild { code: guild.invite_code.clone() }, |r| matches!(r, Reply::GuildJoined(Ok(_))).then_some(()));
+    let guild = guild.id;
+    // A second channel, so there is an order to change.
+    let extra = alice
+        .ask(Command::CreateChannel { guild, name: "random".into(), section: None, icon: Default::default(), color: Default::default() }, |r| match r {
+            Reply::ChannelCreated(c) => Some(c.clone()),
+            _ => None,
+        })
+        .expect("create channel");
+    let channels = |peer: &mut Peer| {
+        peer.ask(Command::LoadChannels { guild }, |r| match r {
+            Reply::Channels { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("channels")
+    };
+
+    // Bob has no role: the layout is not his to change.
+    let (_, layout) = channels(&mut bob);
+    let mine = layout::normalized(&layout);
+    let moved = layout::step_channel(&mine, extra.id, -1).expect("a real move");
+    let refused = bob.ask(Command::UpdateLayout { guild, layout: moved.clone() }, |r| match r {
+        Reply::LayoutSaved { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(refused, Err(ApiError::PermissionDenied));
+
+    // Alice makes the role with a colour and MANAGE_CHANNELS; bob's gateway carries the new list.
+    bob.seen.clear();
+    let (role, version) = alice
+        .ask(Command::CreateRole { guild, name: "Builders".into(), color: PaletteColor::Blue, permissions: Permissions::MANAGE_CHANNELS }, |r| match r {
+            Reply::RoleCreated { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("create role");
+    assert_eq!((role.name.as_str(), role.color, role.permissions), ("Builders", PaletteColor::Blue, Permissions::MANAGE_CHANNELS));
+    let announced = bob.wait("the roles on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::RolesUpdated { guild_id, roles, version: v })) if *guild_id == guild && roles.iter().any(|x| x.id == role.id) => Some((roles.clone(), *v)),
+        _ => None,
+    });
+    assert_eq!(announced.1, version);
+
+    // She hands it to bob; his gateway says his roles changed, and now the same move works.
+    let member = alice
+        .ask(Command::SetMemberRoles { guild, user: b.me.id, role_ids: vec![role.id] }, |r| match r {
+            Reply::MemberRolesSet { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("set member roles");
+    assert_eq!(member.role_ids, vec![role.id]);
+    bob.wait("bob's roles on his gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::MemberUpdated { member, .. })) if member.user.id == b.me.id && member.role_ids == [role.id] => Some(()),
+        _ => None,
+    });
+    let access = bob
+        .ask(Command::LoadAccess { guild }, |r| match r {
+            Reply::Access { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("access");
+    assert_eq!(access.version, version);
+    assert_eq!(access.member_roles.get(&b.me.id), Some(&vec![role.id]));
+    let saved = bob
+        .ask(Command::UpdateLayout { guild, layout: moved }, |r| match r {
+            Reply::LayoutSaved { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("bob may reorder now");
+    assert_eq!(layout::channels_in(&saved, None).first(), Some(&extra.id));
+    // He still can't manage roles: that was not in the role.
+    let denied = bob.ask(Command::CreateRole { guild, name: "Mine".into(), color: PaletteColor::None, permissions: Permissions::NONE }, |r| match r {
+        Reply::RoleCreated { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(denied.map(|_| ()), Err(ApiError::PermissionDenied));
+
+    // Role order: a second role, then a reorder on the current version, then the same one again (stale).
+    let (guests, v2) = alice
+        .ask(Command::CreateRole { guild, name: "Guests".into(), color: PaletteColor::Slate, permissions: Permissions::NONE }, |r| match r {
+            Reply::RoleCreated { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("second role");
+    let reorder = |peer: &mut Peer, expected_version: u64, ids: Vec<u64>| {
+        peer.ask(Command::ReorderRoles { guild, expected_version, role_ids: ids.clone() }, |r| match r {
+            Reply::RolesReordered { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+    };
+    // New roles go to the bottom: Builders, Guests. Put Guests on top.
+    let done = reorder(&mut alice, v2, vec![guests.id, role.id]).expect("reorder");
+    assert_eq!(done.roles.iter().map(|r| r.id).collect::<Vec<_>>(), [guests.id, role.id]);
+    assert!(done.version > v2);
+    let stale = reorder(&mut alice, v2, vec![role.id, guests.id]);
+    assert_eq!(stale.map(|_| ()), Err(ApiError::Conflict), "ABORTED is Conflict");
+
+    rt.block_on(server.cleanup());
+    std::fs::remove_file(&alice.prefs).ok();
+    std::fs::remove_file(&bob.prefs).ok();
+}
+
+/// An avatar uploaded by one user reaches the other's gateway as `UserUpdated`, and the picture
+/// can be fetched by its key; a picked file is read through the backend; a server icon and a
+/// removal go the same way.
+#[test]
+fn an_uploaded_avatar_reaches_a_second_client_and_can_be_fetched() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(Server::start_with_media());
+    let mut alice = Peer::new(&server.url);
+    let mut bob = Peer::new(&server.url);
+    let a = alice.sign_up("alice");
+    alice.initial();
+    alice.connected();
+    let guild = alice
+        .ask(Command::CreateGuild { name: "friends".into() }, |r| match r {
+            Reply::GuildCreated(g) => Some(g.clone()),
+            _ => None,
+        })
+        .expect("create guild");
+    bob.sign_up("bob");
+    bob.initial();
+    bob.connected();
+    bob.ask(Command::JoinGuild { code: guild.invite_code.clone() }, |r| matches!(r, Reply::GuildJoined(Ok(_))).then_some(()));
+    bob.seen.clear();
+
+    // A picked file is read off-thread by the backend: its bytes and type come back as they were.
+    let png = media::generated_png(3, 64);
+    let path = std::env::temp_dir().join(format!("thehideout-avatar-{:016x}.png", rand::rng().random::<u64>()));
+    std::fs::write(&path, &png).unwrap();
+    let read = alice
+        .ask(Command::ReadImage { path: path.clone(), purpose: backend::ImagePurpose::Avatar }, |r| match r {
+            Reply::ImageRead { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("read the picked file");
+    assert_eq!(read, (png.clone(), "image/png".to_owned()));
+    std::fs::remove_file(&path).ok();
+    let refused = alice.ask(Command::ReadImage { path: path.with_extension("txt"), purpose: backend::ImagePurpose::Avatar }, |r| match r {
+        Reply::ImageRead { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert!(matches!(refused, Err(ApiError::InvalidArgument(_))), "only images are read");
+
+    // Upload: alice's reply has the key; bob's gateway announces the user with it.
+    let user = alice
+        .ask(Command::UploadAvatar { bytes: read.0, content_type: read.1 }, |r| match r {
+            Reply::AvatarSaved(u) => Some(u.clone()),
+            _ => None,
+        })
+        .expect("upload avatar");
+    let key = user.avatar.clone().expect("the user has an avatar key now");
+    let seen = bob.wait("alice's new avatar on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::UserUpdated(u))) if u.id == a.me.id && u.avatar.is_some() => Some(u.clone()),
+        _ => None,
+    });
+    assert_eq!(seen.avatar.as_deref(), Some(key.as_str()));
+
+    // Bob fetches the picture by key: real image bytes, resized by the server.
+    let bytes = bob
+        .ask(Command::FetchMedia { key: key.clone() }, |r| match r {
+            Reply::Media { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("fetch the avatar");
+    assert!(!bytes.is_empty());
+    let cache = media::MediaCache::default();
+    let side = cache.preview(bytes).wait().expect("the fetched bytes decode");
+    assert_eq!(side[0], side[1], "the server stores it square");
+    let unknown = bob.ask(Command::FetchMedia { key: "no-such-key".into() }, |r| match r {
+        Reply::Media { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(unknown, Err(ApiError::NotFound));
+
+    // A guild icon, announced as GuildUpdated.
+    let guild_after = alice
+        .ask(Command::UploadGuildIcon { guild: guild.id, bytes: png.clone(), content_type: "image/png".into() }, |r| match r {
+            Reply::GuildSaved { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("upload icon");
+    let icon = guild_after.icon.clone().expect("the guild has an icon key");
+    let seen = bob.wait("the new icon on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::GuildUpdated(g))) if g.id == guild.id && g.icon.is_some() => Some(g.clone()),
+        _ => None,
+    });
+    assert_eq!(seen.icon.as_deref(), Some(icon.as_str()));
+    // Bob is no manager: his try is refused.
+    let denied = bob.ask(Command::UploadGuildIcon { guild: guild.id, bytes: png, content_type: "image/png".into() }, |r| match r {
+        Reply::GuildSaved { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(denied.map(|_| ()), Err(ApiError::PermissionDenied));
+
+    // Removing the avatar is announced too.
+    alice
+        .ask(Command::RemoveAvatar, |r| match r {
+            Reply::AvatarSaved(u) => Some(u.clone()),
+            _ => None,
+        })
+        .expect("remove avatar");
+    bob.wait("the removal on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::UserUpdated(u))) if u.id == a.me.id && u.avatar.is_none() => Some(()),
+        _ => None,
+    });
 
     rt.block_on(server.cleanup());
     std::fs::remove_file(&alice.prefs).ok();

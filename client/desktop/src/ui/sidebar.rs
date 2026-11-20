@@ -130,6 +130,12 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
                     a.act(|s| s.open_dialog(DialogKind::CreateSection { guild: id }))
                 }),
         )
+        .item(
+            MenuItem::new("Server settings\u{2026}")
+                .icon(thehideout_design::icons::catalog::by_name("gear-six").unwrap_or(&GEAR))
+                .disabled(!a.state.can_open_server_settings(id))
+                .on_select(move |a: &mut App| a.act(|s| s.open_server_settings(id))),
+        )
         .open(a.state.ui.menu == MenuState::Guild)
         .min_width(width - 16.0)
         .on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
@@ -214,6 +220,11 @@ fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
     let menu = Menu::new("user-menu")
         .trigger(gear)
         .item(
+            MenuItem::new("Profile\u{2026}")
+                .icon(thehideout_design::icons::catalog::by_name("user-circle").unwrap_or(&GEAR))
+                .on_select(|a: &mut App| a.act(|s| s.open_profile())),
+        )
+        .item(
             MenuItem::new("Settings\u{2026}")
                 .icon(&GEAR)
                 .on_select(|a: &mut App| a.act(|s| s.open_settings())),
@@ -248,6 +259,7 @@ fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(
             Avatar::new(id, name)
                 .size(32)
+                .image(a.state.avatar_pixels(a.state.my_id()))
                 .presence(presence)
                 .backdrop(t.bg.color())
                 .build(k),

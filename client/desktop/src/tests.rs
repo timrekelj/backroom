@@ -902,7 +902,7 @@ fn signing_out_returns_to_auth() {
     let (mut rt, _) = signed_in(0.0);
     click(&mut rt, "user-menu-button");
     settle(&mut rt, 8);
-    click(&mut rt, "user-menu-item1");
+    click(&mut rt, "user-menu-item2");
     settle(&mut rt, 6);
     assert_eq!(rt.state.state.screen, Screen::Auth);
     assert!(rt.state.state.session.is_none());
@@ -970,9 +970,9 @@ fn the_hairlines_line_up_across_sidebar_and_panel() {
 #[test]
 fn the_sidebar_narrows_and_the_member_panel_hides_in_small_windows() {
     use crate::ui::shell::Layout;
-    assert_eq!(Layout::of(1280.0), Layout { sidebar: 240.0, members: true });
-    assert_eq!(Layout::of(1050.0), Layout { sidebar: 208.0, members: true });
-    assert_eq!(Layout::of(800.0), Layout { sidebar: 208.0, members: false });
+    assert_eq!(Layout::of(1280.0, 800.0), Layout { sidebar: 240.0, members: true, height: 800.0 });
+    assert_eq!(Layout::of(1050.0, 800.0), Layout { sidebar: 208.0, members: true, height: 800.0 });
+    assert_eq!(Layout::of(800.0, 600.0), Layout { sidebar: 208.0, members: false, height: 600.0 });
 }
 
 // ---- appearance ------------------------------------------------------------------------------
@@ -1030,7 +1030,7 @@ mod appearance {
     fn open_settings(rt: &mut Runtime<App>) {
         click(rt, "user-menu-button");
         settle(rt, 8);
-        click(rt, "user-menu-item0");
+        click(rt, "user-menu-item1");
         settle(rt, 6);
         assert!(has(rt, "settings"), "Settings… opens the settings page");
     }

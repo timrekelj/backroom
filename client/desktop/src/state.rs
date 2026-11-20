@@ -14,6 +14,8 @@ pub use crate::forms::{Auth, AuthError, AuthField, AuthMode, ChannelForm, Dialog
 use crate::layout::{self, Item};
 use crate::format::{Tz, unix};
 use crate::look::Look;
+use crate::media::MediaCache;
+use crate::server_settings::ServerSettings;
 
 pub const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
 /// How long a loading placeholder waits before it shows, so a fast load never flashes it.
@@ -130,6 +132,13 @@ pub struct Data {
     /// The layout as it was before an optimistic edit that the server hasn't answered. While one
     /// is out, further structure edits wait (they would be based on a version the server is about to retire).
     pub layout_undo: HashMap<u64, GuildLayout>,
+    /// Each guild's roles version, for `ReorderRoles`.
+    pub role_versions: HashMap<u64, u64>,
+    /// The roles as they were before an optimistic reorder the server hasn't answered. While one
+    /// is out, further reorders wait.
+    pub role_undo: HashMap<u64, Vec<Role>>,
+    /// Decoded avatars and server icons by media key.
+    pub media: MediaCache,
 }
 
 // ---- ui --------------------------------------------------------------------------------------
@@ -239,6 +248,8 @@ pub struct Ui {
     pub look_dirty: bool,
     /// The settings page that replaces the shell, when open.
     pub settings: Option<Section>,
+    /// The server's settings page (roles, members, icon), which replaces the shell the same way.
+    pub server_settings: Option<ServerSettings>,
     /// Text for the next poll to put on the clipboard (a press handler has no `Tx`).
     pub copy_request: Option<String>,
     pub toast_seq: u64,
@@ -269,6 +280,7 @@ impl Ui {
             look: Look::default(),
             look_dirty: false,
             settings: None,
+            server_settings: None,
             copy_request: None,
             toast_seq: 0,
         }
@@ -318,7 +330,11 @@ impl AppState {
     pub fn reset(&mut self, error: Option<AuthError>) {
         let (server, look, today, tz, now) = (self.server_url(), self.ui.look, self.today, self.tz, self.now);
         let collapsed = std::mem::take(&mut self.ui.collapsed);
+        // The picture cache keeps its decoder (and the waker it was given); the pictures go.
+        let mut media = std::mem::take(&mut self.data.media);
+        media.clear();
         *self = AppState::new(now, tz);
+        self.data.media = media;
         self.ui.collapsed = collapsed;
         self.today = today;
         self.auth = Auth::new(&server);
@@ -449,6 +465,30 @@ impl AppState {
         v
     }
 
+    /// Asks for every avatar and server icon that isn't cached, on its way or given up on.
+    pub fn want_media(&mut self) {
+        let mut keys: Vec<String> = self.data.users.values().filter_map(|u| u.avatar.clone()).collect();
+        keys.extend(self.data.guilds.iter().filter_map(|g| g.icon.clone()));
+        keys.sort();
+        keys.dedup();
+        for key in keys {
+            if self.data.media.wants(&key) {
+                self.data.media.ask(&key);
+                self.outbox.push(Command::FetchMedia { key });
+            }
+        }
+    }
+
+    /// The decoded avatar of `user`, if they have one and it is cached.
+    pub fn avatar_pixels(&self, user: u64) -> Option<rune::Pixels> {
+        self.data.users.get(&user)?.avatar.as_deref().and_then(|k| self.data.media.pixels(k))
+    }
+
+    /// The decoded icon of `guild`.
+    pub fn icon_pixels(&self, guild: u64) -> Option<rune::Pixels> {
+        self.guild(guild)?.icon.as_deref().and_then(|k| self.data.media.pixels(k))
+    }
+
     /// Whether the composer may send: the gateway is up (or still coming up).
     pub fn composer_block(&self) -> Option<String> {
         match self.ui.connection {
@@ -474,6 +514,7 @@ impl AppState {
 
     pub fn open_settings(&mut self) {
         self.ui.menu = Menu::None;
+        self.ui.server_settings = None;
         self.ui.settings = Some(Section::Appearance);
     }
 
@@ -514,6 +555,9 @@ impl AppState {
         }
         self.want_members(id);
         self.want_access(id);
+        // Pictures that were pushed out to make room come back when their server is visited.
+        self.data.media.forgive();
+        self.want_media();
         if !self.data.channels.contains_key(&id) {
             self.outbox.push(Command::LoadChannels { guild: id });
         }
@@ -739,7 +783,7 @@ impl AppState {
         };
         let mut input = TextEdit::new(&text);
         input.focused = true;
-        self.ui.dialog = Some(DialogState { kind, input, channel, error: None, phase: Phase::Idle });
+        self.ui.dialog = Some(DialogState { kind, input, channel, error: None, phase: Phase::Idle, pick: Default::default() });
     }
 
     /// "Create channel here": the create dialog with the section already chosen.
@@ -800,6 +844,14 @@ impl AppState {
                 Err(e) => return fail(d, e),
             },
             DialogKind::DeleteSection { guild, section } => Command::DeleteSection { guild, section },
+            DialogKind::DeleteRole { guild, role } => Command::DeleteRole { guild, role },
+            DialogKind::Profile => match d.pick.draft.as_ref() {
+                Some(draft) => Command::UploadAvatar { bytes: draft.bytes.clone(), content_type: draft.content_type.clone() },
+                None => {
+                    self.ui.dialog = None;
+                    return;
+                }
+            },
             DialogKind::ChannelSettings { guild, channel } => {
                 let name = value.to_lowercase().replace(' ', "-");
                 if let Err(e) = check_name(&name, 1, 32, "Give the channel a name") {

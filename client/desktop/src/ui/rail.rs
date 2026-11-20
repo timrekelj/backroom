@@ -26,6 +26,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
         let id = g.id;
         let badge = GuildBadge::new(g.id.to_string(), g.name.clone())
             .size(FACE as u32)
+            .image(s.icon_pixels(g.id))
             .selected(s.ui.place == Place::Guild(id))
             .unread(u.count > 0)
             .mentions(u.mentions)

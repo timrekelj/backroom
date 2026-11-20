@@ -7,7 +7,9 @@
 use rune::{col, Anim, Drag, El, Phase, PointerPress, Tx};
 use rune_kit::{context_menu, Kit, Menu, MenuEntry, MenuItem};
 use thehideout_design::components::{ChannelRow, IconButton, SidebarSection, Size};
-use thehideout_design::icons::{catalog, ARROW_DOWN, ARROW_UP, DOTS_THREE, PENCIL, PLUS, TRASH};
+use thehideout_design::icons::{
+    catalog, ARROW_DOWN, ARROW_UP, DOTS_THREE, FOLDER_PLUS, PENCIL, PLUS, TRASH,
+};
 use thehideout_design::{palette_color, theme_of};
 
 use crate::app::App;
@@ -89,14 +91,14 @@ fn section_el(
             .more(more_button(a, k, layer, MenuTarget::Section(id), guild))
             .decorate_header(move |h| {
                 h.on_secondary_press(move |a: &mut App, p: PointerPress, _tx: &mut Tx| {
-                        a.state.ui.menu = MenuState::Section {
-                            id,
-                            at: Some((p.x as i32, p.y as i32)),
-                        };
-                    })
-                    .on_drag(move |a: &mut App, d: &mut Drag, tx: &mut Tx| {
-                        drag(a, guild, Item::Section(id), d, tx)
-                    })
+                    a.state.ui.menu = MenuState::Section {
+                        id,
+                        at: Some((p.x as i32, p.y as i32)),
+                    };
+                })
+                .on_drag(move |a: &mut App, d: &mut Drag, tx: &mut Tx| {
+                    drag(a, guild, Item::Section(id), d, tx)
+                })
             });
     }
     if open {
@@ -314,8 +316,15 @@ fn channel_menu(a: &App, k: &Kit, layer: &mut Vec<El>, guild: u64, id: u64, row:
         MenuState::Channel { id: m, at } | MenuState::MoveTo { id: m, at } if m == id => at,
         _ => None,
     };
-    let menu = channel_items(a, context_menu(format!("menu-channel-{id}"), row, point(at)), guild, id);
-    menu.on_close(|a: &mut App| a.state.ui.menu = MenuState::None).min_width(180.0).build(k, layer)
+    let menu = channel_items(
+        a,
+        context_menu(format!("menu-channel-{id}"), row, point(at)),
+        guild,
+        id,
+    );
+    menu.on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
+        .min_width(180.0)
+        .build(k, layer)
 }
 
 fn section_menu(a: &App, k: &Kit, layer: &mut Vec<El>, guild: u64, id: u64, group: El) -> El {
@@ -326,8 +335,15 @@ fn section_menu(a: &App, k: &Kit, layer: &mut Vec<El>, guild: u64, id: u64, grou
         MenuState::Section { id: m, at } if m == id => at,
         _ => None,
     };
-    let menu = section_items(a, context_menu(format!("menu-section-{id}"), group, point(at)), guild, id);
-    menu.on_close(|a: &mut App| a.state.ui.menu = MenuState::None).min_width(180.0).build(k, layer)
+    let menu = section_items(
+        a,
+        context_menu(format!("menu-section-{id}"), group, point(at)),
+        guild,
+        id,
+    );
+    menu.on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
+        .min_width(180.0)
+        .build(k, layer)
 }
 
 /// Move up, Move down, Move to section, Edit channel. (Deleting a channel is not in the contract.)
@@ -380,6 +396,7 @@ fn channel_items(a: &App, menu: Menu, guild: u64, id: u64) -> Menu {
     )
     .item(
         MenuItem::new("Move to section")
+            .icon(catalog::by_name("folder-simple").unwrap_or(&FOLDER_PLUS))
             .disabled(targets.is_empty())
             .submenu(targets, sub_open)
             .on_select(move |a: &mut App| a.state.ui.menu = MenuState::MoveTo { id, at }),

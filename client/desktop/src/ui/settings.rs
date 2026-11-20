@@ -24,7 +24,7 @@ use crate::state::Section;
 const INSET: f32 = 8.0;
 const NAV_W: f32 = 240.0;
 /// The page's text column.
-const PAGE_W: f32 = 760.0;
+pub(super) const PAGE_W: f32 = 760.0;
 
 /// Applies `f` to the look inside a press: queues the save and asks for the calm colour spring.
 fn change(a: &mut App, tx: &mut Tx, f: impl FnOnce(&mut Look)) {
@@ -33,10 +33,15 @@ fn change(a: &mut App, tx: &mut Tx, f: impl FnOnce(&mut Look)) {
 }
 
 pub fn build(a: &App, k: &Kit, section: Section, bar: f32) -> El {
-    let t = theme_of(k);
     let page = match section {
         Section::Appearance => appearance(a, k),
     };
+    frame(k, bar, nav(k, section), page)
+}
+
+/// The page shell both settings screens share: `nav` on the left, `page` on the inset panel.
+pub(super) fn frame(k: &Kit, bar: f32, nav: El, page: El) -> El {
+    let t = theme_of(k);
     let panel = col()
         .key("settings-panel")
         .grow(1.0)
@@ -63,7 +68,7 @@ pub fn build(a: &App, k: &Kit, section: Section, bar: f32) -> El {
         .min_h(0.0)
         .pt(INSET)
         .pb(INSET)
-        .child(nav(k, section))
+        .child(nav)
         .child(col().grow(1.0).min_w(0.0).h_full().pr(INSET).child(panel));
     col()
         .key("settings")
@@ -76,6 +81,21 @@ pub fn build(a: &App, k: &Kit, section: Section, bar: f32) -> El {
 
 /// The left column: a title as tall as the sidebar's header, then one row per page.
 fn nav(k: &Kit, section: Section) -> El {
+    nav_shell(
+        k,
+        "Settings",
+        vec![
+            NavRow::new("Appearance", &icons::SUN, &icons::fill::SUN)
+                .selected(section == Section::Appearance)
+                .highlight_group("settings-nav")
+                .on_press(|a: &mut App| a.act(|s| s.ui.settings = Some(Section::Appearance)))
+                .build(k),
+        ],
+    )
+}
+
+/// A nav column: `title` as tall as the sidebar's header, then `rows`.
+pub(super) fn nav_shell(k: &Kit, title: &str, rows: Vec<El>) -> El {
     let t = theme_of(k);
     col()
         .key("settings-nav")
@@ -88,20 +108,13 @@ fn nav(k: &Kit, section: Section) -> El {
                 .h(HEADER_H)
                 .px(16.0)
                 .center_y()
-                .child(text("Settings".to_owned()).font(type_::TITLE).color(t.text.color())),
+                .child(text(title.to_owned()).font(type_::TITLE).color(t.text.color()).max_lines(1)),
         )
-        .child(
-            col().w_full().px(8.0).child(
-                NavRow::new("Appearance", &icons::SUN, &icons::fill::SUN)
-                    .selected(section == Section::Appearance)
-                    .highlight_group("settings-nav")
-                    .on_press(|a: &mut App| a.act(|s| s.ui.settings = Some(Section::Appearance)))
-                    .build(k),
-            ),
-        )
+        .child(col().w_full().px(8.0).gap(2.0).children(rows))
 }
 
-fn header(k: &Kit) -> El {
+/// A page's title with the Esc hint and the close button.
+pub(super) fn header(k: &Kit, title: &str, close: impl Fn(&mut App) + 'static) -> El {
     let t = theme_of(k);
     row()
         .w_full()
@@ -109,7 +122,7 @@ fn header(k: &Kit) -> El {
         .gap(8.0)
         .center_y()
         .child(
-            text("Appearance".to_owned())
+            text(title.to_owned())
                 .font(type_::HEADING)
                 .color(t.text.color())
                 .grow(1.0),
@@ -117,7 +130,7 @@ fn header(k: &Kit) -> El {
         .child(Kbd::new(&["Esc"]).build(k))
         .child(
             IconButton::new(&X, "Close settings")
-                .on_press(|a: &mut App| a.act(|s| s.close_settings()))
+                .on_press(close)
                 .build(k)
                 .key("settings-close"),
         )
@@ -172,7 +185,7 @@ fn appearance(a: &App, k: &Kit) -> El {
         .max_w(PAGE_W)
         .px(32.0)
         .pb(32.0)
-        .child(header(k))
+        .child(header(k, "Appearance", |a: &mut App| a.act(|s| s.close_settings())))
         .child(setting(k, "Appearance", "Follow the system, or always light or dark.", col().key("set-appearance").w(320.0).child(appearance)))
         .child(setting(k, "Accent", "Buttons, links, selection and focus.", accents))
         .child(setting(k, "Background", "The greys behind everything, shown in the current appearance.", backgrounds))
@@ -184,7 +197,7 @@ fn appearance(a: &App, k: &Kit) -> El {
 }
 
 /// A title, its description and the control, then a hairline.
-fn setting(k: &Kit, title: &str, description: &str, control: El) -> El {
+pub(super) fn setting(k: &Kit, title: &str, description: &str, control: El) -> El {
     let t = theme_of(k);
     col()
         .w_full()
@@ -196,7 +209,7 @@ fn setting(k: &Kit, title: &str, description: &str, control: El) -> El {
 }
 
 /// Like `setting`, with the control to the right of the text.
-fn toggle(k: &Kit, title: &str, description: &str, control: El) -> El {
+pub(super) fn toggle(k: &Kit, title: &str, description: &str, control: El) -> El {
     let t = theme_of(k);
     row()
         .w_full()
@@ -208,7 +221,7 @@ fn toggle(k: &Kit, title: &str, description: &str, control: El) -> El {
         .child(control)
 }
 
-fn labels(k: &Kit, title: &str, description: &str) -> El {
+pub(super) fn labels(k: &Kit, title: &str, description: &str) -> El {
     let t = theme_of(k);
     col()
         .gap(2.0)

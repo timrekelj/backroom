@@ -156,6 +156,8 @@ pub fn init() -> App {
 }
 
 pub fn setup(a: &mut App, waker: Waker) {
+    // Pictures decode off the frame loop and wake the window when they are ready.
+    a.state.data.media.set_waker(waker.clone());
     a.backend.set_waker(waker);
 }
 
@@ -207,6 +209,7 @@ pub fn on_key(a: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Command('w') => tx.close_window(),
         Key::Command('q') => tx.quit(),
         Key::Escape if a.state.ui.settings.is_some() => a.act(|s| s.close_settings()),
+        Key::Escape if a.state.ui.server_settings.is_some() => a.act(|s| s.close_server_settings()),
         Key::Up if ev.mods.alt && a.state.screen == Screen::Main => a.act(|s| s.step_channel(-1)),
         Key::Down if ev.mods.alt && a.state.screen == Screen::Main => a.act(|s| s.step_channel(1)),
         _ => return false,
@@ -226,7 +229,7 @@ pub fn view(a: &App, cx: &mut Cx<App>) -> El {
         look::ReduceMotion::Off => cx.reduced_motion(false),
     }
     let lay = cx
-        .layout_with("stage", |r| ui::shell::Layout::of(r[2]))
+        .layout_with("stage", |r| ui::shell::Layout::of(r[2], r[3]))
         .unwrap_or_default();
     let mut layer = Vec::new();
     // Auth and the shell share the window; each fades on `motion-overlay` and nothing else moves.
@@ -243,7 +246,7 @@ pub fn view(a: &App, cx: &mut Cx<App>) -> El {
         )),
     };
     let screen = screen.absolute(0.0, 0.0).w_full().h_full().transition(fade);
-    ui::dialogs::build(a, k, &mut layer);
+    ui::dialogs::build(a, k, &mut layer, lay.height);
     layer.push(ui::toasts::build(a, k));
     // Where the window's own controls sit over the content: a strip that drags the window.
     let mut stage = el()

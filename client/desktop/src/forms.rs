@@ -95,6 +95,10 @@ pub enum DialogKind {
     /// A confirmation: no field, only "Delete section".
     DeleteSection { guild: u64, section: u64 },
     ChannelSettings { guild: u64, channel: u64 },
+    /// Your picture and name.
+    Profile,
+    /// A confirmation: no field, only "Delete role".
+    DeleteRole { guild: u64, role: u64 },
 }
 
 /// The look and place fields of the channel dialogs (create and settings): where the channel
@@ -170,6 +174,8 @@ pub struct DialogState {
     pub channel: Option<ChannelForm>,
     pub error: Option<String>,
     pub phase: Phase,
+    /// The Profile dialog's picked picture.
+    pub pick: crate::server_settings::ImagePick,
 }
 
 pub fn check_name(name: &str, min: usize, max: usize, empty: &str) -> Result<(), String> {

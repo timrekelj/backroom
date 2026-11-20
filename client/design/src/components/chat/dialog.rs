@@ -6,7 +6,7 @@
 //! Rhythm: 24 padding, title to body 16, label to field 6, field to field 16, body to footer 24.
 //! Fields and buttons are the same 32pt control height.
 
-use rune::{El, SpringPair, Transition, col, el, row, text};
+use rune::{El, ScrollSpec, SpringPair, Transition, col, el, row, text};
 use rune_kit::Kit;
 
 use crate::components::{IconButton, Size, TextInput};
@@ -22,6 +22,7 @@ pub struct Dialog {
     footer: Vec<El>,
     open: bool,
     width: f32,
+    body_max_h: Option<f32>,
     close: Option<Box<dyn FnOnce(El) -> El>>,
     button: Option<Box<dyn FnOnce(El) -> El>>,
 }
@@ -36,6 +37,7 @@ impl Dialog {
             footer: Vec::new(),
             open: false,
             width: 440.0,
+            body_max_h: None,
             close: None,
             button: None,
         }
@@ -50,6 +52,12 @@ impl Dialog {
     }
     pub fn width(mut self, w: f32) -> Self {
         self.width = w;
+        self
+    }
+    /// Caps the body's height: past it the body scrolls and the header and footer stay put (a
+    /// window too short for the whole dialog). The app derives it from the window's height.
+    pub fn body_max_h(mut self, h: f32) -> Self {
+        self.body_max_h = Some(h.max(120.0));
         self
     }
     pub fn child(mut self, e: El) -> Self {
@@ -120,7 +128,16 @@ impl Dialog {
             );
         let body = std::mem::take(&mut self.body);
         if !body.is_empty() {
-            panel = panel.child(col().key("body").w_full().gap(16.0).children(body));
+            let body = col().key("body").w_full().gap(16.0).children(body);
+            panel = panel.child(match self.body_max_h {
+                Some(h) => col()
+                    .key("body-scroll")
+                    .w_full()
+                    .max_h(h)
+                    .scroll(ScrollSpec { stick_bottom: false })
+                    .child(body),
+                None => body,
+            });
         }
         let footer = std::mem::take(&mut self.footer);
         if !footer.is_empty() {

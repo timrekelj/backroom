@@ -5,14 +5,24 @@
 use std::time::Duration;
 
 use rune::Tx;
-use thehideout_api::{ApiError, Channel, DmChannel, Event, GatewayUpdate, Guild, Message, Page};
+use thehideout_api::{ApiError, Channel, DmChannel, Event, GatewayUpdate, Guild, Message, Page, User};
 use thehideout_design::components::{ConnectionStatus, ToastKind};
 
 use crate::backend::{Command, GuildAccess, Initial, Reply, Session};
 use crate::layout;
+use crate::server_settings::{ROLES_CONFLICT_TOAST, RoleForm, error_text};
 use crate::state::{AppState, chat_id_of, Delivery, DialogKind, Fetch, Marker, Phase, Place, Screen, Stream, auth_error, sentence};
 
 pub fn apply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
+    // A picture arriving can't bring news of other pictures; everything else may.
+    let fetched = matches!(reply, Reply::Media { .. });
+    apply_reply(s, reply, tx);
+    if !fetched {
+        s.want_media();
+    }
+}
+
+fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
     match reply {
         Reply::Auth(Ok(session)) => signed_in(s, session),
         Reply::Auth(Err(e)) => auth_failed(s, &e),
@@ -45,8 +55,8 @@ pub fn apply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
             Err(e) => s.toast(ToastKind::Danger, format!("Couldn't load channels. {}", sentence(&e.to_string()))),
         },
         Reply::Access { guild, result } => match result {
-            Ok(GuildAccess { roles, member_roles }) => {
-                s.data.roles.insert(guild, roles);
+            Ok(GuildAccess { roles, version, member_roles }) => {
+                s.set_roles(guild, roles, Some(version));
                 s.data.member_roles.insert(guild, member_roles);
             }
             Err(_) => {
@@ -127,8 +137,158 @@ pub fn apply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
             }
             Err(e) => dialog_failed(s, &e),
         },
+        Reply::Media { key, result } => match result {
+            Ok(bytes) => s.data.media.insert(&key, bytes),
+            Err(_) => s.data.media.fail(&key),
+        },
+        Reply::ImageRead { purpose, result } => s.image_read(purpose, result),
+        Reply::AvatarSaved(r) => match r {
+            Ok(u) => {
+                let had_draft = s.ui.dialog.as_ref().is_some_and(|d| d.kind == DialogKind::Profile && d.pick.draft.is_some());
+                user_updated(s, u);
+                if s.ui.dialog.as_ref().is_some_and(|d| d.kind == DialogKind::Profile) {
+                    s.close_dialog();
+                }
+                s.toast(ToastKind::Success, if had_draft { "Profile picture updated" } else { "Profile picture removed" });
+            }
+            Err(e) => dialog_failed(s, &e),
+        },
+        Reply::GuildSaved { guild, result } => guild_saved(s, guild, result),
+        Reply::RoleCreated { guild, result } => match result {
+            Ok((role, version)) => {
+                let fresh = s.role(guild, role.id).is_none();
+                let mut roles = s.roles_of(guild).to_vec();
+                if fresh {
+                    // The server puts it at the bottom and moves everyone up one.
+                    roles.iter_mut().for_each(|r| r.position += 1);
+                    roles.push(role.clone());
+                }
+                s.set_roles(guild, roles, Some(version));
+                let name = role.name.clone();
+                if let Some(ss) = s.ui.server_settings.as_mut().filter(|x| x.guild == guild)
+                    && ss.form.as_ref().is_some_and(|f| f.role.is_none())
+                {
+                    ss.form = Some(RoleForm::of(&role));
+                }
+                s.toast(ToastKind::Success, format!("Created {name}"));
+            }
+            Err(e) => role_form_failed(s, &e),
+        },
+        Reply::RoleUpdated { guild, result } => match result {
+            Ok(role) => {
+                let mut roles = s.roles_of(guild).to_vec();
+                if let Some(slot) = roles.iter_mut().find(|r| r.id == role.id) {
+                    *slot = role.clone();
+                }
+                s.set_roles(guild, roles, None);
+                if let Some(ss) = s.ui.server_settings.as_mut().filter(|x| x.guild == guild)
+                    && ss.form.as_ref().is_some_and(|f| f.role == Some(role.id))
+                {
+                    ss.form = Some(RoleForm::of(&role));
+                }
+                s.toast(ToastKind::Success, format!("Saved {}", role.name));
+            }
+            Err(e) => role_form_failed(s, &e),
+        },
+        Reply::RoleDeleted { guild, role, result } => match result {
+            Ok(version) => {
+                let roles: Vec<_> = s.roles_of(guild).iter().filter(|r| r.id != role).cloned().collect();
+                s.set_roles(guild, roles, Some(version));
+                if let Some(m) = s.data.member_roles.get_mut(&guild) {
+                    m.values_mut().for_each(|ids| ids.retain(|r| *r != role));
+                }
+                if matches!(s.ui.dialog.as_ref().map(|d| d.kind), Some(DialogKind::DeleteRole { role: r, .. }) if r == role) {
+                    s.close_dialog();
+                }
+                s.toast(ToastKind::Success, "Role deleted");
+            }
+            Err(e) => dialog_failed(s, &e),
+        },
+        Reply::RolesReordered { guild, result } => {
+            let undo = s.data.role_undo.remove(&guild);
+            match result {
+                Ok(list) => s.set_roles(guild, list.roles, Some(list.version)),
+                // Someone else changed the roles first: show what is true now, and say so.
+                Err(ApiError::Conflict) => {
+                    s.outbox.push(Command::LoadAccess { guild });
+                    s.toast(ToastKind::Danger, ROLES_CONFLICT_TOAST);
+                }
+                Err(e) => {
+                    if let Some(old) = undo {
+                        s.set_roles(guild, old, None);
+                    }
+                    if let Some(ss) = s.ui.server_settings.as_mut().filter(|x| x.guild == guild) {
+                        ss.role_error = Some(error_text(&e));
+                    }
+                }
+            }
+        }
+        Reply::MemberRolesSet { guild, user, result } => {
+            if let Some(ss) = s.ui.server_settings.as_mut().filter(|x| x.guild == guild && x.member_busy == Some(user)) {
+                ss.member_busy = None;
+            }
+            match result {
+                Ok(member) => {
+                    s.data.member_roles.entry(guild).or_default().insert(member.user.id, member.role_ids);
+                    s.data.users.insert(member.user.id, member.user);
+                }
+                Err(e) => {
+                    if let Some(ss) = s.ui.server_settings.as_mut().filter(|x| x.guild == guild) {
+                        ss.member_error = Some(error_text(&e));
+                    }
+                }
+            }
+        }
         Reply::SignedOut => {}
         Reply::Gateway(update) => gateway(s, update, tx),
+    }
+}
+
+/// A user's profile changed (their avatar): every copy of them is replaced, and a new picture fetched.
+fn user_updated(s: &mut AppState, u: User) {
+    if let Some(session) = s.session.as_mut().filter(|x| x.me.id == u.id) {
+        session.me = u.clone();
+    }
+    for dm in &mut s.data.dms {
+        for p in dm.participants.iter_mut().filter(|p| p.id == u.id) {
+            *p = u.clone();
+        }
+    }
+    s.data.users.insert(u.id, u);
+    s.want_media();
+}
+
+fn guild_saved(s: &mut AppState, guild: u64, result: Result<Guild, ApiError>) {
+    let name_busy = s.ui.server_settings.as_ref().is_some_and(|x| x.guild == guild && x.name_busy);
+    match result {
+        Ok(g) => {
+            s.set_guild(g);
+            if let Some(ss) = s.ui.server_settings.as_mut().filter(|x| x.guild == guild) {
+                ss.name_busy = false;
+                ss.icon_busy = false;
+                ss.icon.draft = None;
+            }
+            s.toast(ToastKind::Success, if name_busy { "Server renamed" } else { "Server icon updated" });
+        }
+        Err(e) => {
+            if let Some(ss) = s.ui.server_settings.as_mut().filter(|x| x.guild == guild) {
+                if name_busy {
+                    ss.name_error = Some(error_text(&e));
+                } else {
+                    ss.icon_error = Some(error_text(&e));
+                }
+                ss.name_busy = false;
+                ss.icon_busy = false;
+            }
+        }
+    }
+}
+
+/// A role save the server refused: under the editor's fields, where the user is looking.
+fn role_form_failed(s: &mut AppState, e: &ApiError) {
+    if let Some(f) = s.role_form() {
+        f.busy = false;
+        f.error = Some(error_text(e));
     }
 }
 
@@ -189,6 +349,7 @@ fn refreshed(s: &mut AppState, init: Initial) {
     }
     // Roles and assignments may have changed while away: the open server asks again below, the others when visited.
     s.data.roles.clear();
+    s.data.role_undo.clear();
     s.data.member_roles.clear();
     s.data.access_asked.clear();
     s.data.users.insert(me.id, me);
@@ -418,19 +579,11 @@ fn event(s: &mut AppState, e: Event, tx: &mut Tx) {
         | Event::ReactionAdded { .. }
         | Event::ReactionRemoved { .. }
         | Event::MessageUpdated(_) => {}
-        Event::GuildUpdated(g) => {
-            if let Some(slot) = s.data.guilds.iter_mut().find(|x| x.id == g.id) {
-                *slot = g;
-            }
-        }
+        Event::GuildUpdated(g) => s.set_guild(g),
         Event::ChannelUpdated(c) => update_channel(s, c),
-        Event::UserUpdated(u) => {
-            s.data.users.insert(u.id, u);
-        }
+        Event::UserUpdated(u) => user_updated(s, u),
         Event::LayoutUpdated { guild_id, layout } => s.set_layout(guild_id, layout),
-        Event::RolesUpdated { guild_id, roles, .. } => {
-            s.data.roles.insert(guild_id, roles);
-        }
+        Event::RolesUpdated { guild_id, roles, version } => s.set_roles(guild_id, roles, Some(version)),
         Event::MemberUpdated { guild_id, member } => {
             if let Some(m) = s.data.member_roles.get_mut(&guild_id) {
                 m.insert(member.user.id, member.role_ids.clone());
@@ -489,8 +642,6 @@ pub fn message_created(s: &mut AppState, m: Message) -> bool {
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
-
-    use thehideout_api::User;
 
     use super::*;
     use crate::format::Tz;

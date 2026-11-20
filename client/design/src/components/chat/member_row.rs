@@ -1,10 +1,10 @@
 //! MemberRow: avatar with presence, the name, and a crown for the owner. 32pt tall; offline
 //! members read fainter. Hover paints the quiet overlay; nothing animates.
 
-use rune::{El, icon, row, text};
+use rune::{icon, row, text, El};
 use rune_kit::{Kit, State};
 
-use crate::components::util::{Acts, over};
+use crate::components::util::{over, Acts};
 use crate::components::{Avatar, Presence};
 use crate::icons::CROWN;
 use crate::theme_of;
@@ -18,6 +18,8 @@ pub struct MemberRow {
     state: State,
     backdrop: Option<rune::Color>,
     acts: Acts,
+    image: Option<rune::Pixels>,
+    name_color: Option<rune::Color>,
 }
 
 impl MemberRow {
@@ -30,7 +32,19 @@ impl MemberRow {
             state: State::Rest,
             backdrop: None,
             acts: Acts::default(),
+            image: None,
+            name_color: None,
         }
+    }
+    /// The member's picture, over the initials.
+    pub fn image(mut self, image: Option<rune::Pixels>) -> Self {
+        self.image = image;
+        self
+    }
+    /// The name's colour (their highest coloured role's text tone, see `palette_text`) instead of `text`.
+    pub fn name_color(mut self, c: Option<rune::Color>) -> Self {
+        self.name_color = c;
+        self
     }
     pub fn presence(mut self, p: Presence) -> Self {
         self.presence = p;
@@ -57,9 +71,14 @@ impl MemberRow {
     pub fn build(self, k: &Kit) -> El {
         let t = theme_of(k);
         let faded = matches!(self.presence, Presence::Offline | Presence::None);
-        let ink = if faded { t.text_faint } else { t.text };
+        let ink = match (faded, self.name_color) {
+            (true, _) => t.text_faint.color(),
+            (false, Some(c)) => c,
+            (false, None) => t.text.color(),
+        };
         let mut avatar = Avatar::new(self.id, self.name.clone())
             .size(24)
+            .image(self.image)
             .presence(self.presence);
         if let Some(b) = self.backdrop {
             avatar = avatar.backdrop(b);
@@ -83,7 +102,7 @@ impl MemberRow {
         e = e.child(avatar.build(k)).child(
             text(self.name)
                 .font(type_::CONTROL)
-                .color(ink.color())
+                .color(ink)
                 .max_lines(1)
                 .grow(1.0)
                 .shrink()

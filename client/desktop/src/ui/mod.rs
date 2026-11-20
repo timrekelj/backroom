@@ -8,6 +8,7 @@ pub mod composer;
 pub mod dialogs;
 pub mod members;
 pub mod rail;
+pub mod server_settings;
 pub mod settings;
 pub mod shell;
 pub mod sidebar;

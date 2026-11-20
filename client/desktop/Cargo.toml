@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-rune = { workspace = true, features = ["tooling"] }
+rune = { workspace = true, features = ["tooling", "native-file-dialog"] }
 rune-kit = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 thehideout-api = { workspace = true }

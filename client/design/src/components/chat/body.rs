@@ -121,8 +121,13 @@ struct Cx<'a> {
     k: &'a Kit,
     scope: &'a str,
     wire: Option<&'a Wire>,
+    mention: Option<&'a MentionInk>,
     spoilers: u32,
 }
+
+/// What colours an `@name` chip: given the name (no `@`), the text and wash colours of that
+/// member's role, or `None` for the accent chip every other mention gets.
+pub type MentionInk = Rc<dyn Fn(&str) -> Option<(rune::Color, rune::Color)>>;
 
 /// The body as a column of blocks, 6pt apart, links inert and spoilers hidden.
 pub fn render(k: &Kit, body: &str) -> El {
@@ -131,7 +136,12 @@ pub fn render(k: &Kit, body: &str) -> El {
 
 /// [`render`] for message `scope`, with presses wired when `wire` is given.
 pub fn render_with(k: &Kit, body: &str, scope: &str, wire: Option<&Wire>) -> El {
-    let mut cx = Cx { k, scope, wire, spoilers: 0 };
+    render_styled(k, body, scope, wire, None)
+}
+
+/// [`render_with`], and mention chips of members with a coloured role take that role's colours.
+pub fn render_styled(k: &Kit, body: &str, scope: &str, wire: Option<&Wire>, mention: Option<&MentionInk>) -> El {
+    let mut cx = Cx { k, scope, wire, mention, spoilers: 0 };
     blocks_el(&mut cx, &md::parse(body), 0, 6.0)
 }
 
@@ -271,12 +281,14 @@ fn inline_el(cx: &mut Cx, x: &Inlines, font: TextStyle, bold: f32) -> El {
                     .size(12.5)
                     .bg(t.surface_raised.color(), 3.0),
             ),
-            Kind::Mention => spans.push(
-                Span::new(a, b)
-                    .weight(560.0)
-                    .color(t.accent_text.color())
-                    .bg(t.accent_subtle.color(), 2.0),
-            ),
+            Kind::Mention => {
+                let name = x.text[a..b].trim_start_matches('@');
+                let (ink, wash) = cx
+                    .mention
+                    .and_then(|f| f(name))
+                    .unwrap_or((t.accent_text.color(), t.accent_subtle.color()));
+                spans.push(Span::new(a, b).weight(560.0).color(ink).bg(wash, 2.0));
+            }
             Kind::Link(url) => {
                 spans.push(Span::new(a, b).color(t.accent_text.color()));
                 if !covered((a, b)) {

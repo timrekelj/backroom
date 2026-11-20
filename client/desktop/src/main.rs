@@ -15,9 +15,13 @@ mod forms;
 mod format;
 mod layout;
 mod look;
+mod media;
 mod perms;
 mod real;
+#[cfg(test)]
+mod roles_tests;
 mod scenes;
+mod server_settings;
 mod state;
 mod structure;
 #[cfg(test)]

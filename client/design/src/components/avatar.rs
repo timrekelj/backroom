@@ -2,7 +2,7 @@
 //! presence dot. Rounded squares (not circles) so avatars share the radius scale:
 //! 20/24 use `radius-sm`, 32 `radius-md`, 40 `radius-lg`.
 
-use rune::{El, el, text};
+use rune::{el, text, El};
 use rune_kit::Kit;
 
 use crate::theme_of;
@@ -57,6 +57,18 @@ pub struct Avatar {
     size: u32,
     presence: Presence,
     backdrop: Option<rune::Color>,
+    image: Option<rune::Pixels>,
+}
+
+/// The picture of an avatar or badge over its initials: `Fill` crops it to the square. A picture
+/// that is still decoding (or never will) paints nothing, so the initials below show through.
+pub fn picture(pixels: &rune::Pixels, side: f32, radius: f32) -> rune::El {
+    el().key("picture")
+        .absolute(0.0, 0.0)
+        .size(side, side)
+        .radius(radius)
+        .pixels_fit(pixels, rune::SurfaceFit::Fill)
+        .a11y_hidden()
 }
 
 impl Avatar {
@@ -68,7 +80,13 @@ impl Avatar {
             size: 32,
             presence: Presence::None,
             backdrop: None,
+            image: None,
         }
+    }
+    /// The user's picture, drawn over the initials (which stay while it loads or if it fails).
+    pub fn image(mut self, image: Option<rune::Pixels>) -> Self {
+        self.image = image;
+        self
     }
     pub fn size(mut self, size: u32) -> Self {
         self.size = size;
@@ -118,6 +136,9 @@ impl Avatar {
                     .color(AVATAR_INK.color())
                     .a11y_hidden(),
             );
+        if let Some(p) = &self.image {
+            e = e.child(picture(p, s, r));
+        }
         if self.presence != Presence::None {
             let ring = 2.0;
             let d = match self.size {

@@ -40,11 +40,125 @@ pub fn palette_color(key: &str, theme: &Theme) -> Option<Tone> {
     Some(Tone::new(if theme.dark { L_DARK } else { L_LIGHT }, c, h).in_gamut())
 }
 
+/// The alpha of a role chip's wash (a mention of a coloured member).
+pub const WASH_ALPHA: f32 = 0.16;
+
+/// The palette tone for `key` as **text** (a role-coloured name, a mention): the icon tone with its
+/// lightness moved just far enough that it reads at the theme's text contrast (4.5:1, 7:1 on High)
+/// on `bg`, `surface`, `surface_raised`, `surface_overlay`, under a hover or pressed row, under the
+/// mention wash and inside its own chip wash ([`palette_wash`]). Hue and chroma stay the key's.
+pub fn palette_text(key: &str, theme: &Theme) -> Option<Tone> {
+    use crate::components::util::over;
+    use crate::tokens::color::contrast;
+    use crate::tokens::spec::Contrast;
+    let ink = palette_color(key, theme)?;
+    let min = if theme.spec.contrast == Contrast::High {
+        7.0
+    } else {
+        4.5
+    };
+    let wash = palette_wash(key, theme)?.color();
+    let mut grounds = Vec::new();
+    for base in [
+        theme.bg,
+        theme.surface,
+        theme.surface_raised,
+        theme.surface_overlay,
+    ] {
+        let base = base.color();
+        grounds.push(base);
+        grounds.push(over(theme.hover.color(), base));
+        grounds.push(over(theme.pressed.color(), base));
+        grounds.push(over(theme.accent_wash.color(), base));
+        grounds.push(over(wash, base));
+    }
+    let ok = |t: Tone| grounds.iter().all(|g| contrast(t.color(), *g) >= min);
+    let step = if theme.dark { 0.004 } else { -0.004 };
+    let mut t = ink;
+    while !ok(t) && (0.0..=1.0).contains(&(t.l + step)) {
+        t.l += step;
+        t = Tone { c: ink.c, ..t }.in_gamut();
+    }
+    Some(t)
+}
+
+/// The faint fill of a chip in palette colour `key` (a mention): the icon tone at [`WASH_ALPHA`].
+pub fn palette_wash(key: &str, theme: &Theme) -> Option<Tone> {
+    palette_color(key, theme).map(|t| t.alpha(WASH_ALPHA))
+}
+
 #[cfg(test)]
 mod palette_tests {
     use super::*;
     use crate::tokens::color::contrast;
     use crate::tokens::spec::ThemeSpec;
+
+    #[test]
+    fn text_tones_clear_the_text_bar_on_every_surface_in_every_look() {
+        use crate::components::util::over;
+        use crate::tokens::spec::Contrast;
+        let mut checked = 0;
+        for t in themes() {
+            let min = if t.spec.contrast == Contrast::High {
+                7.0
+            } else {
+                4.5
+            };
+            for k in PALETTE_KEYS {
+                let ink = palette_text(k, &t).unwrap().color();
+                let wash = palette_wash(k, &t).unwrap().color();
+                for (sn, base) in [
+                    ("bg", t.bg),
+                    ("surface", t.surface),
+                    ("raised", t.surface_raised),
+                    ("overlay", t.surface_overlay),
+                ] {
+                    let base = base.color();
+                    for (gn, ground) in [
+                        ("plain", base),
+                        ("hover", over(t.hover.color(), base)),
+                        ("pressed", over(t.pressed.color(), base)),
+                        ("mention wash", over(t.accent_wash.color(), base)),
+                        ("chip wash", over(wash, base)),
+                    ] {
+                        let ratio = contrast(ink, ground);
+                        assert!(
+                            ratio >= min,
+                            "{k} on {sn}/{gn} is {ratio:.2} < {min} (dark={}, {:?}/{:?})",
+                            t.dark,
+                            t.spec.accent,
+                            t.spec.background
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            checked,
+            320 * 12 * 4 * 5,
+            "all 320 looks, 12 keys, 4 surfaces, 5 grounds"
+        );
+    }
+
+    #[test]
+    fn text_tones_keep_their_hue_and_stay_in_gamut() {
+        for t in themes().iter().step_by(7) {
+            for (i, k) in PALETTE_KEYS.iter().enumerate() {
+                let (ink, text) = (palette_color(k, t).unwrap(), palette_text(k, t).unwrap());
+                assert_eq!(text.h, ink.h, "{k}");
+                assert!(text.c <= ink.c + 1e-4, "{k}: chroma only ever eases");
+                let lab = text.color().to_oklab();
+                assert!(
+                    (lab[1].hypot(lab[2]) - text.c).abs() < 0.01,
+                    "{k} is out of gamut"
+                );
+                let _ = i;
+            }
+        }
+        let t = Theme::build(&ThemeSpec::default(), true);
+        assert!(palette_text("", &t).is_none() && palette_wash("nope", &t).is_none());
+    }
 
     fn themes() -> Vec<Theme> {
         ThemeSpec::all_looks()

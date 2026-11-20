@@ -63,6 +63,8 @@ pub fn collapses_into(prev: &ChatMessage, next: &ChatMessage) -> bool {
 }
 
 type Hook = Box<dyn Fn(El, &str) -> El>;
+/// Looks something up by author id: their picture, or their name's colour.
+type ById<T> = Rc<dyn Fn(&str) -> Option<T>>;
 
 pub struct MessageGroup {
     messages: Vec<ChatMessage>,
@@ -72,6 +74,9 @@ pub struct MessageGroup {
     more: Option<Hook>,
     retry: Option<Hook>,
     wire: Option<body::Wire>,
+    avatar: Option<ById<rune::Pixels>>,
+    name_color: Option<ById<rune::Color>>,
+    mention: Option<body::MentionInk>,
 }
 
 fn hook<S: 'static>(f: impl Fn(&mut S, &str) + 'static) -> Hook {
@@ -93,7 +98,31 @@ impl MessageGroup {
             more: None,
             retry: None,
             wire: None,
+            avatar: None,
+            name_color: None,
+            mention: None,
         }
+    }
+
+    /// Each author's picture (by `ChatMessage::author_id`), drawn over their initials.
+    pub fn avatars(mut self, f: impl Fn(&str) -> Option<rune::Pixels> + 'static) -> Self {
+        self.avatar = Some(Rc::new(f));
+        self
+    }
+
+    /// Each author's name colour (by `ChatMessage::author_id`): the text tone of their role.
+    pub fn name_colors(mut self, f: impl Fn(&str) -> Option<rune::Color> + 'static) -> Self {
+        self.name_color = Some(Rc::new(f));
+        self
+    }
+
+    /// The colours of an `@name` chip for a member with a coloured role (see `body::MentionInk`).
+    pub fn mention_ink(
+        mut self,
+        f: impl Fn(&str) -> Option<(rune::Color, rune::Color)> + 'static,
+    ) -> Self {
+        self.mention = Some(Rc::new(f));
+        self
     }
 
     /// Makes links and spoilers in the bodies pressable in an app whose state is `S`: a link
@@ -161,6 +190,7 @@ impl MessageGroup {
         let gutter = if head {
             Avatar::new(m.author_id.clone(), m.author_name.clone())
                 .size(32)
+                .image(self.avatar.as_ref().and_then(|f| f(&m.author_id)))
                 .build(k)
         } else {
             let stamp = text(m.time_label.clone())
@@ -185,9 +215,12 @@ impl MessageGroup {
                     .gap(8.0)
                     .center_y()
                     .child(
-                        text(m.author_name.clone())
-                            .font(type_::BODY_STRONG)
-                            .color(t.text.color()),
+                        text(m.author_name.clone()).font(type_::BODY_STRONG).color(
+                            self.name_color
+                                .as_ref()
+                                .and_then(|f| f(&m.author_id))
+                                .unwrap_or(t.text.color()),
+                        ),
                     )
                     .child(
                         text(m.time_label.clone())
@@ -202,7 +235,7 @@ impl MessageGroup {
             1.0
         };
         content = content.child(
-            body::render_with(k, &m.body, &m.id, self.wire.as_ref())
+            body::render_styled(k, &m.body, &m.id, self.wire.as_ref(), self.mention.as_ref())
                 .key("body")
                 .opacity(dim)
                 .opacity_motion(motion::CONTROL),

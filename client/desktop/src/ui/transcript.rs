@@ -9,11 +9,14 @@
 //! Every message row is a plain element (no virtual list): 150 messages is a few thousand
 //! elements and a page adds at most fifty more. Growing histories would want `virtualize`.
 
-use rune::{El, ScrollSpec, SpringPair, Transition, col, el, row, text};
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use rune::{Color, El, Pixels, ScrollSpec, SpringPair, Transition, col, el, row, text};
 use rune_kit::Kit;
 use thehideout_design::components::{Button, ChatMessage, DateDivider, DeliveryState, EmptyState, MessageGroup, NewMessagesDivider, Size, Variant};
 use thehideout_design::icons::{self, CHEVRON_DOWN, CHAT, PLUS};
-use thehideout_design::{motion, radius, theme_of, type_};
+use thehideout_design::{motion, palette_text, palette_wash, radius, theme_of, type_};
 
 use crate::app::App;
 use crate::format::{clock_label, day_label, unix};
@@ -63,6 +66,57 @@ fn items(s: &AppState, channel: u64) -> Vec<Item> {
         });
     }
     out
+}
+
+/// What the transcript draws from people rather than messages: their pictures, the colour of
+/// their names, and the chip colours of an `@mention` of someone with a coloured role.
+struct Looks {
+    avatars: Rc<HashMap<String, Pixels>>,
+    names: Rc<HashMap<String, Color>>,
+    mentions: Rc<HashMap<String, (Color, Color)>>,
+}
+
+impl Looks {
+    fn of(a: &App, k: &Kit, list: &[Item]) -> Looks {
+        let t = theme_of(k);
+        let s = &a.state;
+        let guild = match s.ui.place {
+            Place::Guild(g) => Some(g),
+            Place::Home => None,
+        };
+        let mut avatars = HashMap::new();
+        let mut names = HashMap::new();
+        for it in list {
+            let id = &it.msg.author_id;
+            if avatars.contains_key(id) || names.contains_key(id) {
+                continue;
+            }
+            let Ok(user) = id.parse::<u64>() else { continue };
+            if let Some(p) = s.avatar_pixels(user) {
+                avatars.insert(id.clone(), p);
+            }
+            if let Some(tone) = guild.and_then(|g| palette_text(s.name_color(g, user).as_key(), t)) {
+                names.insert(id.clone(), tone.color());
+            }
+        }
+        let mut mentions = HashMap::new();
+        if let Some(g) = guild {
+            for id in s.data.members.get(&g).into_iter().flatten() {
+                let key = s.name_color(g, *id);
+                if let (Some(ink), Some(wash)) = (palette_text(key.as_key(), t), palette_wash(key.as_key(), t)) {
+                    mentions.insert(s.user_name(*id).to_lowercase(), (ink.color(), wash.color()));
+                }
+            }
+        }
+        Looks { avatars: Rc::new(avatars), names: Rc::new(names), mentions: Rc::new(mentions) }
+    }
+
+    fn apply(&self, g: MessageGroup) -> MessageGroup {
+        let (avatars, names, mentions) = (self.avatars.clone(), self.names.clone(), self.mentions.clone());
+        g.avatars(move |id| avatars.get(id).cloned())
+            .name_colors(move |id| names.get(id).copied())
+            .mention_ink(move |name| mentions.get(&name.to_lowercase()).copied())
+    }
 }
 
 /// Index of the first message the "New" divider sits above.
@@ -177,6 +231,7 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
         }
     }
 
+    let looks = Looks::of(a, k, list);
     let marker_at = marker_index(list, s.ui.marker, channel);
     let mut start = 0;
     let mut prev_day: Option<i64> = None;
@@ -199,7 +254,8 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
         let msgs: Vec<ChatMessage> = list[start..i].iter().map(|it| it.msg.clone()).collect();
         for run in MessageGroup::runs(&msgs) {
             c = c.child(
-                MessageGroup::new(run)
+                looks
+                    .apply(MessageGroup::new(run))
                     .links::<App>()
                     .on_retry(|a: &mut App, id: &str| {
                         if let Some(nonce) = id.strip_prefix("n:") {

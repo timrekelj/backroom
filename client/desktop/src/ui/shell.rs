@@ -7,7 +7,7 @@ use thehideout_design::components::{Avatar, ChannelHeader, IconButton, HEADER_H}
 use thehideout_design::icons::{catalog, GEAR, HASH, USERS};
 use thehideout_design::{palette_color, radius, theme_of, type_};
 
-use super::{composer, members, rail, settings, sidebar, transcript};
+use super::{composer, members, rail, server_settings, settings, sidebar, transcript};
 use crate::app::App;
 use crate::state::{DialogKind, Place};
 
@@ -17,13 +17,16 @@ use crate::state::{DialogKind, Place};
 pub struct Layout {
     pub sidebar: f32,
     pub members: bool,
+    /// The window's height, for what must fit in it (a dialog's body scrolls past it).
+    pub height: f32,
 }
 
 impl Layout {
-    pub fn of(width: f32) -> Layout {
+    pub fn of(width: f32, height: f32) -> Layout {
         Layout {
             sidebar: if width >= 1100.0 { 240.0 } else { 208.0 },
             members: width >= 1000.0,
+            height,
         }
     }
 }
@@ -31,7 +34,7 @@ impl Layout {
 impl Default for Layout {
     /// Before the first layout is known: the roomy one.
     fn default() -> Layout {
-        Layout::of(f32::MAX)
+        Layout::of(f32::MAX, f32::MAX)
     }
 }
 
@@ -50,6 +53,9 @@ pub const TITLEBAR: f32 = 40.0;
 pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32, lay: Layout) -> El {
     if let Some(section) = a.state.ui.settings {
         return settings::build(a, k, section, bar);
+    }
+    if a.state.ui.server_settings.is_some() {
+        return server_settings::build(a, k, layer, bar);
     }
     let t = theme_of(k);
     let panel = row()
@@ -150,6 +156,7 @@ fn header(a: &App, k: &Kit, lay: Layout) -> El {
                 .child(
                     Avatar::new(id.to_string(), name.clone())
                         .size(24)
+                        .image(s.avatar_pixels(id))
                         .backdrop(t.surface.color())
                         .build(k),
                 )

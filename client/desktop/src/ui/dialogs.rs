@@ -37,8 +37,13 @@ fn search_edit(a: &mut App) -> &mut TextEdit {
     }
 }
 
-pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) {
+/// What of a window's height a dialog's chrome (padding, header, footer, gaps, the layer's margin)
+/// takes: the body gets the rest and scrolls past it.
+const DIALOG_CHROME: f32 = 230.0;
+
+pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, window_h: f32) {
     let Some(d) = &a.state.ui.dialog else { return };
+    let max_h = (window_h - DIALOG_CHROME).max(160.0);
     match d.kind {
         DialogKind::CreateGuild => form(
             k,
@@ -89,6 +94,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) {
             a,
             k,
             layer,
+            max_h,
             d,
             guild,
             "Create channel",
@@ -99,6 +105,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) {
             a,
             k,
             layer,
+            max_h,
             d,
             guild,
             "Edit channel",
@@ -106,6 +113,8 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) {
             ("Save", "Saving\u{2026}"),
         ),
         DialogKind::NewDm => new_dm(a, k, layer, d),
+        DialogKind::Profile => profile(a, k, layer, d),
+        DialogKind::DeleteRole { guild, role } => delete_role(a, k, layer, d, guild, role),
         DialogKind::Invite { guild } => invite(a, k, layer, guild),
     }
 }
@@ -210,6 +219,7 @@ fn channel_dialog(
     a: &App,
     k: &Kit,
     layer: &mut Vec<El>,
+    max_h: f32,
     d: &DialogState,
     guild: u64,
     title: &str,
@@ -229,40 +239,39 @@ fn channel_dialog(
         .w_full()
         .gap(16.0)
         .child(dialog_field(k, "Channel name", name, d.error.as_deref()));
-    if f.picker_open {
-        body = body.child(icon_row(k, f)).child(picker(k, f));
-    } else {
-        if !creating {
-            let topic = TextInput::new(&f.topic)
-                .placeholder("What is this channel about?")
-                .on_edit(topic_edit)
-                .on_submit(|a: &mut App, _| a.act(|s| s.submit_dialog()));
-            body = body.child(dialog_field(k, "Topic", topic, None));
-        }
-        if creating {
-            body = body.child(section_field(a, k, layer, f, guild));
-        }
-        body = body.child(icon_row(k, f)).child(
-            col()
-                .key("color-field")
-                .w_full()
-                .gap(6.0)
-                .child(
-                    text("Colour")
-                        .font(type_::LABEL)
-                        .color(t.text_muted.color()),
-                )
-                .child(
-                    ColorSwatches::new(f.color)
-                        .on_pick(|a: &mut App, key: &'static str| a.act(|s| s.pick_color(key)))
-                        .build(k),
-                ),
-        );
+    // Name, topic, icon and colour are always all there: the picker opens under the Icon field and
+    // its grid is short, so the dialog fits a 1280x800 window whole (and scrolls in a smaller one).
+    if !creating {
+        let topic = TextInput::new(&f.topic)
+            .placeholder("What is this channel about?")
+            .on_edit(topic_edit)
+            .on_submit(|a: &mut App, _| a.act(|s| s.submit_dialog()));
+        body = body.child(dialog_field(k, "Topic", topic, None));
     }
+    if creating {
+        body = body.child(section_field(a, k, layer, f, guild));
+    }
+    body = body.child(icon_row(k, f));
+    if f.picker_open {
+        body = body.child(picker(k, f));
+    }
+    body = body.child(
+        col()
+            .key("color-field")
+            .w_full()
+            .gap(6.0)
+            .child(text("Colour").font(type_::LABEL).color(t.text_muted.color()))
+            .child(
+                ColorSwatches::new(f.color)
+                    .on_pick(|a: &mut App, key: &'static str| a.act(|s| s.pick_color(key)))
+                    .build(k),
+            ),
+    );
     let (cancel, submit) = footer(k, d, labels);
     Dialog::new("dlg", title)
         .description(description)
         .open(true)
+        .body_max_h(max_h)
         .child(body)
         .footer(cancel)
         .footer(submit)
@@ -400,6 +409,7 @@ fn picker(k: &Kit, f: &ChannelForm) -> El {
         .child(search.build(k))
         .child(
             IconGrid::new(f.results.clone(), f.icon.clone())
+                .visible_rows(4)
                 .highlight(f.highlight)
                 .on_pick(|a: &mut App, name: &'static str| a.act(|s| s.pick_icon(name)))
                 .build::<App>(k),
@@ -574,6 +584,139 @@ fn invite(a: &App, k: &Kit, layer: &mut Vec<El>, guild: u64) {
         .footer(
             Button::new("Done")
                 .on_press(close)
+                .build(k)
+                .key("dialog-submit"),
+        )
+        .on_close(close)
+        .build(k, layer);
+}
+
+// ---- profile and roles -----------------------------------------------------------------------
+
+/// Your picture: choose a file (or drop one on the zone), see it, save or remove it.
+fn profile(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState) {
+    let t = theme_of(k);
+    let s = &a.state;
+    let me = s.me();
+    let (id, name) = me.map_or_else(|| (String::new(), String::new()), |u| (u.id.to_string(), u.username.clone()));
+    let has_avatar = me.is_some_and(|u| u.avatar.is_some());
+    let busy = d.phase == Phase::Busy;
+    let pick = &d.pick;
+    let pixels = match &pick.draft {
+        Some(draft) => Some(draft.preview.pixels().clone()),
+        None => s.avatar_pixels(s.my_id()),
+    };
+    let preview = super::server_settings::tile(k, &id, &name, pixels, 72.0, radius::LG).key("profile-preview");
+    let mut actions = row().key("profile-actions").gap(8.0).center_y();
+    actions = actions.child(
+        Button::new(if pick.reading { "Reading\u{2026}" } else { "Choose image\u{2026}" })
+            .icon(&thehideout_design::icons::IMAGE)
+            .variant(Variant::Secondary)
+            .disabled(pick.reading || busy)
+            .build(k)
+            .key("profile-choose")
+            .on_press_tx(|_: &mut App, tx: &mut rune::Tx| super::server_settings::choose_image(tx, crate::backend::ImagePurpose::Avatar)),
+    );
+    if pick.draft.is_some() {
+        actions = actions.child(
+            Button::new("Use current")
+                .variant(Variant::Ghost)
+                .disabled(busy)
+                .on_press(|a: &mut App| a.act(|s| s.discard_avatar_draft()))
+                .build(k)
+                .key("profile-discard"),
+        );
+    } else if has_avatar {
+        actions = actions.child(
+            Button::new(if busy { "Removing\u{2026}" } else { "Remove" })
+                .variant(Variant::Ghost)
+                .icon(&thehideout_design::icons::TRASH)
+                .disabled(busy)
+                .on_press(|a: &mut App| a.act(|s| s.remove_avatar()))
+                .build(k)
+                .key("profile-remove"),
+        );
+    }
+    let zone = row()
+        .key("profile-zone")
+        .w_full()
+        .gap(16.0)
+        .padding(12.0)
+        .center_y()
+        .radius(radius::LG)
+        .border(1.0, if pick.drop_over { t.accent.color() } else { t.border_subtle.color() })
+        .fill(if pick.drop_over { t.accent_subtle.color() } else { rune::Color::TRANSPARENT })
+        .child(preview)
+        .child(
+            col()
+                .grow(1.0)
+                .shrink()
+                .gap(8.0)
+                .child(actions)
+                .child(
+                    text(if busy { "Uploading\u{2026}" } else { "PNG, JPEG, WebP or GIF, up to 8 MiB. Drop a file here." })
+                        .key("profile-hint")
+                        .font(type_::CAPTION)
+                        .color(t.text_muted.color())
+                        .wrap(),
+                ),
+        )
+        .on_drop_files(|a: &mut App, files, _tx| {
+            if let Some(path) = files.first() {
+                a.act(|s| s.pick_image(crate::backend::ImagePurpose::Avatar, path));
+            }
+        })
+        .accepts_extensions(crate::media::IMAGE_EXTENSIONS)
+        .on_drop_hover(|a: &mut App, over, _tx| {
+            if let Some(d) = a.state.ui.dialog.as_mut() {
+                d.pick.drop_over = over;
+            }
+        });
+    let mut body = col().key("profile-body").w_full().gap(12.0).child(zone);
+    if let Some(e) = &d.error {
+        body = body.child(text(e.clone()).key("profile-error").font(type_::CONTROL).color(t.danger.color()).wrap().w_full());
+    }
+    Dialog::new("dlg", "Profile")
+        .description(format!("This is how you look to everyone, {name}."))
+        .open(true)
+        .child(body)
+        .footer(Button::new("Cancel").variant(Variant::Secondary).on_press(close).build(k).key("dialog-cancel"))
+        .footer(
+            Button::new(if busy { "Saving\u{2026}" } else { "Save" })
+                .disabled(busy || pick.draft.is_none())
+                .on_press(|a: &mut App| a.act(|s| s.submit_dialog()))
+                .build(k)
+                .key("dialog-submit"),
+        )
+        .on_close(close)
+        .build(k, layer);
+}
+
+fn delete_role(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState, guild: u64, role: u64) {
+    let t = theme_of(k);
+    let s = &a.state;
+    let name = s.role(guild, role).map_or_else(String::new, |r| r.name.clone());
+    let holders = s.role_members(guild, role);
+    let busy = d.phase == Phase::Busy;
+    let mut body = col().key("dialog-confirm").w_full().gap(6.0);
+    if let Some(e) = &d.error {
+        body = body.child(text(e.clone()).font(type_::CONTROL).color(t.danger.color()).wrap().w_full());
+    }
+    let who = match holders {
+        0 => "No one has it right now.".to_owned(),
+        1 => "It will be taken from the 1 member who has it.".to_owned(),
+        n => format!("It will be taken from the {n} members who have it."),
+    };
+    Dialog::new("dlg", "Delete role")
+        .description(format!("\u{201c}{name}\u{201d} will be deleted. {who} This can't be undone."))
+        .open(true)
+        .child(body)
+        .footer(Button::new("Cancel").variant(Variant::Secondary).on_press(close).build(k).key("dialog-cancel"))
+        .footer(
+            Button::new(if busy { "Deleting\u{2026}" } else { "Delete role" })
+                .variant(Variant::Danger)
+                .disabled(busy)
+                .on_press(|a: &mut App| a.act(|s| s.submit_dialog()))
                 .build(k)
                 .key("dialog-submit"),
         )

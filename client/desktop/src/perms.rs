@@ -8,6 +8,10 @@ use thehideout_api::{Guild, Permissions, Role};
 /// Every bit set, which is what the owner holds.
 pub const ALL: Permissions = Permissions(u64::MAX);
 
+/// Add, rename and delete custom emojis (`proto/README.md`: bit 16). The API crate doesn't name
+/// this one yet, so the desktop does.
+pub const MANAGE_EMOJIS: Permissions = Permissions(16);
+
 /// `me`'s effective permissions in `guild`, given the guild's roles and the role ids they hold.
 /// Unknown role ids (a role deleted since) contribute nothing.
 pub fn effective(guild: &Guild, me: u64, my_roles: &[u64], roles: &[Role]) -> Permissions {
