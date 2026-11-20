@@ -19,9 +19,12 @@ axum = "0.8"
 base64 = "0.22"
 buffa = { version = "0.9", features = ["json"] }
 buffa-types = { version = "0.9", features = ["json"] }
+bytes = "1.12.2"
 chrono = "0.4"
 connectrpc = { version = "0.9", features = ["axum"] }
 futures = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+object_store = { version = "0.14", features = ["aws"] }
 rand = "0.9"
 scylla = { version = "1", features = ["chrono-04"] }
 serde = { version = "1", features = ["derive"] }

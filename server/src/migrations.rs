@@ -25,6 +25,11 @@ pub const MIGRATIONS: &[(i32, &str, &str)] = &[
         "roles_layout",
         include_str!("../migrations/0004_roles_layout.cql"),
     ),
+    (
+        5,
+        "media",
+        include_str!("../migrations/0005_media.cql"),
+    ),
 ];
 
 /// Creates the keyspace if needed, selects it on the session, and applies any

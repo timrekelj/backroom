@@ -9,9 +9,11 @@ use scylla::client::caching_session::CachingSession;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::events::EventBus;
+use crate::media::{self, MAX_INPUT_BYTES};
 use crate::ratelimit::RateLimiter;
 use crate::services::{AdminSvc, AuthSvc, DmSvc, GatewaySvc, GuildSvc, MediaSvc, MessageSvc, RoleSvc};
 use crate::snowflake::Snowflake;
+use crate::storage::Storage;
 
 /// Shared application state handed to every service.
 #[derive(Clone)]
@@ -23,6 +25,9 @@ pub struct AppState {
     pub limiter: Arc<RateLimiter>,
     /// How often the gateway sends a heartbeat on each open stream.
     pub heartbeat_interval: Duration,
+    /// Object storage for media; `None` makes the media RPCs and `/media`
+    /// answer UNAVAILABLE while everything else works.
+    pub storage: Option<Storage>,
 }
 
 impl AppState {
@@ -39,9 +44,21 @@ impl AppState {
             events: Arc::new(EventBus::new()),
             limiter: Arc::new(RateLimiter::new()),
             heartbeat_interval,
+            storage: None,
         }
     }
+
+    /// Enables media storage.
+    pub fn with_storage(mut self, storage: Storage) -> Self {
+        self.storage = Some(storage);
+        self
+    }
 }
+
+/// Largest Connect request body of the media RPCs: the image as protobuf
+/// bytes, or base64 inside Connect JSON (4/3 of the size), plus the other
+/// fields.
+const MEDIA_REQUEST_LIMIT: usize = MAX_INPUT_BYTES / 3 * 4 + 64 * 1024;
 
 /// Builds the HTTP app: all Connect services, `GET /health`, and permissive CORS.
 pub fn build_app(state: AppState) -> Router {
@@ -51,12 +68,24 @@ pub fn build_app(state: AppState) -> Router {
         .add_service(Arc::new(MessageSvc::new(state.clone())))
         .add_service(Arc::new(DmSvc::new(state.clone())))
         .add_service(Arc::new(RoleSvc::new(state.clone())))
-        .add_service(Arc::new(MediaSvc::new(state.clone())))
         .add_service(Arc::new(AdminSvc::new(state.clone())))
-        .add_service(Arc::new(GatewaySvc::new(state)));
+        .add_service(Arc::new(GatewaySvc::new(state.clone())));
+
+    // Media RPCs get their own router so only they accept large bodies; the
+    // library default (4 MB) keeps applying to everything else. A body over
+    // the limit is refused with a Connect error.
+    let media_limits = connectrpc::Limits::default()
+        .with_max_request_body_size(MEDIA_REQUEST_LIMIT)
+        .with_max_message_size(MEDIA_REQUEST_LIMIT);
+    let media_connect = ConnectRouter::new()
+        .add_service(Arc::new(MediaSvc::new(state.clone())))
+        .into_axum_service()
+        .with_limits(media_limits);
 
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route_service("/thehideout.v1.MediaService/{method}", media_connect)
+        .merge(media::media_route().with_state(state))
         .fallback_service(connect.into_axum_service())
         .layer(cors())
 }

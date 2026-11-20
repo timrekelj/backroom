@@ -130,7 +130,7 @@ impl AuthService for AuthSvc {
         tracing::info!(user_id = id, "user signed up");
         Response::ok(SignUpResponse {
             token,
-            user: user_to_proto(id, &username, created_at).into(),
+            user: user_to_proto(id, &username, created_at, None).into(),
             ..Default::default()
         })
     }
@@ -156,7 +156,7 @@ impl AuthService for AuthSvc {
         }
         let found = self.find_user_by_username(&username).await?;
 
-        let Some((db_id, hash, created_at)) = found else {
+        let Some((db_id, hash, created_at, avatar)) = found else {
             // Burn the same CPU time as a real verification.
             verify_password(req.password.to_owned(), DUMMY_PASSWORD_HASH.to_owned()).await?;
             return Err(invalid_credentials());
@@ -170,7 +170,7 @@ impl AuthService for AuthSvc {
         tracing::info!(user_id = id, "user logged in");
         Response::ok(LoginResponse {
             token,
-            user: user_to_proto(id, &username, created_at).into(),
+            user: user_to_proto(id, &username, created_at, avatar).into(),
             ..Default::default()
         })
     }
@@ -181,19 +181,19 @@ impl AuthService for AuthSvc {
         _req: ServiceRequest<'_, GetMeRequest>,
     ) -> ServiceResult<GetMeResponse> {
         let id = authenticate(&self.state, &ctx).await?;
-        let (username, created_at) = self
+        let (username, created_at, avatar) = self
             .state
             .session
-            .execute_unpaged("SELECT username, created_at FROM users WHERE id = ?", (id_to_db(id),))
+            .execute_unpaged("SELECT username, created_at, avatar FROM users WHERE id = ?", (id_to_db(id),))
             .await
             .map_err(internal)?
             .into_rows_result()
             .map_err(internal)?
-            .maybe_first_row::<(String, DateTime<Utc>)>()
+            .maybe_first_row::<(String, DateTime<Utc>, Option<String>)>()
             .map_err(internal)?
             .ok_or_else(|| ConnectError::unauthenticated("user no longer exists"))?;
         Response::ok(GetMeResponse {
-            user: user_to_proto(id, &username, created_at).into(),
+            user: user_to_proto(id, &username, created_at, avatar).into(),
             ..Default::default()
         })
     }
@@ -204,7 +204,7 @@ impl AuthSvc {
     async fn find_user_by_username(
         &self,
         username: &str,
-    ) -> Result<Option<(i64, String, DateTime<Utc>)>, ConnectError> {
+    ) -> Result<Option<(i64, String, DateTime<Utc>, Option<String>)>, ConnectError> {
         let Some((db_id,)) = self
             .state
             .session
@@ -221,13 +221,13 @@ impl AuthSvc {
         let row = self
             .state
             .session
-            .execute_unpaged("SELECT password_hash, created_at FROM users WHERE id = ?", (db_id,))
+            .execute_unpaged("SELECT password_hash, created_at, avatar FROM users WHERE id = ?", (db_id,))
             .await
             .map_err(internal)?
             .into_rows_result()
             .map_err(internal)?
-            .maybe_first_row::<(String, DateTime<Utc>)>()
+            .maybe_first_row::<(String, DateTime<Utc>, Option<String>)>()
             .map_err(internal)?;
-        Ok(row.map(|(hash, created_at)| (db_id, hash, created_at)))
+        Ok(row.map(|(hash, created_at, avatar)| (db_id, hash, created_at, avatar)))
     }
 }

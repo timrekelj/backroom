@@ -1,55 +1,10 @@
-//! Placeholder implementations of the media and admin services; every
-//! method returns `unimplemented` until the feature is built.
+//! Placeholder implementation of the admin service; every method returns
+//! `unimplemented` until the feature is built.
 
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 
 use crate::AppState;
 use crate::proto::thehideout::v1::*;
-
-pub struct MediaSvc {
-    #[allow(dead_code)]
-    state: AppState,
-}
-
-impl MediaSvc {
-    pub fn new(state: AppState) -> Self {
-        Self { state }
-    }
-}
-
-impl MediaService for MediaSvc {
-    async fn upload_avatar(
-        &self,
-        _ctx: RequestContext,
-        _req: ServiceRequest<'_, UploadAvatarRequest>,
-    ) -> ServiceResult<UploadAvatarResponse> {
-        Err(ConnectError::unimplemented("UploadAvatar is not implemented yet"))
-    }
-
-    async fn remove_avatar(
-        &self,
-        _ctx: RequestContext,
-        _req: ServiceRequest<'_, RemoveAvatarRequest>,
-    ) -> ServiceResult<RemoveAvatarResponse> {
-        Err(ConnectError::unimplemented("RemoveAvatar is not implemented yet"))
-    }
-
-    async fn upload_guild_icon(
-        &self,
-        _ctx: RequestContext,
-        _req: ServiceRequest<'_, UploadGuildIconRequest>,
-    ) -> ServiceResult<UploadGuildIconResponse> {
-        Err(ConnectError::unimplemented("UploadGuildIcon is not implemented yet"))
-    }
-
-    async fn remove_guild_icon(
-        &self,
-        _ctx: RequestContext,
-        _req: ServiceRequest<'_, RemoveGuildIconRequest>,
-    ) -> ServiceResult<RemoveGuildIconResponse> {
-        Err(ConnectError::unimplemented("RemoveGuildIcon is not implemented yet"))
-    }
-}
 
 pub struct AdminSvc {
     #[allow(dead_code)]

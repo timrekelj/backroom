@@ -39,11 +39,13 @@ pub fn snowflake_datetime(id: u64) -> DateTime<Utc> {
     snowflake::timestamp_of(id).into()
 }
 
-pub fn user_to_proto(id: u64, username: &str, created_at: DateTime<Utc>) -> User {
+/// `avatar` is the stored media key (`None` or empty = no avatar).
+pub fn user_to_proto(id: u64, username: &str, created_at: DateTime<Utc>, avatar: Option<String>) -> User {
     User {
         id,
         username: username.to_owned(),
         created_at: datetime_to_proto(created_at).into(),
+        avatar: avatar.unwrap_or_default(),
         ..Default::default()
     }
 }

@@ -67,6 +67,7 @@ fn guild_to_proto(
     owner_id: i64,
     invite_code: String,
     created_at: DateTime<Utc>,
+    icon: Option<String>,
 ) -> Guild {
     Guild {
         id: id_from_db(id),
@@ -74,8 +75,28 @@ fn guild_to_proto(
         owner_id: id_from_db(owner_id),
         invite_code,
         created_at: datetime_to_proto(created_at).into(),
+        icon: icon.unwrap_or_default(),
         ..Default::default()
     }
+}
+
+/// Loads a guild row by database ID for proto conversion.
+pub async fn load_guild(state: &AppState, db_id: i64) -> Result<Option<Guild>, ConnectError> {
+    Ok(state
+    .session
+        .execute_unpaged(
+            "SELECT name, owner_id, invite_code, created_at, icon FROM guilds WHERE id = ?",
+            (db_id,),
+        )
+        .await
+        .map_err(internal)?
+        .into_rows_result()
+        .map_err(internal)?
+        .maybe_first_row::<(String, i64, String, DateTime<Utc>, Option<String>)>()
+        .map_err(internal)?
+        .map(|(name, owner_id, invite_code, created_at, icon)| {
+            guild_to_proto(db_id, name, owner_id, invite_code, created_at, icon)
+        }))
 }
 
 impl GuildService for GuildSvc {
@@ -114,7 +135,7 @@ impl GuildService for GuildSvc {
 
         tracing::info!(guild_id = id, user_id, "guild created");
         Response::ok(CreateGuildResponse {
-            guild: guild_to_proto(db_id, name.to_owned(), id_to_db(user_id), invite_code, created_at)
+            guild: guild_to_proto(db_id, name.to_owned(), id_to_db(user_id), invite_code, created_at, None)
                 .into(),
             ..Default::default()
         })
@@ -781,22 +802,7 @@ impl GuildSvc {
     }
 
     async fn find_guild(&self, db_id: i64) -> Result<Option<Guild>, ConnectError> {
-        Ok(self
-            .state
-            .session
-            .execute_unpaged(
-                "SELECT name, owner_id, invite_code, created_at FROM guilds WHERE id = ?",
-                (db_id,),
-            )
-            .await
-            .map_err(internal)?
-            .into_rows_result()
-            .map_err(internal)?
-            .maybe_first_row::<(String, i64, String, DateTime<Utc>)>()
-            .map_err(internal)?
-            .map(|(name, owner_id, invite_code, created_at)| {
-                guild_to_proto(db_id, name, owner_id, invite_code, created_at)
-            }))
+        load_guild(&self.state, db_id).await
     }
 
 }

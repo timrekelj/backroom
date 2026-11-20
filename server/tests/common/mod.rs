@@ -3,7 +3,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use thehideout_server::config::S3Config;
 use thehideout_server::snowflake::Snowflake;
+use thehideout_server::storage::Storage;
 use thehideout_server::{AppState, build_app, migrations};
 use connectrpc::client::{ClientConfig, HttpClient};
 use rand::Rng;
@@ -25,6 +27,24 @@ impl TestApp {
 
     /// Like `start`, with a custom gateway heartbeat interval.
     pub async fn start_with_heartbeat(heartbeat_interval: Duration) -> Self {
+        Self::start_inner(heartbeat_interval, None).await
+    }
+
+    /// Like `start`, with media storage on the real S3-compatible service from
+    /// `docker-compose.yml` (127.0.0.1:8333, or the `THEHIDEOUT_S3_*` env vars).
+    pub async fn start_with_storage() -> Self {
+        let config = S3Config::from_env().expect("S3 config");
+        let storage = Storage::s3(&config).expect("configure S3 storage");
+        storage.check().await.unwrap_or_else(|e| {
+            panic!(
+                "object storage at {} is not reachable ({e:#}); run `docker compose up -d` and wait for the bucket to be created",
+                config.endpoint
+            )
+        });
+        Self::start_inner(Duration::from_secs(30), Some(storage)).await
+    }
+
+    async fn start_inner(heartbeat_interval: Duration, storage: Option<Storage>) -> Self {
         let session = SessionBuilder::new()
             .known_node("127.0.0.1:9042")
             .build()
@@ -36,7 +56,8 @@ impl TestApp {
             .expect("run migrations");
 
         let session = Arc::new(CachingSession::from(session, 64));
-        let state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, heartbeat_interval);
+        let mut state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, heartbeat_interval);
+        state.storage = storage;
         let app = build_app(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -70,8 +91,21 @@ impl TestApp {
         new(HttpClient::plaintext(), self.client_config(token))
     }
 
-    /// Drops the test keyspace.
+    /// Deletes the media objects the test stored, then drops the test keyspace.
     pub async fn cleanup(self) {
+        if let Some(storage) = &self.state.storage
+            && let Ok(result) = self
+                .state
+                .session
+                .execute_unpaged("SELECT key FROM media_objects", ())
+                .await
+            && let Ok(rows) = result.into_rows_result()
+            && let Ok(rows) = rows.rows::<(String,)>()
+        {
+            for (key,) in rows.flatten() {
+                let _ = storage.delete(&key).await;
+            }
+        }
         let _ = self
             .state
             .session

@@ -7,11 +7,13 @@ pub mod config;
 pub mod convert;
 pub mod events;
 pub mod layout;
+pub mod media;
 pub mod migrations;
 pub mod permissions;
 pub mod ratelimit;
 pub mod services;
 pub mod snowflake;
+pub mod storage;
 pub mod validation;
 pub mod versions;
 

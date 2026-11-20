@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::broadcast;
 
 use crate::proto::thehideout::v1::{
-    Channel, DmChannel, Guild, GuildMemberJoined, LayoutUpdated, MemberUpdated, Message, RolesUpdated,
+    Channel, DmChannel, Guild, GuildMemberJoined, LayoutUpdated, MemberUpdated, Message, RolesUpdated, User,
 };
 
 /// Messages buffered per guild channel before slow receivers start lagging.
@@ -41,6 +41,9 @@ pub enum UserControl {
     /// A DM channel was opened with the user; streams should start listening to
     /// it and emit a `dm_opened` event for it.
     OpenedDm(DmChannel),
+    /// A user sharing a guild or DM with the recipient (or the recipient)
+    /// changed their profile; becomes a `user_updated` event.
+    ProfileUpdated(User),
 }
 
 #[derive(Default)]
@@ -109,6 +112,11 @@ impl EventBus {
     /// Tells the user's open streams a DM channel was opened with them.
     pub fn notify_user_opened_dm(&self, user_id: u64, channel: DmChannel) {
         self.notify_user(user_id, UserControl::OpenedDm(channel));
+    }
+
+    /// Tells the user's open streams that `updated` changed their profile.
+    pub fn notify_user_profile_updated(&self, user_id: u64, updated: User) {
+        self.notify_user(user_id, UserControl::ProfileUpdated(updated));
     }
 
     fn notify_user(&self, user_id: u64, control: UserControl) {

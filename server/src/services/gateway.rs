@@ -171,6 +171,7 @@ impl EventStream {
                         self.dms.insert(channel.id, BroadcastStream::new(rx));
                         return Ok(Payload::DmOpened(channel.into()));
                     }
+                    Ok(UserControl::ProfileUpdated(user)) => return Ok(Payload::UserUpdated(user.into())),
                     Err(RecvError::Lagged(_)) => return Err(lagged()),
                     Err(RecvError::Closed) => return Err(internal("user control channel closed")),
                 },

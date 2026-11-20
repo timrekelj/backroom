@@ -16,5 +16,60 @@ services:
       retries: 20
       start_period: 30s
 
+  # S3-compatible object storage for avatars and guild icons (later emojis).
+  # SeaweedFS rather than MinIO: MinIO no longer publishes community images,
+  # while SeaweedFS (Apache-2.0) ships an actively maintained image that runs
+  # master + volume + S3 gateway in one small process (`weed server -s3`).
+  # The server only needs the plain S3 API, so any provider can replace this.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.20
+    container_name: thehideout-s3
+    command: >
+      server -dir=/data -ip=seaweedfs -master.volumeSizeLimitMB=512
+      -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    ports:
+      # Localhost only: the credentials below are well-known dev values.
+      - "127.0.0.1:8333:8333"
+    volumes:
+      - seaweedfs-data:/data
+    configs:
+      - source: seaweedfs-s3
+        target: /etc/seaweedfs/s3.json
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # One-shot: creates the bucket once SeaweedFS is healthy, then exits.
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.20
+    container_name: thehideout-s3-init
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - echo "s3.bucket.create -name thehideout-media" | weed shell -master=seaweedfs:9333
+
+configs:
+  # Local-only development credentials (match the server's defaults).
+  seaweedfs-s3:
+    content: |
+      {
+        "identities": [
+          {
+            "name": "thehideout",
+            "credentials": [
+              { "accessKey": "thehideout-dev", "secretKey": "thehideout-dev-secret" }
+            ],
+            "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+          }
+        ]
+      }
+
 volumes:
   scylla-data:
+  seaweedfs-data:
