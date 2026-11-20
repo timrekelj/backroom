@@ -56,7 +56,7 @@ impl MediaSvc {
                 }
                 other => ConnectError::invalid_argument(other.message()),
             })?;
-        let key = media::make_key(kind, owner_id, &processed.bytes);
+        let key = media::make_key(kind, owner_id, &processed.bytes, processed.extension());
         let size = processed.bytes.len() as u64;
         storage
             .put(&key, Bytes::clone(&processed.bytes), processed.content_type)
@@ -82,7 +82,7 @@ impl MediaSvc {
         if let Some((key, size)) = &new
             && old.as_deref() != Some(key)
         {
-            let owner = Owner { kind: MediaKind::Avatar.owner_kind(), id: user_id, guild_id: None };
+            let owner = Owner { kind: MediaKind::Avatar.owner_kind(), id: user_id, guild_id: None, label: MediaKind::Avatar.label() };
             media::record(&self.state, key, owner, *size).await?;
         }
         self.state
@@ -109,7 +109,7 @@ impl MediaSvc {
         if let Some((key, size)) = &new
             && old.as_deref() != Some(key)
         {
-            let owner = Owner { kind: MediaKind::GuildIcon.owner_kind(), id: guild_id, guild_id: Some(guild_id) };
+            let owner = Owner { kind: MediaKind::GuildIcon.owner_kind(), id: guild_id, guild_id: Some(guild_id), label: MediaKind::GuildIcon.label() };
             media::record(&self.state, key, owner, *size).await?;
         }
         self.state

@@ -16,7 +16,7 @@ use scylla::statement::batch::{Batch, BatchType};
 use crate::AppState;
 use crate::auth::internal;
 use crate::convert::{datetime_to_proto, id_from_db, id_to_db};
-use crate::proto::thehideout::v1::{Channel, GuildLayout, LayoutEntry, Section};
+use crate::proto::thehideout::v1::{Channel, ChannelIcon, GuildLayout, LayoutEntry, Section, channel_icon};
 use crate::versions;
 
 /// Sections one guild may have. Enforced by a count before insert, so racing
@@ -24,13 +24,71 @@ use crate::versions;
 pub const MAX_SECTIONS_PER_GUILD: usize = 50;
 const WRITE_CHUNK: usize = 100;
 
+/// A channel's icon; absence (`None` where used) is the default icon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IconRef {
+    Phosphor(String),
+    Unicode(String),
+    /// A custom emoji id of the channel's guild.
+    Custom(u64),
+}
+
+impl IconRef {
+    /// `(icon_kind, icon_value)` as stored in the `channels` table.
+    pub fn columns(&self) -> (&'static str, String) {
+        match self {
+            Self::Phosphor(name) => ("phosphor", name.clone()),
+            Self::Unicode(emoji) => ("unicode", emoji.clone()),
+            Self::Custom(id) => ("custom", id.to_string()),
+        }
+    }
+
+    /// Columns for an optional icon; "none" records an explicit default so the
+    /// legacy `icon` column is not consulted again.
+    pub fn columns_of(icon: Option<&Self>) -> (&'static str, String) {
+        icon.map_or(("none", String::new()), Self::columns)
+    }
+
+    /// Reads the stored columns. Rows from before migration 0006 have no kind
+    /// and fall back to the legacy `icon` column (a Phosphor name, "" = none).
+    pub fn from_columns(kind: Option<&str>, value: Option<&str>, legacy_icon: &str) -> Option<Self> {
+        match (kind, value) {
+            (Some("phosphor"), Some(v)) => Some(Self::Phosphor(v.to_owned())),
+            (Some("unicode"), Some(v)) => Some(Self::Unicode(v.to_owned())),
+            (Some("custom"), Some(v)) => v.parse().ok().map(Self::Custom),
+            (Some(_), _) => None,
+            (None, _) => (!legacy_icon.is_empty()).then(|| Self::Phosphor(legacy_icon.to_owned())),
+        }
+    }
+
+    /// The deprecated `Channel.icon` mirror: the Phosphor name, else "".
+    pub fn legacy_mirror(icon: Option<&Self>) -> &str {
+        match icon {
+            Some(Self::Phosphor(name)) => name,
+            _ => "",
+        }
+    }
+
+    pub fn to_proto(&self) -> ChannelIcon {
+        let kind = match self {
+            Self::Phosphor(name) => channel_icon::Kind::Phosphor(name.clone()),
+            Self::Unicode(emoji) => channel_icon::Kind::Unicode(emoji.clone()),
+            Self::Custom(id) => channel_icon::Kind::CustomEmojiId(*id),
+        };
+        ChannelIcon {
+            kind: Some(kind),
+            ..Default::default()
+        }
+    }
+}
+
 pub struct ChannelRow {
     pub id: u64,
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub section_id: Option<u64>,
     pub position: i32,
-    pub icon: String,
+    pub icon: Option<IconRef>,
     pub color: String,
     pub topic: String,
 }
@@ -57,6 +115,8 @@ type RawChannel = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
+    Option<String>,
 );
 
 pub async fn load(state: &AppState, guild_id: u64) -> Result<GuildLayoutData, ConnectError> {
@@ -64,7 +124,7 @@ pub async fn load(state: &AppState, guild_id: u64) -> Result<GuildLayoutData, Co
     let mut channels = state
         .session
         .execute_unpaged(
-            "SELECT id, name, created_at, section_id, position, icon, color, topic \
+            "SELECT id, name, created_at, section_id, position, icon, color, topic, icon_kind, icon_value \
              FROM channels WHERE guild_id = ? ORDER BY id ASC",
             (db_guild,),
         )
@@ -75,13 +135,13 @@ pub async fn load(state: &AppState, guild_id: u64) -> Result<GuildLayoutData, Co
         .rows::<RawChannel>()
         .map_err(internal)?
         .map(|r| {
-            r.map(|(id, name, created_at, section, position, icon, color, topic)| ChannelRow {
+            r.map(|(id, name, created_at, section, position, icon, color, topic, icon_kind, icon_value)| ChannelRow {
                 id: id_from_db(id),
                 name: name.unwrap_or_default(),
                 created_at,
                 section_id: section.map(id_from_db),
                 position: position.unwrap_or(0),
-                icon: icon.unwrap_or_default(),
+                icon: IconRef::from_columns(icon_kind.as_deref(), icon_value.as_deref(), &icon.unwrap_or_default()),
                 color: color.unwrap_or_default(),
                 topic: topic.unwrap_or_default(),
             })
@@ -181,7 +241,8 @@ pub fn channel_to_proto(guild_id: u64, c: &ChannelRow, section_id: Option<u64>, 
         created_at: datetime_to_proto(c.created_at).into(),
         section_id,
         position,
-        icon: c.icon.clone(),
+        icon: IconRef::legacy_mirror(c.icon.as_ref()).to_owned(),
+        icon_ref: c.icon.as_ref().map(IconRef::to_proto).into(),
         color: c.color.clone(),
         topic: c.topic.clone(),
         ..Default::default()
@@ -243,7 +304,7 @@ mod tests {
             created_at: DateTime::<Utc>::default(),
             section_id: section,
             position,
-            icon: String::new(),
+            icon: None,
             color: String::new(),
             topic: String::new(),
         }

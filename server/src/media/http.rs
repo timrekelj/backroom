@@ -10,7 +10,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
-use super::parse_key;
+use super::{content_type_of_key, parse_key};
 use crate::AppState;
 
 /// Requests per peer IP per [`MEDIA_WINDOW`]. Generous: clients load many
@@ -54,7 +54,7 @@ async fn serve(State(state): State<AppState>, Path(key): Path<String>, request: 
             return (StatusCode::SERVICE_UNAVAILABLE, "media storage unavailable").into_response();
         }
     };
-    let content_type = object.info.content_type.unwrap_or_else(|| "image/webp".to_owned());
+    let content_type = object.info.content_type.unwrap_or_else(|| content_type_of_key(&key).to_owned());
     let mut response = if etag_matches {
         StatusCode::NOT_MODIFIED.into_response()
     } else {

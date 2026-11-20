@@ -541,3 +541,158 @@ async fn layout_edits_need_membership_and_manage_channels() {
     assert_eq!(channels(&app, &dave, guild.id).await.unwrap_err().code, ErrorCode::NotFound);
     app.cleanup().await;
 }
+
+fn icon_ref(kind: channel_icon::Kind) -> Option<ChannelIcon> {
+    Some(ChannelIcon {
+        kind: Some(kind),
+        ..Default::default()
+    })
+}
+
+fn kind_of(channel: &Channel) -> Option<channel_icon::Kind> {
+    channel.icon_ref.as_option().and_then(|i| i.kind.clone())
+}
+
+#[tokio::test]
+async fn channel_icon_ref_phosphor_unicode_and_default() {
+    use channel_icon::Kind;
+    let app = TestApp::start().await;
+    let alice = user(&app, "alice").await;
+    let guild = guild(&app, &alice).await;
+    let general = channels(&app, &alice, guild.id).await.unwrap().channels[0].clone();
+    // Untouched channels have no icon_ref (default icon).
+    assert!(general.icon_ref.as_option().is_none() && general.icon.is_empty());
+
+    let create = |name: &str, icon: &str, icon_ref: Option<ChannelIcon>| {
+        let client = guilds(&app, &alice);
+        let req = CreateChannelRequest {
+            guild_id: guild.id,
+            name: name.into(),
+            icon: icon.into(),
+            icon_ref: icon_ref.into(),
+            ..Default::default()
+        };
+        async move { client.create_channel(req).await.map(|r| r.into_owned().channel.unwrap()) }
+    };
+    let update = |channel_id: u64, icon: Option<&str>, icon_ref: Option<ChannelIcon>| {
+        let client = guilds(&app, &alice);
+        let req = UpdateChannelRequest {
+            guild_id: guild.id,
+            channel_id,
+            icon: icon.map(str::to_owned),
+            icon_ref: icon_ref.into(),
+            ..Default::default()
+        };
+        async move { client.update_channel(req).await.map(|r| r.into_owned().channel.unwrap()) }
+    };
+
+    // Three kinds on create; the legacy mirror is the phosphor name only.
+    let phosphor = create("a", "", icon_ref(Kind::Phosphor("game-controller".into()))).await.unwrap();
+    assert_eq!(kind_of(&phosphor), Some(Kind::Phosphor("game-controller".into())));
+    assert_eq!(phosphor.icon, "game-controller");
+    let emoji = create("b", "", icon_ref(Kind::Unicode("🎮".into()))).await.unwrap();
+    assert_eq!(kind_of(&emoji), Some(Kind::Unicode("🎮".into())));
+    assert_eq!(emoji.icon, "");
+    // The legacy `icon` alone still works and shows up as phosphor; icon_ref wins when both are set.
+    let legacy = create("c", "crown-simple", None).await.unwrap();
+    assert_eq!(kind_of(&legacy), Some(Kind::Phosphor("crown-simple".into())));
+    let both = create("d", "crown-simple", icon_ref(Kind::Unicode("🔥".into()))).await.unwrap();
+    assert_eq!((kind_of(&both), both.icon.as_str()), (Some(Kind::Unicode("🔥".into())), ""));
+    // Everything round-trips through ListChannels.
+    let listing = channels(&app, &alice, guild.id).await.unwrap();
+    let find = |id: u64| listing.channels.iter().find(|c| c.id == id).unwrap().clone();
+    assert_eq!(kind_of(&find(phosphor.id)), Some(Kind::Phosphor("game-controller".into())));
+    assert_eq!((kind_of(&find(emoji.id)), find(emoji.id).icon), (Some(Kind::Unicode("🎮".into())), String::new()));
+    assert_eq!(kind_of(&find(legacy.id)), Some(Kind::Phosphor("crown-simple".into())));
+
+    // Updates: switch kinds, mirror follows, untouched fields keep their value.
+    let to_emoji = update(phosphor.id, None, icon_ref(Kind::Unicode("👍🏽".into()))).await.unwrap();
+    assert_eq!((kind_of(&to_emoji), to_emoji.icon.as_str()), (Some(Kind::Unicode("👍🏽".into())), ""));
+    let to_phosphor = update(emoji.id, None, icon_ref(Kind::Phosphor("hash".into()))).await.unwrap();
+    assert_eq!((kind_of(&to_phosphor), to_phosphor.icon.as_str()), (Some(Kind::Phosphor("hash".into())), "hash"));
+    let renamed = guilds(&app, &alice)
+        .update_channel(UpdateChannelRequest {
+            guild_id: guild.id,
+            channel_id: phosphor.id,
+            topic: Some("hi".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_owned()
+        .channel
+        .unwrap();
+    assert_eq!(kind_of(&renamed), Some(Kind::Unicode("👍🏽".into())));
+    // Legacy update of `icon` replaces whatever kind was there; "" resets.
+    let legacy_update = update(phosphor.id, Some("star"), None).await.unwrap();
+    assert_eq!(kind_of(&legacy_update), Some(Kind::Phosphor("star".into())));
+    let wins = update(phosphor.id, Some("star"), icon_ref(Kind::Unicode("🔥".into()))).await.unwrap();
+    assert_eq!(kind_of(&wins), Some(Kind::Unicode("🔥".into())));
+    // An icon_ref without a kind resets to the default icon, and so does icon "".
+    let reset = update(phosphor.id, None, Some(ChannelIcon::default())).await.unwrap();
+    assert!(reset.icon_ref.as_option().is_none() && reset.icon.is_empty());
+    update(emoji.id, Some(""), None).await.unwrap();
+    let listing = channels(&app, &alice, guild.id).await.unwrap();
+    assert!(listing.channels.iter().find(|c| c.id == emoji.id).unwrap().icon_ref.as_option().is_none());
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn channel_icon_ref_validation() {
+    use channel_icon::Kind;
+    let app = TestApp::start().await;
+    let alice = user(&app, "alice").await;
+    let guild = guild(&app, &alice).await;
+    let general = channels(&app, &alice, guild.id).await.unwrap().channels[0].id;
+    let invalid = ErrorCode::InvalidArgument;
+    let bad = [
+        Kind::Phosphor("Bad Icon".into()),
+        Kind::Phosphor("a--b".into()),
+        Kind::Phosphor("a".repeat(49)),
+        Kind::Unicode("".into()),
+        Kind::Unicode("a".into()),
+        Kind::Unicode("1".into()),
+        Kind::Unicode("ab".into()),
+        Kind::Unicode("😀😀".into()),
+        Kind::Unicode("😀a".into()),
+        Kind::Unicode("😀".repeat(9)),
+        Kind::Unicode("game-controller".into()),
+        Kind::CustomEmojiId(424242),
+    ];
+    for kind in bad {
+        let created = guilds(&app, &alice)
+            .create_channel(CreateChannelRequest {
+                guild_id: guild.id,
+                name: "x".into(),
+                icon_ref: icon_ref(kind.clone()).into(),
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(created.unwrap_err().code, invalid, "{kind:?}");
+        let updated = guilds(&app, &alice)
+            .update_channel(UpdateChannelRequest {
+                guild_id: guild.id,
+                channel_id: general,
+                icon_ref: icon_ref(kind.clone()).into(),
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(updated.unwrap_err().code, invalid, "{kind:?}");
+    }
+    // Rejected requests changed nothing.
+    let listing = channels(&app, &alice, guild.id).await.unwrap();
+    assert_eq!(listing.channels.len(), 1);
+    assert!(listing.channels[0].icon_ref.as_option().is_none());
+    // A valid icon_ref does not rescue an invalid legacy icon... but icon_ref wins, so it is ignored.
+    let ok = guilds(&app, &alice)
+        .create_channel(CreateChannelRequest {
+            guild_id: guild.id,
+            name: "y".into(),
+            icon: "Bad Icon".into(),
+            icon_ref: icon_ref(Kind::Unicode("🎮".into())).into(),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(kind_of(&ok.unwrap().into_owned().channel.unwrap()), Some(Kind::Unicode("🎮".into())));
+    app.cleanup().await;
+}

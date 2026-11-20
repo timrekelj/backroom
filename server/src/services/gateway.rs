@@ -222,6 +222,9 @@ fn to_payload(event: &EventPayload) -> Payload {
         EventPayload::LayoutUpdated(l) => Payload::LayoutUpdated(l.into()),
         EventPayload::RolesUpdated(r) => Payload::RolesUpdated(r.into()),
         EventPayload::MemberUpdated(m) => Payload::MemberUpdated(m.into()),
+        EventPayload::EmojisUpdated(e) => Payload::EmojisUpdated(e.into()),
+        EventPayload::ReactionAdded(r) => Payload::ReactionAdded(r.into()),
+        EventPayload::ReactionRemoved(r) => Payload::ReactionRemoved(r.into()),
     }
 }
 

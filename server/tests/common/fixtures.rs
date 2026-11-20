@@ -13,6 +13,7 @@ pub const ADMINISTRATOR: u64 = 1;
 pub const MANAGE_SERVER: u64 = 2;
 pub const MANAGE_CHANNELS: u64 = 4;
 pub const MANAGE_ROLES: u64 = 8;
+pub const MANAGE_EMOJIS: u64 = 16;
 
 pub struct Account {
     pub token: String,

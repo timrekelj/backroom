@@ -1,15 +1,20 @@
-//! Image processing: sniff, validate, decode, centre-crop, resize, re-encode.
+//! Image processing: sniff, validate, decode, centre-crop or fit, resize,
+//! re-encode. Kinds that keep animation (emojis) turn animated GIF/WebP into a
+//! resized GIF with the original frame delays.
 
 use std::io::Cursor;
 use std::sync::OnceLock;
 
 use bytes::Bytes;
-use image::codecs::webp::WebPEncoder;
+use image::codecs::gif::{GifDecoder, GifEncoder, Repeat};
+use image::codecs::webp::{WebPDecoder, WebPEncoder};
 use image::imageops::{self, FilterType};
-use image::{DynamicImage, ExtendedColorType, ImageDecoder, ImageEncoder, ImageFormat, Limits, RgbaImage};
+use image::{
+    AnimationDecoder, DynamicImage, ExtendedColorType, Frame, ImageDecoder, ImageEncoder, ImageFormat, Limits, RgbaImage,
+};
 use tokio::sync::Semaphore;
 
-use super::MediaKind;
+use super::{MediaKind, Shape};
 
 /// Largest accepted upload.
 pub const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -21,11 +26,19 @@ const MAX_PIXELS: u64 = 50_000_000;
 /// Decodes running at once. Decoding is CPU and memory heavy, so concurrent
 /// uploads queue instead of multiplying peak memory.
 const MAX_CONCURRENT: usize = 2;
+/// Animation limits (decompression-bomb guards): canvas edge, frames, and
+/// total decoded pixels over all frames. Frames are resized one at a time, so
+/// peak memory is one source frame plus the small output frames.
+const ANIM_MAX_DIMENSION: u32 = 4096;
+const ANIM_MAX_FRAMES: usize = 200;
+const ANIM_MAX_PIXELS: u64 = 100_000_000;
 
 /// Why an image was refused. Every variant maps to INVALID_ARGUMENT except `Internal`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum MediaError {
     TooLarge,
+    /// Animation with too many frames or too many decoded pixels.
+    TooComplex,
     UnsupportedType(String),
     TypeMismatch,
     Corrupt,
@@ -36,7 +49,8 @@ pub enum MediaError {
 impl MediaError {
     pub fn message(&self) -> String {
         match self {
-            Self::TooLarge => format!("image must be at most {} MiB", MAX_INPUT_BYTES / (1024 * 1024)),
+            Self::TooLarge => "image is too large (avatars and icons: at most 8 MiB, emojis: at most 2 MiB)".to_owned(),
+            Self::TooComplex => format!("animation must have at most {ANIM_MAX_FRAMES} frames and {} megapixels in total", ANIM_MAX_PIXELS / 1_000_000),
             Self::UnsupportedType(t) => format!("unsupported content type {t:?}, expected image/png, image/jpeg, image/webp or image/gif"),
             Self::TypeMismatch => "image data does not match the declared content type".to_owned(),
             Self::Corrupt => "image data could not be decoded".to_owned(),
@@ -50,6 +64,15 @@ impl MediaError {
 pub struct Processed {
     pub bytes: Bytes,
     pub content_type: &'static str,
+    /// Whether the output is an animation (GIF).
+    pub animated: bool,
+}
+
+impl Processed {
+    /// File extension used in the storage key.
+    pub fn extension(&self) -> &'static str {
+        if self.animated { "gif" } else { "webp" }
+    }
 }
 
 fn permits() -> &'static Semaphore {
@@ -60,7 +83,7 @@ fn permits() -> &'static Semaphore {
 /// Validates and processes `data` for `kind` on a blocking thread.
 pub async fn process(kind: MediaKind, data: Vec<u8>, content_type: String) -> Result<Processed, MediaError> {
     // Cheap checks first, before queueing for a decode slot.
-    if data.len() > MAX_INPUT_BYTES {
+    if data.len() > kind.max_input_bytes() {
         return Err(MediaError::TooLarge);
     }
     let declared = declared_format(&content_type)?;
@@ -90,22 +113,141 @@ fn process_blocking(kind: MediaKind, data: &[u8], declared: ImageFormat) -> Resu
         return Err(MediaError::TypeMismatch);
     }
 
-    let image = decode(data, sniffed)?;
-    let _ = kind.animated(); // animation is reserved for emoji kinds
-    let side = kind.size();
-    let square = centre_square(image);
-    let resized: RgbaImage = imageops::resize(&square, side, side, FilterType::Lanczos3);
+    if kind.animated()
+        && let Shape::Fit(edge) = kind.shape()
+        && let Some(processed) = animated(data, sniffed, edge)?
+    {
+        return Ok(processed);
+    }
 
+    let image = decode(data, sniffed)?;
+    let resized: RgbaImage = match kind.shape() {
+        Shape::CropSquare(side) => {
+            let square = centre_square(image);
+            imageops::resize(&square, side, side, FilterType::Lanczos3)
+        }
+        Shape::Fit(edge) => fit(image.into_rgba8(), edge),
+    };
+    encode_webp(&resized)
+}
+
+fn encode_webp(image: &RgbaImage) -> Result<Processed, MediaError> {
     // Lossless WebP: pure Rust (the `image` crate has no lossy encoder) and a
     // 256x256 image stays well under 256 KiB.
+    let (w, h) = image.dimensions();
     let mut out = Vec::new();
     WebPEncoder::new_lossless(&mut out)
-        .write_image(resized.as_raw(), side, side, ExtendedColorType::Rgba8)
+        .write_image(image.as_raw(), w, h, ExtendedColorType::Rgba8)
         .map_err(|e| MediaError::Internal(format!("encoding webp: {e}")))?;
     Ok(Processed {
         bytes: out.into(),
         content_type: "image/webp",
+        animated: false,
     })
+}
+
+/// Size that fits `w`x`h` within `edge`x`edge`, aspect kept, never upscaled.
+fn fit_dimensions(w: u32, h: u32, edge: u32) -> (u32, u32) {
+    if w <= edge && h <= edge {
+        return (w, h);
+    }
+    let scale = f64::min(f64::from(edge) / f64::from(w), f64::from(edge) / f64::from(h));
+    let scaled = |v: u32| ((f64::from(v) * scale).round() as u32).clamp(1, edge);
+    (scaled(w), scaled(h))
+}
+
+fn fit(image: RgbaImage, edge: u32) -> RgbaImage {
+    let (w, h) = image.dimensions();
+    let (nw, nh) = fit_dimensions(w, h, edge);
+    if (nw, nh) == (w, h) {
+        image
+    } else {
+        imageops::resize(&image, nw, nh, FilterType::Lanczos3)
+    }
+}
+
+/// Animated GIF / WebP -> GIF fitted within `edge`, keeping frame delays.
+/// `Ok(None)` if the input is not an animation of at least two frames and the
+/// caller should take the static path; a single-frame GIF is handled here as a
+/// static image so it is not decoded twice.
+fn animated(data: &[u8], format: ImageFormat, edge: u32) -> Result<Option<Processed>, MediaError> {
+    let frames = match format {
+        ImageFormat::Gif => {
+            let mut decoder = GifDecoder::new(Cursor::new(data)).map_err(map_decode_error)?;
+            check_canvas(decoder.dimensions())?;
+            let mut limits = Limits::default();
+            limits.max_alloc = Some(512 * 1024 * 1024);
+            decoder.set_limits(limits).map_err(map_decode_error)?;
+            collect_frames(decoder.dimensions(), decoder.into_frames(), edge)?
+        }
+        ImageFormat::WebP => {
+            let mut decoder = WebPDecoder::new(Cursor::new(data)).map_err(map_decode_error)?;
+            check_canvas(decoder.dimensions())?;
+            if !decoder.has_animation() {
+                return Ok(None);
+            }
+            let mut limits = Limits::default();
+            limits.max_alloc = Some(512 * 1024 * 1024);
+            decoder.set_limits(limits).map_err(map_decode_error)?;
+            collect_frames(decoder.dimensions(), decoder.into_frames(), edge)?
+        }
+        _ => return Ok(None),
+    };
+    match frames.len() {
+        0 => Err(MediaError::Corrupt),
+        1 => encode_webp(frames[0].buffer()).map(Some),
+        _ => {
+            let mut out = Vec::new();
+            {
+                let mut encoder = GifEncoder::new_with_speed(&mut out, 10);
+                encoder
+                    .set_repeat(Repeat::Infinite)
+                    .map_err(|e| MediaError::Internal(format!("encoding gif: {e}")))?;
+                encoder
+                    .encode_frames(frames)
+                    .map_err(|e| MediaError::Internal(format!("encoding gif: {e}")))?;
+            }
+            Ok(Some(Processed {
+                bytes: out.into(),
+                content_type: "image/gif",
+                animated: true,
+            }))
+        }
+    }
+}
+
+fn check_canvas((w, h): (u32, u32)) -> Result<(), MediaError> {
+    if w == 0 || h == 0 || w > ANIM_MAX_DIMENSION || h > ANIM_MAX_DIMENSION {
+        return Err(MediaError::DimensionsTooLarge);
+    }
+    Ok(())
+}
+
+/// Resizes every frame as it is decoded, enforcing the frame and pixel budgets
+/// before the next frame is decoded.
+fn collect_frames(
+    (w, h): (u32, u32),
+    frames: image::Frames<'_>,
+    edge: u32,
+) -> Result<Vec<Frame>, MediaError> {
+    let (nw, nh) = fit_dimensions(w, h, edge);
+    let canvas = u64::from(w) * u64::from(h);
+    let mut out = Vec::new();
+    for frame in frames {
+        if out.len() >= ANIM_MAX_FRAMES || canvas * (out.len() as u64 + 1) > ANIM_MAX_PIXELS {
+            return Err(MediaError::TooComplex);
+        }
+        let frame = frame.map_err(map_decode_error)?;
+        let delay = frame.delay();
+        let buffer = frame.into_buffer();
+        let buffer = if (nw, nh) == buffer.dimensions() {
+            buffer
+        } else {
+            imageops::resize(&buffer, nw, nh, FilterType::Triangle)
+        };
+        out.push(Frame::from_parts(buffer, 0, 0, delay));
+    }
+    Ok(out)
 }
 
 /// Decodes the first frame with dimension and memory limits, honouring EXIF orientation.

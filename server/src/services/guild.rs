@@ -12,10 +12,11 @@ use crate::access::{find_user, is_member, require_guild_member};
 use crate::auth::{authenticate, internal, peer_key};
 use crate::convert::{datetime_to_proto, id_from_db, id_to_db, snowflake_datetime};
 use crate::events::EventPayload;
-use crate::layout::{self, MAX_SECTIONS_PER_GUILD};
+use crate::layout::{self, IconRef, MAX_SECTIONS_PER_GUILD};
 use crate::permissions::{MANAGE_CHANNELS, MANAGE_SERVER, require_permission};
 use crate::proto::thehideout::v1::*;
-use crate::validation::{display_name, validate_color, validate_icon, validate_topic};
+use crate::services::emoji::emoji_exists;
+use crate::validation::{display_name, validate_color, validate_icon, validate_topic, validate_unicode_emoji};
 use crate::versions;
 
 const GUILD_NAME_LEN: std::ops::RangeInclusive<usize> = 1..=100;
@@ -129,7 +130,7 @@ impl GuildService for GuildSvc {
             .await
             .map_err(internal)?;
         self.add_member(id, user_id).await?;
-        let channel = self.insert_channel(id, DEFAULT_CHANNEL, None, 0, "", "").await?;
+        let channel = self.insert_channel(id, DEFAULT_CHANNEL, None, 0, None, "").await?;
         self.state.events.publish_to_guild(id, EventPayload::ChannelCreated(channel));
         self.state.events.notify_user_joined_guild(user_id, id);
 
@@ -299,7 +300,13 @@ impl GuildService for GuildSvc {
                 "channel name must be 1-100 characters of a-z, 0-9, '_' or '-'",
             )
         })?;
-        validate_icon(req.icon)?;
+        // `icon_ref` wins over the legacy `icon`.
+        let icon = if req.icon_ref.is_set() {
+            let kind = req.icon_ref.as_option().and_then(|i| i.kind.clone());
+            self.parse_icon(guild_id, kind).await?
+        } else {
+            self.parse_legacy_icon(req.icon)?
+        };
         validate_color(req.color)?;
 
         let data = layout::load(&self.state, guild_id).await?;
@@ -319,7 +326,7 @@ impl GuildService for GuildSvc {
 
         self.reserve_channel_slot(guild_id).await?;
         let channel = self
-            .insert_channel(guild_id, &name, section, position, req.icon, req.color)
+            .insert_channel(guild_id, &name, section, position, icon.as_ref(), req.color)
             .await?;
         versions::bump(&self.state, guild_id, versions::LAYOUT, None).await?;
         self.state
@@ -398,9 +405,15 @@ impl GuildService for GuildSvc {
                 })
             })
             .transpose()?;
-        if let Some(icon) = req.icon {
-            validate_icon(icon)?;
-        }
+        // `Some(None)` resets to the default icon, `None` keeps the current one.
+        let new_icon: Option<Option<IconRef>> = if req.icon_ref.is_set() {
+            let kind = req.icon_ref.as_option().and_then(|i| i.kind.clone());
+            Some(self.parse_icon(guild_id, kind).await?)
+        } else if let Some(icon) = req.icon {
+            Some(self.parse_legacy_icon(icon)?)
+        } else {
+            None
+        };
         if let Some(color) = req.color {
             validate_color(color)?;
         }
@@ -415,14 +428,25 @@ impl GuildService for GuildSvc {
             .find(|c| c.id == req.channel_id)
             .ok_or_else(|| ConnectError::not_found("channel not found"))?;
         let name = name.unwrap_or_else(|| current.name.clone());
-        let icon = req.icon.map_or_else(|| current.icon.clone(), str::to_owned);
+        let icon = new_icon.unwrap_or_else(|| current.icon.clone());
         let color = req.color.map_or_else(|| current.color.clone(), str::to_owned);
         let topic = req.topic.map_or_else(|| current.topic.clone(), str::to_owned);
+        let (icon_kind, icon_value) = IconRef::columns_of(icon.as_ref());
         self.state
             .session
             .execute_unpaged(
-                "UPDATE channels SET name = ?, icon = ?, color = ?, topic = ? WHERE guild_id = ? AND id = ?",
-                (&name, &icon, &color, &topic, id_to_db(guild_id), id_to_db(req.channel_id)),
+                "UPDATE channels SET name = ?, icon = ?, icon_kind = ?, icon_value = ?, color = ?, topic = ? \
+                 WHERE guild_id = ? AND id = ?",
+                (
+                    &name,
+                    IconRef::legacy_mirror(icon.as_ref()),
+                    icon_kind,
+                    &icon_value,
+                    &color,
+                    &topic,
+                    id_to_db(guild_id),
+                    id_to_db(req.channel_id),
+                ),
             )
             .await
             .map_err(internal)?;
@@ -621,6 +645,35 @@ impl GuildService for GuildSvc {
 }
 
 impl GuildSvc {
+    /// Validates the legacy `icon` string ("" = default).
+    fn parse_legacy_icon(&self, icon: &str) -> Result<Option<IconRef>, ConnectError> {
+        validate_icon(icon)?;
+        Ok((!icon.is_empty()).then(|| IconRef::Phosphor(icon.to_owned())))
+    }
+
+    /// Validates an `icon_ref` kind (`None` = reset to default). A custom emoji
+    /// must exist in `guild_id`; every failure is INVALID_ARGUMENT.
+    async fn parse_icon(
+        &self,
+        guild_id: u64,
+        kind: Option<channel_icon::KindView<'_>>,
+    ) -> Result<Option<IconRef>, ConnectError> {
+        match kind {
+            None => Ok(None),
+            Some(channel_icon::KindView::Phosphor(name)) => self.parse_legacy_icon(name),
+            Some(channel_icon::KindView::Unicode(emoji)) => {
+                validate_unicode_emoji(emoji)?;
+                Ok(Some(IconRef::Unicode(emoji.to_owned())))
+            }
+            Some(channel_icon::KindView::CustomEmojiId(id)) => {
+                if !emoji_exists(&self.state, guild_id, id).await? {
+                    return Err(ConnectError::invalid_argument("custom emoji does not exist in this guild"));
+                }
+                Ok(Some(IconRef::Custom(id)))
+            }
+        }
+    }
+
     fn throttle_layout(&self, user_id: u64) -> Result<(), ConnectError> {
         self.state
             .limiter
@@ -691,16 +744,18 @@ impl GuildSvc {
         name: &str,
         section_id: Option<u64>,
         position: i32,
-        icon: &str,
+        icon: Option<&IconRef>,
         color: &str,
     ) -> Result<Channel, ConnectError> {
+        let mirror = IconRef::legacy_mirror(icon);
+        let (icon_kind, icon_value) = IconRef::columns_of(icon);
         let id = self.state.snowflake.next_id();
         let created_at = snowflake_datetime(id);
         let (db_guild_id, db_id) = (id_to_db(guild_id), id_to_db(id));
         let mut batch = Batch::new(BatchType::Logged);
         batch.append_statement(
-            "INSERT INTO channels (guild_id, id, name, created_at, section_id, position, icon, color, topic) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, '')",
+            "INSERT INTO channels (guild_id, id, name, created_at, section_id, position, icon, color, topic, \
+             icon_kind, icon_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)",
         );
         batch.append_statement("INSERT INTO channels_by_id (id, guild_id) VALUES (?, ?)");
         self.state
@@ -708,7 +763,7 @@ impl GuildSvc {
             .batch(
                 &batch,
                 (
-                    (db_guild_id, db_id, name, created_at, section_id.map(id_to_db), position, icon, color),
+                    (db_guild_id, db_id, name, created_at, section_id.map(id_to_db), position, mirror, color, icon_kind, &icon_value),
                     (db_id, db_guild_id),
                 ),
             )
@@ -721,7 +776,8 @@ impl GuildSvc {
             created_at: datetime_to_proto(created_at).into(),
             section_id,
             position,
-            icon: icon.to_owned(),
+            icon: mirror.to_owned(),
+            icon_ref: icon.map(IconRef::to_proto).into(),
             color: color.to_owned(),
             ..Default::default()
         })

@@ -15,8 +15,9 @@ pub const ADMINISTRATOR: u64 = 1;
 pub const MANAGE_SERVER: u64 = 2;
 pub const MANAGE_CHANNELS: u64 = 4;
 pub const MANAGE_ROLES: u64 = 8;
+pub const MANAGE_EMOJIS: u64 = 16;
 /// Every defined permission bit.
-pub const ALL_PERMISSIONS: u64 = ADMINISTRATOR | MANAGE_SERVER | MANAGE_CHANNELS | MANAGE_ROLES;
+pub const ALL_PERMISSIONS: u64 = ADMINISTRATOR | MANAGE_SERVER | MANAGE_CHANNELS | MANAGE_ROLES | MANAGE_EMOJIS;
 
 /// A caller's standing within a guild.
 pub struct Standing {
