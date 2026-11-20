@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -11,7 +12,11 @@ use crate::access::{find_user, is_member, require_guild_member};
 use crate::auth::{authenticate, internal, peer_key};
 use crate::convert::{datetime_to_proto, id_from_db, id_to_db, snowflake_datetime};
 use crate::events::EventPayload;
+use crate::layout::{self, MAX_SECTIONS_PER_GUILD};
+use crate::permissions::{MANAGE_CHANNELS, MANAGE_SERVER, require_permission};
 use crate::proto::thehideout::v1::*;
+use crate::validation::{display_name, validate_color, validate_icon, validate_topic};
+use crate::versions;
 
 const GUILD_NAME_LEN: std::ops::RangeInclusive<usize> = 1..=100;
 const CHANNEL_NAME_LEN: std::ops::RangeInclusive<usize> = 1..=100;
@@ -27,6 +32,10 @@ const GUILD_CREATE_WINDOW: Duration = Duration::from_secs(60 * 60);
 
 /// Channels one guild may have.
 pub const MAX_CHANNELS_PER_GUILD: i64 = 500;
+
+/// Layout/settings edits (guild, channel, section, layout RPCs) allowed per user within [`GUILD_EDIT_WINDOW`].
+pub const GUILD_EDIT_MAX: usize = 60;
+const GUILD_EDIT_WINDOW: Duration = Duration::from_secs(60);
 
 /// Guild joins (invite-code lookups) allowed per peer IP within [`JOIN_WINDOW`].
 pub const JOIN_IP_MAX: usize = 30;
@@ -69,16 +78,6 @@ fn guild_to_proto(
     }
 }
 
-fn channel_to_proto(guild_id: u64, id: u64, name: String, created_at: DateTime<Utc>) -> Channel {
-    Channel {
-        id,
-        guild_id,
-        name,
-        created_at: datetime_to_proto(created_at).into(),
-        ..Default::default()
-    }
-}
-
 impl GuildService for GuildSvc {
     async fn create_guild(
         &self,
@@ -109,7 +108,7 @@ impl GuildService for GuildSvc {
             .await
             .map_err(internal)?;
         self.add_member(id, user_id).await?;
-        let channel = self.insert_channel(id, DEFAULT_CHANNEL).await?;
+        let channel = self.insert_channel(id, DEFAULT_CHANNEL, None, 0, "", "").await?;
         self.state.events.publish_to_guild(id, EventPayload::ChannelCreated(channel));
         self.state.events.notify_user_joined_guild(user_id, id);
 
@@ -207,30 +206,60 @@ impl GuildService for GuildSvc {
         let user_id = authenticate(&self.state, &ctx).await?;
         require_guild_member(&self.state, user_id, req.guild_id).await?;
 
-        let member_ids = self
+        let joined = self
             .state
             .session
             .execute_unpaged(
-                "SELECT user_id FROM guild_members WHERE guild_id = ?",
+                "SELECT user_id, joined_at FROM guild_members WHERE guild_id = ?",
                 (id_to_db(req.guild_id),),
             )
             .await
             .map_err(internal)?
             .into_rows_result()
             .map_err(internal)?
-            .rows::<(i64,)>()
+            .rows::<(i64, Option<DateTime<Utc>>)>()
             .map_err(internal)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(internal)?;
+        let mut roles: std::collections::HashMap<i64, Vec<u64>> = self
+            .state
+            .session
+            .execute_unpaged(
+                "SELECT user_id, role_ids FROM member_roles WHERE guild_id = ?",
+                (id_to_db(req.guild_id),),
+            )
+            .await
+            .map_err(internal)?
+            .into_rows_result()
+            .map_err(internal)?
+            .rows::<(i64, Option<Vec<i64>>)>()
+            .map_err(internal)?
+            .map(|r| r.map(|(uid, ids)| (uid, ids.unwrap_or_default().into_iter().map(id_from_db).collect())))
+            .collect::<Result<_, _>>()
+            .map_err(internal)?;
 
-        let mut users = try_join_all(member_ids.into_iter().map(|(id,)| find_user(&self.state, id)))
-            .await?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        users.sort_by(|a, b| a.username.cmp(&b.username));
+        let mut members = try_join_all(joined.into_iter().map(|(uid, joined_at)| async move {
+            Ok::<_, ConnectError>(find_user(&self.state, uid).await?.map(|user| (uid, user, joined_at)))
+        }))
+        .await?
+        .into_iter()
+        .flatten()
+        .map(|(uid, user, joined_at)| {
+            let mut role_ids = roles.remove(&uid).unwrap_or_default();
+            role_ids.sort_unstable();
+            Member {
+                user: user.into(),
+                role_ids,
+                joined_at: datetime_to_proto(joined_at.unwrap_or_default()).into(),
+                ..Default::default()
+            }
+        })
+        .collect::<Vec<_>>();
+        members.sort_by(|a, b| a.user.username.cmp(&b.user.username));
+        let users = members.iter().filter_map(|m| m.user.as_option().cloned()).collect();
         Response::ok(ListGuildMembersResponse {
             users,
+            members,
             ..Default::default()
         })
     }
@@ -241,28 +270,41 @@ impl GuildService for GuildSvc {
         req: ServiceRequest<'_, CreateChannelRequest>,
     ) -> ServiceResult<CreateChannelResponse> {
         let user_id = authenticate(&self.state, &ctx).await?;
-        require_guild_member(&self.state, user_id, req.guild_id).await?;
-        // Only the guild owner may create channels; the schema has no roles.
-        let guild = self
-            .find_guild(id_to_db(req.guild_id))
-            .await?
-            .ok_or_else(|| ConnectError::not_found("guild not found"))?;
-        if guild.owner_id != user_id {
-            return Err(ConnectError::permission_denied(
-                "only the guild owner can create channels",
-            ));
-        }
-        self.reserve_channel_slot(req.guild_id).await?;
+        let guild_id = req.guild_id;
+        require_permission(&self.state, user_id, guild_id, MANAGE_CHANNELS).await?;
+        self.throttle_layout(user_id)?;
         let name = normalize_channel_name(req.name).ok_or_else(|| {
             ConnectError::invalid_argument(
                 "channel name must be 1-100 characters of a-z, 0-9, '_' or '-'",
             )
         })?;
+        validate_icon(req.icon)?;
+        validate_color(req.color)?;
 
-        let channel = self.insert_channel(req.guild_id, &name).await?;
+        let data = layout::load(&self.state, guild_id).await?;
+        let built = layout::build(guild_id, &data, 0);
+        let section = req.section_id;
+        if let Some(section) = section
+            && !data.sections.iter().any(|s| s.id == section)
+        {
+            return Err(ConnectError::not_found("section not found"));
+        }
+        let position = built
+            .layout
+            .entries
+            .iter()
+            .find(|e| e.section_id == section.unwrap_or(0))
+            .map_or(0, |e| e.channel_ids.len() as i32);
+
+        self.reserve_channel_slot(guild_id).await?;
+        let channel = self
+            .insert_channel(guild_id, &name, section, position, req.icon, req.color)
+            .await?;
+        versions::bump(&self.state, guild_id, versions::LAYOUT, None).await?;
         self.state
             .events
-            .publish_to_guild(req.guild_id, EventPayload::ChannelCreated(channel.clone()));
+            .publish_to_guild(guild_id, EventPayload::ChannelCreated(channel.clone()));
+        self.publish_layout(guild_id).await?;
         Response::ok(CreateChannelResponse {
             channel: channel.into(),
             ..Default::default()
@@ -276,36 +318,308 @@ impl GuildService for GuildSvc {
     ) -> ServiceResult<ListChannelsResponse> {
         let user_id = authenticate(&self.state, &ctx).await?;
         require_guild_member(&self.state, user_id, req.guild_id).await?;
+        let built = layout::load_built(&self.state, req.guild_id).await?;
+        Response::ok(ListChannelsResponse {
+            channels: built.channels,
+            layout: built.layout.into(),
+            ..Default::default()
+        })
+    }
 
+    async fn update_guild(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UpdateGuildRequest>,
+    ) -> ServiceResult<UpdateGuildResponse> {
+        let user_id = authenticate(&self.state, &ctx).await?;
         let guild_id = req.guild_id;
-        let channels = self
-            .state
-            .session
-            .execute_unpaged(
-                "SELECT id, name, created_at FROM channels WHERE guild_id = ? ORDER BY id ASC",
-                (id_to_db(guild_id),),
-            )
-            .await
-            .map_err(internal)?
-            .into_rows_result()
-            .map_err(internal)?
-            .rows::<(i64, String, DateTime<Utc>)>()
-            .map_err(internal)?
-            .map(|row| {
-                row.map(|(id, name, created_at)| {
-                    channel_to_proto(guild_id, id_from_db(id), name, created_at)
+        require_permission(&self.state, user_id, guild_id, MANAGE_SERVER).await?;
+        self.throttle_layout(user_id)?;
+        let name = req.name.map(|n| display_name(n, "guild")).transpose()?;
+        if let Some(name) = &name {
+            self.state
+                .session
+                .execute_unpaged("UPDATE guilds SET name = ? WHERE id = ?", (name, id_to_db(guild_id)))
+                .await
+                .map_err(internal)?;
+        }
+        let guild = self
+            .find_guild(id_to_db(guild_id))
+            .await?
+            .ok_or_else(|| ConnectError::not_found("guild not found"))?;
+        if name.is_some() {
+            self.state
+                .events
+                .publish_to_guild(guild_id, EventPayload::GuildUpdated(guild.clone()));
+        }
+        Response::ok(UpdateGuildResponse {
+            guild: guild.into(),
+            ..Default::default()
+        })
+    }
+
+    async fn update_channel(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UpdateChannelRequest>,
+    ) -> ServiceResult<UpdateChannelResponse> {
+        let user_id = authenticate(&self.state, &ctx).await?;
+        let guild_id = req.guild_id;
+        require_permission(&self.state, user_id, guild_id, MANAGE_CHANNELS).await?;
+        self.throttle_layout(user_id)?;
+        let name = req
+            .name
+            .map(|n| {
+                normalize_channel_name(n).ok_or_else(|| {
+                    ConnectError::invalid_argument(
+                        "channel name must be 1-100 characters of a-z, 0-9, '_' or '-'",
+                    )
                 })
             })
-            .collect::<Result<Vec<_>, _>>()
+            .transpose()?;
+        if let Some(icon) = req.icon {
+            validate_icon(icon)?;
+        }
+        if let Some(color) = req.color {
+            validate_color(color)?;
+        }
+        if let Some(topic) = req.topic {
+            validate_topic(topic)?;
+        }
+
+        let data = layout::load(&self.state, guild_id).await?;
+        let current = data
+            .channels
+            .iter()
+            .find(|c| c.id == req.channel_id)
+            .ok_or_else(|| ConnectError::not_found("channel not found"))?;
+        let name = name.unwrap_or_else(|| current.name.clone());
+        let icon = req.icon.map_or_else(|| current.icon.clone(), str::to_owned);
+        let color = req.color.map_or_else(|| current.color.clone(), str::to_owned);
+        let topic = req.topic.map_or_else(|| current.topic.clone(), str::to_owned);
+        self.state
+            .session
+            .execute_unpaged(
+                "UPDATE channels SET name = ?, icon = ?, color = ?, topic = ? WHERE guild_id = ? AND id = ?",
+                (&name, &icon, &color, &topic, id_to_db(guild_id), id_to_db(req.channel_id)),
+            )
+            .await
             .map_err(internal)?;
-        Response::ok(ListChannelsResponse {
-            channels,
+
+        let data = layout::load(&self.state, guild_id).await?;
+        let channel = layout::build(guild_id, &data, 0)
+            .channels
+            .into_iter()
+            .find(|c| c.id == req.channel_id)
+            .ok_or_else(|| ConnectError::not_found("channel not found"))?;
+        self.state
+            .events
+            .publish_to_guild(guild_id, EventPayload::ChannelUpdated(channel.clone()));
+        Response::ok(UpdateChannelResponse {
+            channel: channel.into(),
+            ..Default::default()
+        })
+    }
+
+    async fn create_section(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, CreateSectionRequest>,
+    ) -> ServiceResult<CreateSectionResponse> {
+        let user_id = authenticate(&self.state, &ctx).await?;
+        let guild_id = req.guild_id;
+        require_permission(&self.state, user_id, guild_id, MANAGE_CHANNELS).await?;
+        self.throttle_layout(user_id)?;
+        let name = display_name(req.name, "section")?;
+        let data = layout::load(&self.state, guild_id).await?;
+        if data.sections.len() >= MAX_SECTIONS_PER_GUILD {
+            return Err(ConnectError::resource_exhausted("section limit reached"));
+        }
+        let id = self.state.snowflake.next_id();
+        self.state
+            .session
+            .execute_unpaged(
+                "INSERT INTO sections (guild_id, id, name, position) VALUES (?, ?, ?, ?)",
+                (id_to_db(guild_id), id_to_db(id), &name, data.sections.len() as i32),
+            )
+            .await
+            .map_err(internal)?;
+        versions::bump(&self.state, guild_id, versions::LAYOUT, None).await?;
+        let layout = self.publish_layout(guild_id).await?;
+        let section = layout.sections.iter().find(|s| s.id == id).cloned();
+        Response::ok(CreateSectionResponse {
+            section: section.into(),
+            layout: layout.into(),
+            ..Default::default()
+        })
+    }
+
+    async fn update_section(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UpdateSectionRequest>,
+    ) -> ServiceResult<UpdateSectionResponse> {
+        let user_id = authenticate(&self.state, &ctx).await?;
+        let guild_id = req.guild_id;
+        require_permission(&self.state, user_id, guild_id, MANAGE_CHANNELS).await?;
+        self.throttle_layout(user_id)?;
+        let name = display_name(req.name, "section")?;
+        let data = layout::load(&self.state, guild_id).await?;
+        if !data.sections.iter().any(|s| s.id == req.section_id) {
+            return Err(ConnectError::not_found("section not found"));
+        }
+        self.state
+            .session
+            .execute_unpaged(
+                "UPDATE sections SET name = ? WHERE guild_id = ? AND id = ?",
+                (&name, id_to_db(guild_id), id_to_db(req.section_id)),
+            )
+            .await
+            .map_err(internal)?;
+        versions::bump(&self.state, guild_id, versions::LAYOUT, None).await?;
+        let layout = self.publish_layout(guild_id).await?;
+        let section = layout.sections.iter().find(|s| s.id == req.section_id).cloned();
+        Response::ok(UpdateSectionResponse {
+            section: section.into(),
+            layout: layout.into(),
+            ..Default::default()
+        })
+    }
+
+    async fn delete_section(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, DeleteSectionRequest>,
+    ) -> ServiceResult<DeleteSectionResponse> {
+        let user_id = authenticate(&self.state, &ctx).await?;
+        let guild_id = req.guild_id;
+        require_permission(&self.state, user_id, guild_id, MANAGE_CHANNELS).await?;
+        self.throttle_layout(user_id)?;
+        let data = layout::load(&self.state, guild_id).await?;
+        if !data.sections.iter().any(|s| s.id == req.section_id) {
+            return Err(ConnectError::not_found("section not found"));
+        }
+        let built = layout::build(guild_id, &data, 0);
+        let entry = |section_id: u64| {
+            built
+                .layout
+                .entries
+                .iter()
+                .find(|e| e.section_id == section_id)
+                .map(|e| e.channel_ids.clone())
+                .unwrap_or_default()
+        };
+        // Channels of the deleted section are appended after the top-level ones.
+        let start = entry(0).len() as i32;
+        let moved: Vec<(u64, Option<u64>, i32)> = entry(req.section_id)
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| (id, None, start + i as i32))
+            .collect();
+        layout::write_channel_positions(&self.state, guild_id, &moved).await?;
+        self.state
+            .session
+            .execute_unpaged(
+                "DELETE FROM sections WHERE guild_id = ? AND id = ?",
+                (id_to_db(guild_id), id_to_db(req.section_id)),
+            )
+            .await
+            .map_err(internal)?;
+        let remaining: Vec<(u64, i32)> = data
+            .sections
+            .iter()
+            .filter(|s| s.id != req.section_id)
+            .enumerate()
+            .map(|(i, s)| (s.id, i as i32))
+            .collect();
+        layout::write_section_positions(&self.state, guild_id, &remaining).await?;
+        versions::bump(&self.state, guild_id, versions::LAYOUT, None).await?;
+        let layout = self.publish_layout(guild_id).await?;
+        Response::ok(DeleteSectionResponse {
+            layout: layout.into(),
+            ..Default::default()
+        })
+    }
+
+    async fn update_layout(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UpdateLayoutRequest>,
+    ) -> ServiceResult<UpdateLayoutResponse> {
+        let user_id = authenticate(&self.state, &ctx).await?;
+        let guild_id = req.guild_id;
+        require_permission(&self.state, user_id, guild_id, MANAGE_CHANNELS).await?;
+        self.throttle_layout(user_id)?;
+        if versions::get(&self.state, guild_id, versions::LAYOUT).await? != req.expected_version {
+            return Err(ConnectError::aborted("layout changed: refetch and retry"));
+        }
+        let data = layout::load(&self.state, guild_id).await?;
+        let invalid = |m: &str| ConnectError::invalid_argument(format!("layout is not a permutation of the current one: {m}"));
+
+        let section_ids: Vec<u64> = req.section_ids.iter().copied().collect();
+        let known_sections: HashSet<u64> = data.sections.iter().map(|s| s.id).collect();
+        let distinct_sections: HashSet<u64> = section_ids.iter().copied().collect();
+        if section_ids.len() != data.sections.len()
+            || distinct_sections.len() != section_ids.len()
+            || distinct_sections != known_sections
+        {
+            return Err(invalid("section_ids"));
+        }
+
+        let known_channels: HashSet<u64> = data.channels.iter().map(|c| c.id).collect();
+        let mut seen_channels = HashSet::new();
+        let mut seen_entries = HashSet::new();
+        let mut channel_assignments = Vec::with_capacity(data.channels.len());
+        for entry in req.entries.iter() {
+            let container = entry.section_id;
+            if (container != 0 && !known_sections.contains(&container)) || !seen_entries.insert(container) {
+                return Err(invalid("entries"));
+            }
+            for (i, channel_id) in entry.channel_ids.iter().enumerate() {
+                if !known_channels.contains(channel_id) || !seen_channels.insert(*channel_id) {
+                    return Err(invalid("channel_ids"));
+                }
+                channel_assignments.push((*channel_id, (container != 0).then_some(container), i as i32));
+            }
+        }
+        if seen_channels.len() != known_channels.len() {
+            return Err(invalid("channel_ids"));
+        }
+
+        versions::bump(&self.state, guild_id, versions::LAYOUT, Some(req.expected_version)).await?;
+        let section_positions: Vec<(u64, i32)> =
+            section_ids.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect();
+        layout::write_section_positions(&self.state, guild_id, &section_positions).await?;
+        layout::write_channel_positions(&self.state, guild_id, &channel_assignments).await?;
+        let layout = self.publish_layout(guild_id).await?;
+        Response::ok(UpdateLayoutResponse {
+            layout: layout.into(),
             ..Default::default()
         })
     }
 }
 
 impl GuildSvc {
+    fn throttle_layout(&self, user_id: u64) -> Result<(), ConnectError> {
+        self.state
+            .limiter
+            .check(&format!("guild_edit:{user_id}"), GUILD_EDIT_MAX, GUILD_EDIT_WINDOW)
+    }
+
+    /// Reloads the layout, publishes it to the guild and returns it.
+    async fn publish_layout(&self, guild_id: u64) -> Result<GuildLayout, ConnectError> {
+        let layout = layout::load_built(&self.state, guild_id).await?.layout;
+        self.state.events.publish_to_guild(
+            guild_id,
+            EventPayload::LayoutUpdated(LayoutUpdated {
+                guild_id,
+                layout: layout.clone().into(),
+                ..Default::default()
+            }),
+        );
+        Ok(layout)
+    }
+
     /// Reserves an unused invite code for `guild_db_id`, retrying on collisions.
     async fn claim_invite_code(&self, guild_db_id: i64) -> Result<String, ConnectError> {
         for _ in 0..INVITE_CODE_ATTEMPTS {
@@ -350,19 +664,46 @@ impl GuildSvc {
     }
 
     /// Writes `channels` and `channels_by_id` in one logged batch.
-    async fn insert_channel(&self, guild_id: u64, name: &str) -> Result<Channel, ConnectError> {
+    async fn insert_channel(
+        &self,
+        guild_id: u64,
+        name: &str,
+        section_id: Option<u64>,
+        position: i32,
+        icon: &str,
+        color: &str,
+    ) -> Result<Channel, ConnectError> {
         let id = self.state.snowflake.next_id();
         let created_at = snowflake_datetime(id);
         let (db_guild_id, db_id) = (id_to_db(guild_id), id_to_db(id));
         let mut batch = Batch::new(BatchType::Logged);
-        batch.append_statement("INSERT INTO channels (guild_id, id, name, created_at) VALUES (?, ?, ?, ?)");
+        batch.append_statement(
+            "INSERT INTO channels (guild_id, id, name, created_at, section_id, position, icon, color, topic) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, '')",
+        );
         batch.append_statement("INSERT INTO channels_by_id (id, guild_id) VALUES (?, ?)");
         self.state
             .session
-            .batch(&batch, ((db_guild_id, db_id, name, created_at), (db_id, db_guild_id)))
+            .batch(
+                &batch,
+                (
+                    (db_guild_id, db_id, name, created_at, section_id.map(id_to_db), position, icon, color),
+                    (db_id, db_guild_id),
+                ),
+            )
             .await
             .map_err(internal)?;
-        Ok(channel_to_proto(guild_id, id, name.to_owned(), created_at))
+        Ok(Channel {
+            id,
+            guild_id,
+            name: name.to_owned(),
+            created_at: datetime_to_proto(created_at).into(),
+            section_id,
+            position,
+            icon: icon.to_owned(),
+            color: color.to_owned(),
+            ..Default::default()
+        })
     }
 
     /// Atomically reserves one guild-creation slot for `user_id` via the

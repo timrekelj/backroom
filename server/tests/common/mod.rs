@@ -80,3 +80,5 @@ impl TestApp {
             .await;
     }
 }
+
+pub mod fixtures;

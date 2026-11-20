@@ -10,7 +10,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::events::EventBus;
 use crate::ratelimit::RateLimiter;
-use crate::services::{AuthSvc, DmSvc, GatewaySvc, GuildSvc, MessageSvc};
+use crate::services::{AdminSvc, AuthSvc, DmSvc, GatewaySvc, GuildSvc, MediaSvc, MessageSvc, RoleSvc};
 use crate::snowflake::Snowflake;
 
 /// Shared application state handed to every service.
@@ -50,6 +50,9 @@ pub fn build_app(state: AppState) -> Router {
         .add_service(Arc::new(GuildSvc::new(state.clone())))
         .add_service(Arc::new(MessageSvc::new(state.clone())))
         .add_service(Arc::new(DmSvc::new(state.clone())))
+        .add_service(Arc::new(RoleSvc::new(state.clone())))
+        .add_service(Arc::new(MediaSvc::new(state.clone())))
+        .add_service(Arc::new(AdminSvc::new(state.clone())))
         .add_service(Arc::new(GatewaySvc::new(state)));
 
     Router::new()

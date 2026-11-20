@@ -216,6 +216,11 @@ fn to_payload(event: &EventPayload) -> Payload {
         EventPayload::MessageCreated(m) => Payload::MessageCreated(m.into()),
         EventPayload::ChannelCreated(c) => Payload::ChannelCreated(c.into()),
         EventPayload::GuildMemberJoined(j) => Payload::GuildMemberJoined(j.into()),
+        EventPayload::GuildUpdated(g) => Payload::GuildUpdated(g.into()),
+        EventPayload::ChannelUpdated(c) => Payload::ChannelUpdated(c.into()),
+        EventPayload::LayoutUpdated(l) => Payload::LayoutUpdated(l.into()),
+        EventPayload::RolesUpdated(r) => Payload::RolesUpdated(r.into()),
+        EventPayload::MemberUpdated(m) => Payload::MemberUpdated(m.into()),
     }
 }
 

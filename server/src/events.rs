@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::broadcast;
 
-use crate::proto::thehideout::v1::{Channel, DmChannel, GuildMemberJoined, Message};
+use crate::proto::thehideout::v1::{
+    Channel, DmChannel, Guild, GuildMemberJoined, LayoutUpdated, MemberUpdated, Message, RolesUpdated,
+};
 
 /// Messages buffered per guild channel before slow receivers start lagging.
 const GUILD_CHANNEL_CAPACITY: usize = 1024;
@@ -24,6 +26,11 @@ pub enum EventPayload {
     MessageCreated(Message),
     ChannelCreated(Channel),
     GuildMemberJoined(GuildMemberJoined),
+    GuildUpdated(Guild),
+    ChannelUpdated(Channel),
+    LayoutUpdated(LayoutUpdated),
+    RolesUpdated(RolesUpdated),
+    MemberUpdated(MemberUpdated),
 }
 
 /// Control notification delivered to a user's open streams.
