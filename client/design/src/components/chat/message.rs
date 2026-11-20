@@ -29,10 +29,8 @@ use crate::tokens::{motion, radius, type_};
 pub const GROUP_WINDOW_SECS: i64 = 5 * 60;
 /// Opacity of a message awaiting its ack.
 const PENDING_OPACITY: f32 = 0.55;
-const GUTTER: f32 = 32.0;
-/// Space above a group: 12 here plus 4 of row padding is ~16 between groups, while rows inside a
-/// group sit 2pt apart, so a run reads as one block.
-const GROUP_GAP: f32 = 12.0;
+// Space above a group (`Metrics::group_gap`, 12 / 7) plus the row padding is ~16 / ~10 between
+// groups, while rows inside a group sit 2 / 1pt apart, so a run reads as one block.
 /// The hover bar: a 24pt IconButton, 2pt padding and a 1pt border around it.
 const ACTION_BAR_H: f32 = 24.0 + 2.0 * 2.0 + 2.0;
 
@@ -251,7 +249,7 @@ impl MessageGroup {
         let mut g = col()
             .key(format!("group-{}", first.id))
             .w_full()
-            .mt(GROUP_GAP)
+            .mt(crate::metrics_of(k).group_gap())
             .transition(Transition::none());
         for (i, m) in self.messages.iter().enumerate() {
             g = g.child(self.row(k, m, i == 0));
@@ -261,15 +259,16 @@ impl MessageGroup {
 
     fn row(&self, k: &Kit, m: &ChatMessage, head: bool) -> El {
         let t = theme_of(k);
+        let mt = crate::metrics_of(k);
         let forced = self.show_actions.as_deref() == Some(m.id.as_str());
         let gutter = if head {
             Avatar::new(m.author_id.clone(), m.author_name.clone())
-                .size(32)
+                .size(mt.msg_avatar())
                 .image(self.avatar.as_ref().and_then(|f| f(&m.author_id)))
                 .build(k)
         } else {
             let stamp = text(m.time_label.clone())
-                .font(type_::CAPTION)
+                .font(type_::at(k, type_::CAPTION))
                 .color(t.text_muted.color());
             let stamp = if forced {
                 stamp
@@ -277,8 +276,8 @@ impl MessageGroup {
                 stamp.group_opacity(0.0, 1.0)
             };
             row()
-                .w(GUTTER)
-                .h(type_::BODY.line_px())
+                .w(mt.msg_avatar() as f32)
+                .h(mt.font(type_::BODY).line_px())
                 .center()
                 .child(stamp)
         };
@@ -290,7 +289,7 @@ impl MessageGroup {
                     .gap(8.0)
                     .center_y()
                     .child(
-                        text(m.author_name.clone()).font(type_::BODY_STRONG).color(
+                        text(m.author_name.clone()).font(type_::at(k, type_::BODY_STRONG)).color(
                             self.name_color
                                 .as_ref()
                                 .and_then(|f| f(&m.author_id))
@@ -299,7 +298,7 @@ impl MessageGroup {
                     )
                     .child(
                         text(m.time_label.clone())
-                            .font(type_::CAPTION)
+                            .font(type_::at(k, type_::CAPTION))
                             .color(t.text_muted.color()),
                     ),
             );
@@ -326,7 +325,7 @@ impl MessageGroup {
         }
         if m.delivery == DeliveryState::Failed {
             let mut retry = text("Retry")
-                .font(type_::CONTROL_STRONG)
+                .font(type_::at(k, type_::CONTROL_STRONG))
                 .color(t.danger.color())
                 .role("button")
                 .label("Retry sending")
@@ -342,13 +341,14 @@ impl MessageGroup {
                     .center_y()
                     .child(
                         text("Failed to send \u{00b7}")
-                            .font(type_::CONTROL)
+                            .font(type_::at(k, type_::CONTROL))
                             .color(t.danger.color()),
                     )
                     .child(retry),
             );
         }
 
+        let pad = mt.msg_pad(head);
         let enter = Transition::offset(0.0, 6.0)
             .combined(Transition::opacity())
             .springs(SpringPair::new(motion::CONTROL, motion::CONTROL));
@@ -356,8 +356,8 @@ impl MessageGroup {
             .key(format!("msg-{}", m.id))
             .w_full()
             .px(16.0)
-            .pt(if head { 3.0 } else { 1.0 })
-            .pb(1.0)
+            .pt(pad.0)
+            .pb(pad.1)
             .gap(12.0)
             .items_start()
             .hover_group()
@@ -392,6 +392,7 @@ impl MessageGroup {
     /// The chips under a body, then "+".
     fn chips(&self, k: &Kit, m: &ChatMessage) -> El {
         let t = theme_of(k);
+        let mt = crate::metrics_of(k);
         let none = EmojiSet::none();
         let set = self.emojis.as_ref().unwrap_or(&none);
         // A chip pops in when its emoji is first reacted with; a count change rolls.
@@ -401,16 +402,16 @@ impl MessageGroup {
         let mut line = row().key("reactions").w_full().flex_wrap().gap(4.0).pt(2.0).items_center();
         for c in &m.reactions {
             let art = match &c.glyph {
-                ReactionGlyph::Unicode(g) => text(g.clone()).font(rune::TextStyle::new(15.0, 400.0).lh(20.0)).a11y_hidden(),
+                ReactionGlyph::Unicode(g) => text(g.clone()).font(mt.font(rune::TextStyle::new(15.0, 400.0).lh(20.0))).a11y_hidden(),
                 ReactionGlyph::Custom { id, name } => match set.get(id) {
-                    Some(img) => picture(k, set, &img, CHIP_EMOJI, false),
-                    None => text(format!(":{name}:")).font(type_::CAPTION).color(t.text_muted.color()).a11y_hidden(),
+                    Some(img) => picture(k, set, &img, mt.em(CHIP_EMOJI), false),
+                    None => text(format!(":{name}:")).font(type_::at(k, type_::CAPTION)).color(t.text_muted.color()).a11y_hidden(),
                 },
             };
             let ink = if c.me { t.accent_text } else { t.text_muted };
             let count = RollingText::new(format!("rxc-{}-{}", m.id, c.key), c.count.to_string())
                 .value(f64::from(c.count))
-                .font(type_::CONTROL_STRONG)
+                .font(type_::at(k, type_::CONTROL_STRONG))
                 .color(ink.color())
                 .build(k);
             let mut chip = row()
@@ -418,7 +419,7 @@ impl MessageGroup {
                 .role("button")
                 .label(format!("{}, {} {}{}", c.tip, c.count, if c.count == 1 { "reaction" } else { "reactions" }, if c.me { ", you reacted" } else { "" }))
                 .focus_selected(c.me)
-                .h(24.0)
+                .min_h(mt.em(24.0))
                 .px(6.0)
                 .gap(5.0)
                 .center_y()
@@ -445,14 +446,14 @@ impl MessageGroup {
             .key(format!("react-add-{}", m.id))
             .role("button")
             .label(if full { "Add reaction (limit reached)" } else { "Add reaction" })
-            .size(28.0, 24.0)
+            .size(28.0, mt.em(24.0))
             .center()
             .radius(radius::MD)
             .fill(t.hover.color())
             .focusable(!full)
             .focus_ring(2.0, 1.0, k.c.border_focus)
             .help(if full { format!("A message can have {MAX_REACTIONS} different reactions") } else { "Add reaction".to_owned() })
-            .child(rune::icon(&PLUS, crate::tokens::icon::XS).color(t.text_muted.color()).a11y_hidden());
+            .child(rune::icon(&PLUS, mt.icon(crate::tokens::icon::XS)).color(t.text_muted.color()).a11y_hidden());
         add = if full {
             add.layer_opacity(0.5).disabled(true)
         } else {

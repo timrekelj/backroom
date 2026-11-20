@@ -128,7 +128,7 @@ impl Checkbox {
                 root = root.child(
                     text(l)
                         .key("label")
-                        .font(type_::CONTROL)
+                        .font(type_::at(k, type_::CONTROL))
                         .color(t.text.color())
                         .a11y_hidden(),
                 );

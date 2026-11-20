@@ -234,11 +234,13 @@ fn a_spec_round_trips_through_json_and_missing_fields_default() {
         appearance: Appearance::Light,
         tint: true,
         contrast: Contrast::High,
+        density: crate::Density::Compact,
+        text_size: crate::TextSize::P125,
     };
     let json = serde_json::to_string(&spec).unwrap();
     assert_eq!(
         json,
-        r#"{"accent":"coral","background":"paper","appearance":"light","tint":true,"contrast":"high"}"#
+        r#"{"accent":"coral","background":"paper","appearance":"light","tint":true,"contrast":"high","density":"compact","text_size":"125"}"#
     );
     assert_eq!(serde_json::from_str::<ThemeSpec>(&json).unwrap(), spec);
     assert_eq!(serde_json::from_str::<ThemeSpec>("{}").unwrap(), ThemeSpec::default());
@@ -371,5 +373,149 @@ fn accent_wash_is_faint_and_keeps_text_readable() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn a_spec_saved_before_density_and_text_size_loads_with_the_defaults() {
+    let old = r#"{"accent":"moss","background":"cool","appearance":"dark","tint":true,"contrast":"high"}"#;
+    let spec: ThemeSpec = serde_json::from_str(old).unwrap();
+    assert_eq!((spec.accent, spec.tint), (AccentPreset::Moss, true));
+    assert_eq!(spec.density, crate::Density::Comfortable);
+    assert_eq!(spec.text_size, crate::TextSize::P100);
+    for t in crate::TextSize::ALL {
+        let json = serde_json::to_string(&t).unwrap();
+        assert_eq!(serde_json::from_str::<crate::TextSize>(&json).unwrap(), t);
+    }
+}
+
+mod metrics_tests {
+    use rune::TextStyle;
+
+    use crate::tokens::type_;
+    use crate::{Density, Metrics, TextSize, ThemeSpec};
+
+    #[test]
+    fn the_default_is_the_shipped_layout() {
+        let m = Metrics::default();
+        assert_eq!((m.row_h(), m.section_h(), m.header_h(), m.footer_h()), (32.0, 28.0, 48.0, 64.0));
+        assert_eq!((m.group_gap(), m.msg_pad(true), m.msg_pad(false)), (12.0, (3.0, 1.0), (1.0, 1.0)));
+        assert_eq!((m.msg_avatar(), m.rail_tile(), m.control_h(), m.field_h()), (32, 40.0, 32.0, 32.0));
+        assert_eq!(m.font(type_::BODY), type_::BODY);
+        assert_eq!((m.icon(16.0), m.icon(14.0), m.em(20.0)), (16.0, 14.0, 20.0));
+    }
+
+    #[test]
+    fn compact_at_100_is_tighter_in_every_dimension() {
+        let (c, m) = (Metrics::new(Density::Compact, TextSize::P100), Metrics::default());
+        assert_eq!((c.row_h(), c.section_h(), c.header_h(), c.footer_h()), (28.0, 24.0, 40.0, 52.0));
+        assert_eq!(c.row_pitch(), 30.0);
+        assert!(c.group_gap() < m.group_gap() && c.msg_avatar() < m.msg_avatar() && c.rail_tile() < m.rail_tile());
+        let (cp, mp) = (c.msg_pad(false), m.msg_pad(false));
+        assert!(cp.0 + cp.1 < mp.0 + mp.1, "rows in a group sit closer");
+        assert!(c.table_row(52.0) < m.table_row(52.0) && c.pad(16.0) < m.pad(16.0));
+    }
+
+    #[test]
+    fn text_scales_font_size_line_height_and_icons() {
+        let big = Metrics::new(Density::Comfortable, TextSize::P125);
+        let body = big.font(type_::BODY);
+        assert_eq!(body.size, 17.5);
+        assert_eq!(body.line_height, 26.5);
+        assert_eq!((body.weight, body.tracking), (type_::BODY.weight, type_::BODY.tracking));
+        assert_eq!((big.icon(16.0), big.icon(14.0), big.icon(20.0), big.em(20.0)), (18.0, 16.0, 23.0, 25.0));
+        let small = Metrics::new(Density::Comfortable, TextSize::P90);
+        assert_eq!(small.icon(16.0), 15.0);
+        assert!((small.font(type_::CODE).size - 11.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn every_combination_has_consistent_ordered_tokens() {
+        let all: Vec<Metrics> = Metrics::all().collect();
+        assert_eq!(all.len(), Metrics::COUNT);
+        let mut idx: Vec<usize> = all.iter().map(|m| m.index()).collect();
+        idx.sort_unstable();
+        assert!(idx.iter().copied().eq(0..Metrics::COUNT), "index is a bijection");
+        for m in all {
+            // Every row holds its text, the header its title, the footer a card plus its margin.
+            let line = |s: TextStyle| m.font(s).line_height;
+            assert!(m.row_h() >= line(type_::CONTROL), "{m:?} row");
+            assert!(m.section_h() >= line(type_::LABEL), "{m:?} section");
+            assert!(m.control_h() >= line(type_::CONTROL), "{m:?} control");
+            assert!(m.header_h() >= line(type_::TITLE), "{m:?} header");
+            assert!(m.field_h() >= line(type_::BODY), "{m:?} field");
+            assert!(m.control_h() <= m.field_h(), "{m:?}: the composer's buttons fit its field line");
+            assert_eq!(m.footer_h(), m.field_h() + 8.0 + 2.0 * m.zone_pad(), "{m:?} footer");
+            assert!(m.header_h() <= m.footer_h(), "{m:?}");
+            let (comfortable, compact) = (Metrics::new(Density::Comfortable, m.text), Metrics::new(Density::Compact, m.text));
+            assert!(compact.row_h() <= comfortable.row_h() && compact.header_h() <= comfortable.header_h());
+            assert!(compact.footer_h() <= comfortable.footer_h() && compact.section_h() <= comfortable.section_h());
+            // The kit's own type scale is scaled too.
+            assert_eq!(type_::kit(m).body, m.font(type_::BODY), "{m:?} kit");
+            assert_eq!(type_::kit(m).mono, m.font(type_::CODE), "{m:?} kit mono");
+        }
+    }
+
+    #[test]
+    fn text_grows_monotonically_with_the_text_size() {
+        for d in Density::ALL {
+            let sizes: Vec<f32> = TextSize::ALL.iter().map(|&t| Metrics::new(d, t).font(type_::BODY).size).collect();
+            assert!(sizes.windows(2).all(|w| w[0] < w[1]), "{sizes:?}");
+            let rows: Vec<f32> = TextSize::ALL.iter().map(|&t| Metrics::new(d, t).row_h()).collect();
+            assert!(rows.windows(2).all(|w| w[0] <= w[1]), "{rows:?}");
+        }
+    }
+
+    #[test]
+    fn a_kit_knows_its_metrics_and_each_metrics_has_its_own_kit() {
+        let base = ThemeSpec::default();
+        let mut seen = std::collections::HashSet::new();
+        for m in Metrics::all() {
+            let spec = ThemeSpec { density: m.density, text_size: m.text, ..base };
+            let k = crate::kit_for(&spec, true);
+            assert!(std::ptr::eq(k, crate::kit_for(&spec, true)), "cached");
+            assert_eq!(crate::metrics_of(k), m);
+            assert_eq!(k.ty.body, m.font(type_::BODY));
+            assert!(std::ptr::eq(crate::theme_of(k), crate::theme_for(&base, true)), "one theme for every metrics");
+            assert!(seen.insert(k as *const _ as usize), "distinct kits");
+        }
+        assert_eq!(ThemeSpec::KITS, ThemeSpec::LOOKS * Metrics::COUNT);
+        assert_eq!(crate::metrics_of(crate::kit(false)), Metrics::default());
+    }
+
+    #[test]
+    fn a_cloned_kit_keeps_its_theme_and_metrics() {
+        let spec = ThemeSpec {
+            accent: crate::AccentPreset::Ocean,
+            background: crate::BackgroundPreset::Cool,
+            tint: true,
+            density: Density::Compact,
+            text_size: TextSize::P125,
+            ..ThemeSpec::default()
+        };
+        for dark in [true, false] {
+            let original = crate::kit_for(&spec, dark);
+            let clone = original.clone();
+            assert!(!std::ptr::eq(original, &clone), "a different address");
+            assert!(std::ptr::eq(crate::theme_of(&clone), crate::theme_for(&spec, dark)), "dark={dark}");
+            assert_eq!(crate::theme_of(&clone).spec.accent, crate::AccentPreset::Ocean);
+            assert_eq!(crate::metrics_of(&clone), spec.metrics());
+            assert_ne!(crate::theme_of(&clone).accent, crate::theme(dark).accent, "not the default accent");
+            // A clone of a clone, moved into a closure and back, too.
+            let again = move || crate::metrics_of(&clone.clone());
+            assert_eq!(again(), spec.metrics());
+        }
+        // A kit nobody built through `kit_for` is still the default look.
+        let plain = crate::kit(true).clone();
+        assert_eq!(crate::metrics_of(&plain), Metrics::default());
+        assert!(std::ptr::eq(crate::theme_of(&plain), crate::theme(true)));
+    }
+
+    #[test]
+    fn colour_tokens_do_not_depend_on_the_metrics() {
+        let a = ThemeSpec::default();
+        let b = ThemeSpec { density: Density::Compact, text_size: TextSize::P125, ..a };
+        assert_eq!(a.look_index(true), b.look_index(true));
+        assert!(std::ptr::eq(crate::theme_for(&a, true), crate::theme_for(&b, true)));
     }
 }

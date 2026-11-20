@@ -4,7 +4,8 @@
 
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
 use thehideout_api::GatewayUpdate;
-use thehideout_design::components::{ConnectionStatus, FOOTER_H, HEADER_H};
+use thehideout_design::components::ConnectionStatus;
+use thehideout_design::{Density, Metrics, TextSize};
 
 use crate::app::{fake_now, on_key, poll, view, App};
 use crate::backend::Command;
@@ -962,13 +963,13 @@ fn headers_and_footers_line_up_across_sidebar_and_panel() {
     let side_header = rect_of(&rt, "guild-header");
     assert_eq!(side_header[1], banner[1], "header tops");
     assert_eq!(side_header[3], banner[3], "header heights");
-    assert_eq!(banner[3], HEADER_H);
+    assert_eq!(banner[3], Metrics::default().header_h());
     let members = rect_of(&rt, "members-inner");
     assert_eq!(members[1], banner[1], "the member panel starts with the header");
     let (strip, zone) = (rect_of(&rt, "user-strip"), rect_of(&rt, "composer-area"));
     assert_eq!(strip[1], zone[1], "footer tops");
     assert_eq!(strip[3], zone[3]);
-    assert_eq!(strip[3], FOOTER_H);
+    assert_eq!(strip[3], Metrics::default().footer_h());
 }
 
 #[test]
@@ -1090,7 +1091,7 @@ mod appearance {
     use rune::theme::srgb_encode;
     use std::sync::{Arc, Mutex};
     use thehideout_design::{
-        theme_for, AccentPreset, Appearance, BackgroundPreset, Contrast, ThemeSpec,
+        theme_for, AccentPreset, Appearance, BackgroundPreset, Contrast, Density, TextSize, ThemeSpec,
     };
 
     fn prefs_file(name: &str) -> std::path::PathBuf {
@@ -1134,6 +1135,9 @@ mod appearance {
     }
 
     fn open_settings(rt: &mut Runtime<App>) {
+        // The page is taller than the default window: every control stays on screen to be clicked.
+        rt.set_viewport((1280.0, 1400.0), 1.0);
+        settle(rt, 2);
         click(rt, "user-menu-button");
         settle(rt, 8);
         click(rt, "user-menu-item1");
@@ -1241,6 +1245,42 @@ mod appearance {
     }
 
     #[test]
+    fn density_and_text_size_are_controls_that_apply_at_once_and_are_saved() {
+        let path = prefs_file("sizes");
+        let mut rt = signed_in_with(&path);
+        open_settings(&mut rt);
+        click(&mut rt, "set-density/segment1");
+        click(&mut rt, "set-text-size/segment3");
+        settle(&mut rt, 4);
+        let look = rt.state.state.ui.look;
+        assert_eq!((look.spec.density, look.spec.text_size), (Density::Compact, TextSize::P125));
+        drop(rt);
+        let loaded = saved(&path).expect("written");
+        assert_eq!(loaded, look);
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["appearance"]["density"], "compact");
+        assert_eq!(raw["appearance"]["text_size"], "125");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_look_saved_before_density_and_text_size_still_loads() {
+        let path = prefs_file("legacy");
+        let old = serde_json::json!({
+            "accent": "ocean", "background": "cool", "appearance": "light",
+            "tint": true, "contrast": "high", "reduce_motion": "on"
+        });
+        Prefs::at(&path).set("appearance", &old).unwrap();
+        let look = saved(&path).expect("an old look parses");
+        assert_eq!(look.spec.accent, AccentPreset::Ocean);
+        assert_eq!(look.reduce_motion, ReduceMotion::On);
+        assert_eq!((look.spec.density, look.spec.text_size), (Density::Comfortable, TextSize::P100));
+        let app = App::start(Box::new(FakeBackend::new()), AppState::new(fake_now, Tz::Fixed(0)), Arc::new(Mutex::new(Prefs::at(&path))));
+        assert_eq!(app.state.ui.look, look, "the app starts on it");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
     fn startup_draws_the_saved_look_on_the_first_frame() {
         let path = prefs_file("startup");
         let saved_look = Look {
@@ -1250,6 +1290,8 @@ mod appearance {
                 appearance: Appearance::Dark,
                 tint: false,
                 contrast: Contrast::High,
+                density: Density::Compact,
+                text_size: TextSize::P110,
             },
             reduce_motion: ReduceMotion::System,
         };
@@ -1287,5 +1329,94 @@ mod appearance {
         );
         assert_eq!(app.state.ui.look, Look::default());
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+}
+
+// ---- density and text size -------------------------------------------------------------------
+
+mod sizing {
+    use super::*;
+
+    fn set(rt: &mut Runtime<App>, m: Metrics) {
+        rt.update(move |a, _| {
+            a.state.ui.look.spec.density = m.density;
+            a.state.ui.look.spec.text_size = m.text;
+        });
+        settle(rt, 80);
+    }
+
+    fn banner(rt: &Runtime<App>) -> [f32; 4] {
+        rt.elements().into_iter().find(|e| e.role == "banner").expect("the channel header").rect
+    }
+
+    #[test]
+    fn headers_and_footers_line_up_for_every_density_and_text_size() {
+        let (mut rt, _) = signed_in(0.0);
+        rt.update(|a, _| a.state.ui.members_open = true);
+        for m in Metrics::all() {
+            set(&mut rt, m);
+            let b = banner(&rt);
+            let side = rect_of(&rt, "guild-header");
+            assert_eq!((side[1], side[3]), (b[1], b[3]), "{m:?}: sidebar and channel headers");
+            assert_eq!(b[3], m.header_h(), "{m:?}");
+            assert_eq!(rect_of(&rt, "members-inner")[1], b[1], "{m:?}: member panel");
+            let (strip, zone) = (rect_of(&rt, "user-strip"), rect_of(&rt, "composer-area"));
+            assert_eq!((strip[1], strip[3]), (zone[1], zone[3]), "{m:?}: footers");
+            assert_eq!(strip[3], m.footer_h(), "{m:?}");
+            let card = rect_of(&rt, "composer");
+            assert_eq!(card[1] - zone[1], m.zone_pad(), "{m:?}: top margin");
+            assert_eq!(zone[1] + zone[3] - (card[1] + card[3]), m.zone_pad(), "{m:?}: bottom margin");
+            let area = rect_of(&rt, "transcript-area");
+            assert_eq!(area[1], b[1] + b[3], "{m:?}: the transcript starts under the header");
+            assert_eq!(area[1] + area[3], zone[1], "{m:?}: and ends where the zone begins");
+        }
+    }
+
+    #[test]
+    fn switching_density_changes_the_row_height_and_text_size_the_text() {
+        let (mut rt, _) = signed_in(0.0);
+        settle(&mut rt, 20);
+        let row = "channels-1-row-general";
+        assert_eq!(rect_of(&rt, row)[3], 32.0);
+        let first = rect_of(&rt, row)[1];
+        let second = rect_of(&rt, "channels-1-row-dev")[1];
+        assert_eq!(second - first, 34.0, "rows are 32 apart by 2");
+        set(&mut rt, Metrics::new(Density::Compact, TextSize::P100));
+        assert_eq!(rect_of(&rt, row)[3], 28.0, "compact rows");
+        assert_eq!(rect_of(&rt, "channels-1-row-dev")[1] - rect_of(&rt, row)[1], 30.0);
+        let side = rect_of(&rt, "guild-header");
+        assert_eq!(side[3], 40.0);
+        set(&mut rt, Metrics::new(Density::Comfortable, TextSize::P100));
+        assert_eq!(rect_of(&rt, row)[3], 32.0, "and back");
+        let title = |rt: &Runtime<App>| rt.elements().into_iter().find(|e| e.text.as_deref() == Some("general") && e.rect[0] > 280.0).expect("the title").rect;
+        let small = title(&rt);
+        set(&mut rt, Metrics::new(Density::Comfortable, TextSize::P125));
+        let big = title(&rt);
+        assert!(big[2] > small[2] * 1.2 && big[3] > small[3] * 1.2, "{small:?} -> {big:?}");
+    }
+
+    #[test]
+    fn the_header_title_stays_inside_its_header_at_every_size_and_window() {
+        for (w, h) in [(1280.0, 800.0), (1000.0, 700.0)] {
+            let (mut rt, _) = signed_in(0.0);
+            rt.set_viewport((w, h), 1.0);
+            rt.update(|a, _| a.state.ui.members_open = true);
+            for m in Metrics::all() {
+                set(&mut rt, m);
+                let b = banner(&rt);
+                let title = rt
+                    .elements()
+                    .into_iter()
+                    .find(|e| e.text.as_deref() == Some("general") && e.rect[0] > 280.0)
+                    .unwrap_or_else(|| panic!("{m:?}: no title"));
+                let t = title.rect;
+                assert!(t[1] >= b[1] - 0.01 && t[1] + t[3] <= b[1] + b[3] + 0.01, "{m:?} at {w}x{h}: title {t:?} vertically outside {b:?}");
+                assert!(t[0] >= b[0] - 0.01 && t[0] + t[2] <= b[0] + b[2] + 0.01, "{m:?} at {w}x{h}: title {t:?} horizontally outside {b:?}");
+                // Rows keep their text, too.
+                let row = rect_of(&rt, "channels-1-row-general");
+                let label = rt.elements().into_iter().find(|e| e.text.as_deref() == Some("general") && e.rect[0] < 280.0 && e.rect[1] >= row[1]).unwrap();
+                assert!(label.rect[3] <= row[3] + 0.01, "{m:?}: the row's label {:?} in {row:?}", label.rect);
+            }
+        }
     }
 }

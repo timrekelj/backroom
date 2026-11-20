@@ -3,7 +3,7 @@
 
 use thehideout_api::ApiError;
 use thehideout_design::components::ToastKind;
-use thehideout_design::{AccentPreset, Appearance, BackgroundPreset, ThemeSpec};
+use thehideout_design::{AccentPreset, Appearance, BackgroundPreset, Density, TextSize, ThemeSpec};
 
 use crate::admin::{AdminPage, Confirm};
 use crate::app::{App, fake_now};
@@ -123,6 +123,13 @@ fn settings_appearance(a: &mut App, dark: bool) {
     a.pump();
 }
 
+/// The busy main screen with the member panel, at a density and text size.
+fn main_sized(a: &mut App, dark: bool, density: Density, text_size: TextSize) {
+    main_members(a, dark);
+    a.state.ui.look.spec.density = density;
+    a.state.ui.look.spec.text_size = text_size;
+}
+
 fn main_members(a: &mut App, dark: bool) {
     *a = main_screen(dark).0;
     a.state.ui.members_open = true;
@@ -188,6 +195,13 @@ fn sections(a: &mut App, dark: bool) {
 }
 
 /// The channel settings dialog for #dev with the icon picker open on its Icons tab.
+/// The look a scene is switched to after it is set up: Ocean on Cool, tinted. Pickers hold a
+/// clone of the kit, so these scenes prove a clone still draws the chosen look.
+fn ocean_cool(a: &mut App) {
+    let spec = &mut a.state.ui.look.spec;
+    (spec.accent, spec.background, spec.tint) = (AccentPreset::Ocean, BackgroundPreset::Cool, true);
+}
+
 fn channel_settings(a: &mut App, dark: bool, search: &str) {
     *a = main_screen(dark).0;
     a.act(|s| {
@@ -629,6 +643,10 @@ pub const SCENES: &[Scene] = &[
     ("settings-appearance-light", |a| {
         settings_appearance(a, false)
     }),
+    ("main-compact", |a| main_sized(a, true, Density::Compact, TextSize::P100)),
+    ("main-compact-light", |a| main_sized(a, false, Density::Compact, TextSize::P100)),
+    ("main-text-125", |a| main_sized(a, true, Density::Comfortable, TextSize::P125)),
+    ("main-text-125-light", |a| main_sized(a, false, Density::Comfortable, TextSize::P125)),
     ("main-ocean-cool", |a| {
         main_look(a, true, AccentPreset::Ocean, BackgroundPreset::Cool, true)
     }),
@@ -647,6 +665,10 @@ pub const SCENES: &[Scene] = &[
     ("sections", |a| sections(a, true)),
     ("sections-light", |a| sections(a, false)),
     ("channel-settings", |a| channel_settings(a, true, "")),
+    ("channel-settings-ocean", |a| {
+        channel_settings(a, true, "");
+        ocean_cool(a);
+    }),
     ("channel-settings-light", |a| channel_settings(a, false, "")),
     ("icon-picker-search", |a| channel_settings(a, true, "game")),
     ("icon-picker-search-light", |a| {
@@ -683,6 +705,10 @@ pub const SCENES: &[Scene] = &[
     ("profile-dialog", |a| profile_dialog(a, true)),
     ("profile-dialog-light", |a| profile_dialog(a, false)),
     ("emoji-picker", |a| emoji_picker(a, true)),
+    ("emoji-picker-ocean", |a| {
+        emoji_picker(a, true);
+        ocean_cool(a);
+    }),
     ("emoji-picker-light", |a| emoji_picker(a, false)),
     ("emoji-autocomplete", |a| emoji_autocomplete(a, true)),
     ("emoji-autocomplete-light", |a| emoji_autocomplete(a, false)),

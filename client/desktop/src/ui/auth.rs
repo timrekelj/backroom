@@ -22,10 +22,10 @@ fn server_edit(a: &mut App) -> &mut rune::TextEdit {
 
 fn field(k: &Kit, key: &str, label: &str, input: TextInput, error: Option<&str>) -> El {
     let t = theme_of(k);
-    let mut c = col().key(key.to_owned()).w_full().gap(6.0).child(text(label.to_owned()).font(type_::LABEL).color(t.text_muted.color()));
+    let mut c = col().key(key.to_owned()).w_full().gap(6.0).child(text(label.to_owned()).font(type_::at(k, type_::LABEL)).color(t.text_muted.color()));
     c = c.child(input.width(None).large().invalid(error.is_some()).label(label.to_owned()).build(k));
     match error {
-        Some(e) => c.child(text(e.to_owned()).key("error").font(type_::CONTROL).color(t.danger.color()).wrap().w_full()),
+        Some(e) => c.child(text(e.to_owned()).key("error").font(type_::at(k, type_::CONTROL)).color(t.danger.color()).wrap().w_full()),
         None => c,
     }
 }
@@ -66,14 +66,14 @@ pub fn build(a: &App, k: &Kit) -> El {
         .child(
             col()
                 .gap(4.0)
-                .child(text("thehideout").font(type_::HEADING).color(t.accent_text.color()))
-                .child(text(if sign_up { "Make an account to join your friends." } else { "Welcome back. Your friends are waiting." }).font(type_::CONTROL).color(t.text_muted.color()).wrap().w_full()),
+                .child(text("thehideout").font(type_::at(k, type_::HEADING)).color(t.accent_text.color()))
+                .child(text(if sign_up { "Make an account to join your friends." } else { "Welcome back. Your friends are waiting." }).font(type_::at(k, type_::CONTROL)).color(t.text_muted.color()).wrap().w_full()),
         )
         .child(col().key("auth-mode").w_full().child(mode))
         .child(field(k, "auth-username", "Username", username, error_for(AuthField::Username)))
         .child(field(k, "auth-password", "Password", password, error_for(AuthField::Password)));
     if let Some(msg) = error_for(AuthField::Form) {
-        card = card.child(row().key("auth-form-error").w_full().child(text(msg.to_owned()).font(type_::CONTROL).color(t.danger.color()).wrap().w_full()));
+        card = card.child(row().key("auth-form-error").w_full().child(text(msg.to_owned()).font(type_::at(k, type_::CONTROL)).color(t.danger.color()).wrap().w_full()));
     }
     card = card.child(button).child(server_line(a, k));
 
@@ -84,9 +84,9 @@ pub fn build(a: &App, k: &Kit) -> El {
 fn server_line(a: &App, k: &Kit) -> El {
     let t = theme_of(k);
     let auth = &a.state.auth;
-    let faint = |s: String| text(s).font(type_::CAPTION).color(t.text_muted.color());
+    let faint = |s: String| text(s).font(type_::at(k, type_::CAPTION)).color(t.text_muted.color());
     let toggle = text(if auth.server_open { "Done" } else { "Change" })
-        .font(type_::CAPTION)
+        .font(type_::at(k, type_::CAPTION))
         .color(t.accent_text.color())
         .key("auth-server-toggle")
         .role("button")

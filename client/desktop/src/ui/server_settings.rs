@@ -96,7 +96,7 @@ pub(super) fn errors(k: &Kit, e: &Option<String>, key: &str) -> Option<El> {
     e.as_ref().map(|e| {
         text(e.clone())
             .key(key.to_owned())
-            .font(type_::CONTROL)
+            .font(type_::at(k, type_::CONTROL))
             .color(t.danger.color())
             .wrap()
             .w_full()
@@ -277,7 +277,7 @@ fn overview(a: &App, k: &Kit, ss: &ServerSettings) -> El {
                 .child(actions)
                 .child(
                     text("PNG, JPEG, WebP or GIF, up to 8 MiB. Drop a file here or choose one.")
-                        .font(type_::CAPTION)
+                        .font(type_::at(k, type_::CAPTION))
                         .color(t.text_muted.color())
                         .wrap(),
                 )
@@ -380,7 +380,7 @@ fn roles(a: &App, k: &Kit, ss: &ServerSettings) -> El {
     if list.is_empty() {
         rows = rows.child(
             text("No roles yet. Create one to give members a colour and permissions.")
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(t.text_muted.color())
                 .wrap()
                 .w_full(),
@@ -402,10 +402,10 @@ fn roles(a: &App, k: &Kit, ss: &ServerSettings) -> El {
                 .w_full()
                 .gap(8.0)
                 .center_y()
-                .child(text("Roles".to_owned()).font(type_::CONTROL_STRONG).color(t.text.color()).grow(1.0))
+                .child(text("Roles".to_owned()).font(type_::at(k, type_::CONTROL_STRONG)).color(t.text.color()).grow(1.0))
                 .child(new),
         )
-        .child(text("The higher a role, the more it outranks. A member's name takes the colour of their highest role that has one.").font(type_::CAPTION).color(t.text_muted.color()).wrap().w_full())
+        .child(text("The higher a role, the more it outranks. A member's name takes the colour of their highest role that has one.").font(type_::at(k, type_::CAPTION)).color(t.text_muted.color()).wrap().w_full())
         .children(errors(k, &ss.role_error, "role-error"))
         .child(rows);
 
@@ -425,7 +425,7 @@ fn roles(a: &App, k: &Kit, ss: &ServerSettings) -> El {
             )
             .child(
                 text("Pick a role to edit it, or create a new one.")
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.text_muted.color()),
             ),
     };
@@ -495,7 +495,7 @@ fn role_row(
     };
     line = line.child(
         text(members.to_string())
-            .font(type_::CAPTION)
+            .font(type_::at(k, type_::CAPTION))
             .color(t.text_muted.color())
             .a11y_hidden(),
     );
@@ -649,12 +649,12 @@ fn editor(a: &App, k: &Kit, ss: &ServerSettings, f: &RoleForm) -> El {
             .gap(2.0)
             .child(
                 text(p.name.to_owned())
-                    .font(type_::CONTROL_STRONG)
+                    .font(type_::at(k, type_::CONTROL_STRONG))
                     .color(t.text.color()),
             )
             .child(
                 text(help)
-                    .font(type_::CAPTION)
+                    .font(type_::at(k, type_::CAPTION))
                     .color(t.text_muted.color())
                     .wrap()
                     .w_full(),
@@ -672,7 +672,7 @@ fn editor(a: &App, k: &Kit, ss: &ServerSettings, f: &RoleForm) -> El {
                     )
                     .child(
                         text("This role can do everything on this server.")
-                            .font(type_::CAPTION)
+                            .font(type_::at(k, type_::CAPTION))
                             .color(t.warning.color())
                             .wrap(),
                     ),
@@ -749,7 +749,7 @@ fn editor(a: &App, k: &Kit, ss: &ServerSettings, f: &RoleForm) -> El {
                 )
                 .child(
                     text("This role is at or above your highest role, so you can only look at it.")
-                        .font(type_::CONTROL)
+                        .font(type_::at(k, type_::CONTROL))
                         .color(t.text_muted.color())
                         .wrap()
                         .grow(1.0)
@@ -765,7 +765,7 @@ fn editor(a: &App, k: &Kit, ss: &ServerSettings, f: &RoleForm) -> El {
                 .gap(6.0)
                 .child(
                     text("Colour")
-                        .font(type_::LABEL)
+                        .font(type_::at(k, type_::LABEL))
                         .color(t.text_muted.color()),
                 )
                 .child(colours),
@@ -776,7 +776,7 @@ fn editor(a: &App, k: &Kit, ss: &ServerSettings, f: &RoleForm) -> El {
                 .gap(4.0)
                 .child(
                     text("Permissions")
-                        .font(type_::LABEL)
+                        .font(type_::at(k, type_::LABEL))
                         .color(t.text_muted.color()),
                 )
                 .child(perms),
@@ -809,13 +809,13 @@ fn members(a: &App, k: &Kit, layer: &mut Vec<El>, ss: &ServerSettings) -> El {
             } else {
                 "No one matches that."
             })
-            .font(type_::CONTROL)
+            .font(type_::at(k, type_::CONTROL))
             .color(t.text_muted.color())
             .py(16.0),
         );
     }
     page_col(k, "Members")
-        .child(col().w_full().gap(12.0).py(8.0).child(text("Give people roles for a name colour and permissions. You can only hand out roles below your own highest role.").font(type_::CAPTION).color(t.text_muted.color()).wrap().w_full()).child(search.build(k)))
+        .child(col().w_full().gap(12.0).py(8.0).child(text("Give people roles for a name colour and permissions. You can only hand out roles below your own highest role.").font(type_::at(k, type_::CAPTION)).color(t.text_muted.color()).wrap().w_full()).child(search.build(k)))
         .children(errors(k, &ss.member_error, "member-error"))
         .child(list)
 }
@@ -834,7 +834,7 @@ fn chip(k: &Kit, role: &Role, removable: bool, guild: u64, user: u64) -> El {
         .child(role_dot(k, role.color, 8.0))
         .child(
             text(role.name.clone())
-                .font(type_::CAPTION)
+                .font(type_::at(k, type_::CAPTION))
                 .color(t.text.color())
                 .max_lines(1),
         );
@@ -939,7 +939,7 @@ fn member_row(a: &App, k: &Kit, layer: &mut Vec<El>, ss: &ServerSettings, user: 
                 .child(
                     row().h(32.0).center_y().child(
                         text(name)
-                            .font(type_::BODY_STRONG)
+                            .font(type_::at(k, type_::BODY_STRONG))
                             .color(name_ink)
                             .max_lines(1),
                     ),

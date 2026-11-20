@@ -81,12 +81,12 @@ pub fn page(a: &App, k: &Kit, ss: &ServerSettings) -> El {
         .child(
             text(format!("{} / {MAX_EMOJIS}", list.len()))
                 .key("emoji-count")
-                .font(type_::CONTROL_STRONG)
+                .font(type_::at(k, type_::CONTROL_STRONG))
                 .color(if full { t.danger } else { t.text }.color()),
         )
         .child(
             text("emojis")
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(t.text_muted.color())
                 .grow(1.0),
         );
@@ -131,7 +131,7 @@ pub fn page(a: &App, k: &Kit, ss: &ServerSettings) -> El {
         .child(head)
         .child(
             text(hint)
-                .font(type_::CAPTION)
+                .font(type_::at(k, type_::CAPTION))
                 .color(t.text_muted.color())
                 .wrap()
                 .w_full(),
@@ -190,7 +190,7 @@ pub fn page(a: &App, k: &Kit, ss: &ServerSettings) -> El {
             zone = zone.child(
                 text(e.clone())
                     .key("emoji-draft-error")
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.danger.color())
                     .wrap()
                     .w_full(),
@@ -218,7 +218,7 @@ pub fn page(a: &App, k: &Kit, ss: &ServerSettings) -> El {
         rows = rows.child(
             text("No custom emojis yet. Upload one to use it in messages and reactions.")
                 .key("emoji-empty")
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(t.text_muted.color())
                 .wrap()
                 .w_full()
@@ -274,7 +274,7 @@ fn emoji_row(a: &App, k: &Kit, ss: &ServerSettings, id: u64, editable: bool) -> 
         }
         None => name_cell.child(
             text(format!(":{}:", e.name))
-                .font(type_::CONTROL_STRONG)
+                .font(type_::at(k, type_::CONTROL_STRONG))
                 .color(t.text.color())
                 .max_lines(1),
         ),
@@ -306,7 +306,7 @@ fn emoji_row(a: &App, k: &Kit, ss: &ServerSettings, id: u64, editable: bool) -> 
     }
     r = r.child(
         text(format!("Added by {by}"))
-            .font(type_::CAPTION)
+            .font(type_::at(k, type_::CAPTION))
             .color(t.text_muted.color())
             .max_lines(1)
             .w(140.0),

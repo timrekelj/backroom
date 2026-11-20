@@ -275,7 +275,7 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
                 }
             });
             if loading {
-                top = top.child(text("Loading earlier messages\u{2026}").font(type_::CAPTION).color(t.text_muted.color()));
+                top = top.child(text("Loading earlier messages\u{2026}").font(type_::at(k, type_::CAPTION)).color(t.text_muted.color()));
             }
             c = c.child(top);
         } else {
@@ -284,7 +284,7 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
                 Place::Home => format!("This is the start of your chat with {name}"),
                 Place::Guild(_) => format!("Welcome to #{name}"),
             };
-            c = c.child(col().key("start").w_full().px(16.0).pt(24.0).pb(4.0).gap(2.0).child(text(title).font(type_::TITLE).color(t.text.color())).child(text("This is where it begins.").font(type_::CONTROL).color(t.text_muted.color())));
+            c = c.child(col().key("start").w_full().px(16.0).pt(24.0).pb(4.0).gap(2.0).child(text(title).font(type_::at(k, type_::TITLE)).color(t.text.color())).child(text("This is where it begins.").font(type_::at(k, type_::CONTROL)).color(t.text_muted.color())));
         }
     }
 

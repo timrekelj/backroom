@@ -4,8 +4,9 @@
 
 use rune::{El, ScrollSpec, SpringPair, Transition, col, icon, row, text};
 use rune_kit::{Kit, Menu, MenuItem};
+use thehideout_design::metrics_of;
 use thehideout_design::components::{
-    Avatar, ConnectionPill, ConnectionStatus, FOOTER_H, HEADER_H, IconButton, NavRow, Presence,
+    Avatar, ConnectionPill, ConnectionStatus, IconButton, NavRow, Presence,
     SidebarSection,
 };
 use thehideout_design::icons::{CHEVRON_DOWN, FOLDER_PLUS, GEAR, PLUS, SIGN_OUT, USER_PLUS};
@@ -66,12 +67,12 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
         return row()
             .key("sidebar-header")
             .w_full()
-            .h(HEADER_H)
+            .h(metrics_of(k).header_h())
             .px(16.0)
             .center_y()
             .child(
                 text("Direct messages")
-                    .font(type_::TITLE)
+                    .font(type_::at(k, type_::TITLE))
                     .color(t.text.color()),
             );
     };
@@ -81,7 +82,7 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
         .role("button")
         .label(format!("{}, server menu", g.name))
         .w(width)
-        .h(HEADER_H)
+        .h(metrics_of(k).header_h())
         .px(16.0)
         .gap(8.0)
         .center_y()
@@ -97,7 +98,7 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
         })
         .child(
             text(g.name.clone())
-                .font(type_::TITLE)
+                .font(type_::at(k, type_::TITLE))
                 .color(t.text.color())
                 .max_lines(1)
                 .grow(1.0)
@@ -183,7 +184,7 @@ fn home_rows(a: &App, k: &Kit) -> El {
     if s.data.dms.is_empty() {
         c = c.child(
             text("No conversations yet.")
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(t.text_faint.color())
                 .px(8.0),
         );
@@ -264,7 +265,7 @@ fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
         .gap(2.0)
         .child(
             text(name.clone())
-                .font(type_::CONTROL_STRONG)
+                .font(type_::at(k, type_::CONTROL_STRONG))
                 .color(t.text.color())
                 .max_lines(1),
         );
@@ -278,7 +279,7 @@ fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
     row()
         .key("user-strip")
         .w_full()
-        .h(FOOTER_H)
+        .h(metrics_of(k).footer_h())
         .px(12.0)
         .gap(10.0)
         .center_y()

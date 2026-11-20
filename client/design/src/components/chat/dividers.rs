@@ -34,7 +34,7 @@ impl DateDivider {
             .child(line())
             .child(
                 text(self.label)
-                    .font(type_::LABEL)
+                    .font(type_::at(k, type_::LABEL))
                     .color(t.text_muted.color())
                     .a11y_hidden(),
             )
@@ -58,14 +58,14 @@ impl NewMessagesDivider {
             .child(el().grow(1.0).h(1.0).fill(t.accent.color()))
             .child(
                 row()
-                    .h(16.0)
+                    .h(crate::metrics_of(k).em(16.0))
                     .px(6.0)
                     .center()
                     .radius(radius::XS)
                     .fill(t.accent.color())
                     .child(
                         text("New")
-                            .font(type_::LABEL)
+                            .font(type_::at(k, type_::LABEL))
                             .color(t.accent_fg.color())
                             .a11y_hidden(),
                     ),

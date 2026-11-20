@@ -10,20 +10,22 @@ use thehideout_design::icons::{HOUSE, LINK, PLUS};
 use crate::app::App;
 use crate::state::{DialogKind, Menu as MenuState, Place};
 
-pub const WIDTH: f32 = 64.0;
+/// The rail's width: the tile plus 12 either side.
+pub fn width(k: &Kit) -> f32 {
+    thehideout_design::metrics_of(k).rail_tile() + 24.0
+}
 /// Space between tiles: the mention pill overhangs a face by 2pt, so 12 leaves 10 clear.
 const GAP: f32 = 12.0;
-/// The tiles' face side, and the width of the spacer under Home.
-const FACE: f32 = 40.0;
 
 pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
     let s = &a.state;
+    let face = thehideout_design::metrics_of(k).rail_tile();
     let mut guilds = col().key("guilds").w_full().gap(GAP).items_start().pb(4.0);
     for g in &s.data.guilds {
         let u = s.guild_unread(g.id);
         let id = g.id;
         let badge = GuildBadge::new(g.id.to_string(), g.name.clone())
-            .size(FACE as u32)
+            .size(face as u32)
             .image(s.icon_pixels(g.id))
             .selected(s.ui.place == Place::Guild(id))
             .unread(u.count > 0)
@@ -33,6 +35,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
         guilds = guilds.child(el().key(format!("guild-{id}")).child(badge));
     }
     let plus = RailTile::new(&PLUS, "Add a server")
+        .size(face as u32)
         .outline(true)
         .on_press(|a: &mut App| {
             a.state.ui.menu = if a.state.ui.menu == MenuState::Add {
@@ -64,14 +67,14 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
     // Same 4pt inset as the tiles' rail; the divider is a face wide and centred on the faces.
     col()
         .key("rail")
-        .w(WIDTH)
+        .w(width(k))
         .h_full()
         .pt(4.0)
         .pl(4.0)
         .gap(GAP)
         .items_start()
         .child(home(a, k))
-        .child(el().key("rail-divider").w(FACE).h(4.0))
+        .child(el().key("rail-divider").w(face).h(4.0))
         .child(
             col()
                 .grow(1.0)
@@ -88,6 +91,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
 fn home(a: &App, k: &Kit) -> El {
     let u = a.state.home_unread();
     let tile = RailTile::new(&HOUSE, "Home, direct messages")
+        .size(thehideout_design::metrics_of(k).rail_tile() as u32)
         .selected(a.state.ui.place == Place::Home)
         .unread(u.count > 0)
         .mentions(u.mentions)

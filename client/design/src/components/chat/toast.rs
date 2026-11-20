@@ -44,7 +44,7 @@ impl Toast {
         let e = row()
             .role("status")
             .label(self.message.clone())
-            .h(36.0)
+            .min_h(crate::metrics_of(k).em(36.0))
             .px(12.0)
             .gap(8.0)
             .center_y()
@@ -52,10 +52,10 @@ impl Toast {
             .fill(t.surface_overlay.color())
             .border(1.0, t.border.color())
             .transition(enter)
-            .child(icon(glyph, size::SM).color(ink.color()).a11y_hidden())
+            .child(icon(glyph, crate::metrics_of(k).icon(size::SM)).color(ink.color()).a11y_hidden())
             .child(
                 text(self.message)
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.text.color())
                     .a11y_hidden(),
             );

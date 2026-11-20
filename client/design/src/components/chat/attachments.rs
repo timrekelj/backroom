@@ -312,7 +312,7 @@ pub fn image_grid_el(
                     .fill(MEDIA_DIM.color())
                     .child(
                         text(format!("+{}", total - shown + 1))
-                            .font(type_::HEADING)
+                            .font(type_::at(k, type_::HEADING))
                             .color(MEDIA_INK.color()),
                     ),
             );
@@ -488,7 +488,7 @@ impl VideoCard {
                     .fill(MEDIA_DIM.alpha(0.45).color())
                     .center()
                     .gap(8.0)
-                    .child(text(why).font(type_::CONTROL).color(ink))
+                    .child(text(why).font(type_::at(k, type_::CONTROL)).color(ink))
                     .child((self.browser)(
                         Button::new(label)
                             .icon(&ARROW_SQUARE_OUT)
@@ -528,7 +528,7 @@ impl VideoCard {
                     .absolute(0.0, 0.0)
                     .size(w, h)
                     .center()
-                    .child(text("Loading\u{2026}").font(type_::CONTROL).color(ink)),
+                    .child(text("Loading\u{2026}").font(type_::at(k, type_::CONTROL)).color(ink)),
             );
         }
         if let Some(b) = &self.badge {
@@ -541,7 +541,7 @@ impl VideoCard {
                     .center()
                     .radius(radius::SM)
                     .fill(MEDIA_DIM.color())
-                    .child(text(b.clone()).font(type_::CAPTION).color(ink)),
+                    .child(text(b.clone()).font(type_::at(k, type_::CAPTION)).color(ink)),
             );
         }
         if self.controls && started && !self.ui.failed {
@@ -615,7 +615,7 @@ impl VideoCard {
                     clock(self.ui.duration)
                 ))
                 .key("time")
-                .font(type_::CAPTION)
+                .font(type_::at(k, type_::CAPTION))
                 .color(ink),
             )
             .child(btn(
@@ -712,7 +712,7 @@ impl AudioRow {
                     .gap(2.0)
                     .child(
                         text(self.name)
-                            .font(type_::CONTROL_STRONG)
+                            .font(type_::at(k, type_::CONTROL_STRONG))
                             .color(t.text.color())
                             .truncate()
                             .w_full(),
@@ -721,7 +721,7 @@ impl AudioRow {
                     .child(
                         text(time)
                             .key("time")
-                            .font(type_::CAPTION)
+                            .font(type_::at(k, type_::CAPTION))
                             .color(t.text_muted.color()),
                     ),
             )
@@ -772,7 +772,7 @@ impl FileCard {
             .gap(1.0)
             .child(
                 text(self.name.clone())
-                    .font(type_::CONTROL_STRONG)
+                    .font(type_::at(k, type_::CONTROL_STRONG))
                     .color(t.text.color())
                     .truncate()
                     .w_full(),
@@ -780,7 +780,7 @@ impl FileCard {
             .child(
                 text(sub)
                     .key("size")
-                    .font(type_::CAPTION)
+                    .font(type_::at(k, type_::CAPTION))
                     .color(t.text_muted.color()),
             );
         if let Some(p) = self.progress {
@@ -853,7 +853,7 @@ pub fn removed(k: &Kit, key: &str) -> El {
         )
         .child(
             text("File removed by an admin")
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(t.text_muted.color()),
         )
 }
@@ -928,7 +928,7 @@ pub fn tray(k: &Kit, chips: Vec<Chip>) -> El {
             .gap(1.0)
             .child(
                 text(c.name.clone())
-                    .font(type_::CONTROL_STRONG)
+                    .font(type_::at(k, type_::CONTROL_STRONG))
                     .color(t.text.color())
                     .truncate()
                     .w_full(),
@@ -936,7 +936,7 @@ pub fn tray(k: &Kit, chips: Vec<Chip>) -> El {
             .child(
                 text(sub)
                     .key("sub")
-                    .font(type_::CAPTION)
+                    .font(type_::at(k, type_::CAPTION))
                     .color(if failed {
                         t.danger.color()
                     } else {
@@ -1020,7 +1020,7 @@ pub fn tray_note(k: &Kit, message: &str) -> El {
         )
         .child(
             text(message.to_owned())
-                .font(type_::CAPTION)
+                .font(type_::at(k, type_::CAPTION))
                 .color(t.danger.color())
                 .wrap(),
         )
@@ -1081,7 +1081,7 @@ pub fn lightbox(k: &Kit, layer: &mut Vec<El>, v: LightboxView, close: impl FnOnc
         .center_y()
         .child(
             text(label)
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(ink)
                 .truncate()
                 .grow(1.0)

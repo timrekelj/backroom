@@ -5,7 +5,8 @@
 use rune::{El, TextEdit, Tx, col, el, row, text};
 use rune_kit::Kit;
 use thehideout_api::MAX_MESSAGE_CHARS;
-use thehideout_design::components::{Composer, FOOTER_H};
+use thehideout_design::metrics_of;
+use thehideout_design::components::{Composer};
 use thehideout_design::{theme_of, type_};
 
 use crate::app::App;
@@ -60,21 +61,22 @@ pub fn build(a: &App, k: &Kit) -> El {
         }
     }
     let used = s.composer().text.chars().count();
-    // At rest exactly `FOOTER_H`, the height of the sidebar's user strip, so the scroll-edge line
+    // At rest exactly `footer_h`, the height of the sidebar's user strip, so the scroll-edge line
     // above them is one line across the window; a taller (multi-line) composer pushes it up. The
     // card floats with 12pt on every side.
+    let m = metrics_of(k);
     let mut c = col()
         .key("composer-area")
         .w_full()
-        .min_h(FOOTER_H)
-        .px(12.0)
-        .py(12.0)
+        .min_h(metrics_of(k).footer_h())
+        .px(m.zone_pad())
+        .py(m.zone_pad())
         .gap(4.0)
         .justify_center();
     if used + COUNTER_FROM >= MAX_MESSAGE_CHARS {
         let over = used > MAX_MESSAGE_CHARS;
         let ink = if over { t.danger } else { t.text_muted };
-        c = c.child(row().key("counter").w_full().justify_end().child(text(format!("{used} / {MAX_MESSAGE_CHARS}")).font(type_::CAPTION).color(ink.color())));
+        c = c.child(row().key("counter").w_full().justify_end().child(text(format!("{used} / {MAX_MESSAGE_CHARS}")).font(type_::at(k, type_::CAPTION)).color(ink.color())));
     }
     super::transcript::drop_zone(c.child(composer.build(k)))
 }

@@ -8,10 +8,9 @@ use thehideout_design::components::ToastKind;
 use crate::backend::Command;
 use crate::layout::{self, Item};
 use crate::forms::ChannelForm;
-use crate::state::{AppState, Drag, ROW_PITCH, sentence};
+use crate::state::{AppState, Drag, sentence};
 
-/// A section header's height and the gap under it, and between groups.
-const SECTION_HEADER: f32 = 30.0;
+/// The gap between groups (a section header is `Metrics::section_h` plus the 2pt under it).
 const SECTION_GAP: f32 = 8.0;
 
 pub const CONFLICT_TOAST: &str = "Layout changed elsewhere \u{2014} try again";
@@ -138,7 +137,7 @@ impl AppState {
         let d = self.ui.drag?;
         let rows = self.sidebar_items(d.guild);
         let from = rows.iter().position(|&i| i == d.item)?;
-        Some((from as i32 + (d.dy / ROW_PITCH).round() as i32).clamp(0, rows.len() as i32 - 1) as usize)
+        Some((from as i32 + (d.dy / self.ui.look.spec.metrics().row_pitch()).round() as i32).clamp(0, rows.len() as i32 - 1) as usize)
     }
 
     /// While a section is dragged: its place among the sections, where it would land, and how far
@@ -151,8 +150,9 @@ impl AppState {
             .sections
             .iter()
             .map(|s| {
+                let m = self.ui.look.spec.metrics();
                 let rows = if self.section_open(d.guild, s.id) { layout::channels_in(l, Some(s.id)).len() as f32 } else { 0.0 };
-                SECTION_HEADER + rows * ROW_PITCH + SECTION_GAP
+                m.section_h() + 2.0 + rows * m.row_pitch() + SECTION_GAP
             })
             .collect();
         let from = l.sections.iter().position(|s| s.id == id)?;

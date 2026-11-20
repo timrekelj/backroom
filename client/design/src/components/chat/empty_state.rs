@@ -42,7 +42,7 @@ impl EmptyState {
             .fill(t.surface_raised.color())
             .border(1.0, t.border.color())
             .child(
-                icon(self.glyph, size::MD)
+                icon(self.glyph, crate::metrics_of(k).icon(size::MD))
                     .color(t.text_muted.color())
                     .a11y_hidden(),
             );
@@ -55,13 +55,13 @@ impl EmptyState {
             .child(col().h(6.0))
             .child(
                 text(self.title)
-                    .font(type_::TITLE)
+                    .font(type_::at(k, type_::TITLE))
                     .color(t.text.color())
                     .align(Align::Center),
             )
             .child(
                 text(self.body)
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.text_muted.color())
                     .wrap()
                     .align(Align::Center),

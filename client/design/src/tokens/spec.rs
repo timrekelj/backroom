@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::accent::AccentPreset;
 use super::background::BackgroundPreset;
+use super::metrics::{Density, Metrics, TextSize};
 
 /// Which appearance to draw: follow the system, or force one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -69,9 +70,26 @@ pub struct ThemeSpec {
     /// Surfaces and borders pick up a faint accent hue.
     pub tint: bool,
     pub contrast: Contrast,
+    /// How tight the layout is (not a colour: it does not change `look_index`).
+    pub density: Density,
+    /// The type scale's share.
+    pub text_size: TextSize,
 }
 
 impl ThemeSpec {
+    /// The sizing choices as `Metrics`.
+    pub fn metrics(&self) -> Metrics {
+        Metrics::new(self.density, self.text_size)
+    }
+
+    /// Number of distinct kits: every look x every `Metrics`.
+    pub const KITS: usize = Self::LOOKS * Metrics::COUNT;
+
+    /// Index of this spec drawn `dark` among the `KITS` distinct kits.
+    pub fn kit_index(&self, dark: bool) -> usize {
+        self.look_index(dark) * Metrics::COUNT + self.metrics().index()
+    }
+
     /// Whether this spec draws dark, given what the system prefers.
     pub fn is_dark(&self, system_dark: bool) -> bool {
         self.appearance.resolve(system_dark)
@@ -99,7 +117,7 @@ impl ThemeSpec {
                     [false, true].into_iter().flat_map(move |tint| {
                         Contrast::ALL.into_iter().map(move |contrast| {
                             let appearance = if dark { Appearance::Dark } else { Appearance::Light };
-                            (ThemeSpec { accent, background, appearance, tint, contrast }, dark)
+                            (ThemeSpec { accent, background, appearance, tint, contrast, ..ThemeSpec::default() }, dark)
                         })
                     })
                 })

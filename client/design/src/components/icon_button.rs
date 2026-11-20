@@ -71,11 +71,12 @@ impl IconButton {
         if on {
             s.surface.fill = theme_of(k).accent_subtle.color();
         }
-        let side = self.size.height();
+        let m = crate::metrics_of(k);
+        let side = self.size.height(m);
         let px = if self.size == Size::Sm {
-            size::XS
+            m.icon(size::XS)
         } else {
-            size::SM
+            m.icon(size::SM)
         };
         let ink = if on {
             theme_of(k).accent_text.color()

@@ -8,7 +8,8 @@
 use rune::{col, row, text, El, ScrollSpec};
 use rune_kit::Kit;
 use thehideout_api::User;
-use thehideout_design::components::{MemberRow, HEADER_H};
+use thehideout_design::metrics_of;
+use thehideout_design::components::{MemberRow};
 use thehideout_design::{motion, palette_text, theme_of, type_};
 
 use crate::app::App;
@@ -48,7 +49,7 @@ fn section_label(k: &Kit, label: String, key: String) -> El {
         .center_y()
         .child(
             text(label)
-                .font(type_::LABEL)
+                .font(type_::at(k, type_::LABEL))
                 .color(t.text_muted.color())
                 .max_lines(1),
         )
@@ -115,12 +116,12 @@ pub fn build(a: &App, k: &Kit, allowed: bool) -> El {
         .border_sides([0.0, 0.0, 0.0, 1.0], t.border_subtle.color())
         .child(
             row()
-                .h(HEADER_H)
+                .h(metrics_of(k).header_h())
                 .px(16.0)
                 .center_y()
                 .child(
                     text(format!("Members \u{00b7} {}", list.len()))
-                        .font(type_::CONTROL_STRONG)
+                        .font(type_::at(k, type_::CONTROL_STRONG))
                         .color(t.text_muted.color()),
                 ),
         )

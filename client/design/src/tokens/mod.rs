@@ -5,6 +5,7 @@ pub mod background;
 pub mod color;
 pub mod elevation;
 pub mod icon;
+pub mod metrics;
 pub mod motion;
 pub mod palette;
 pub mod radius;

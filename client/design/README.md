@@ -74,10 +74,12 @@ ThemeSpec {
     appearance: Appearance,       // System | Light | Dark, resolved to `dark: bool` with the system's preference
     tint: bool,                   // surfaces and borders pick up a faint accent hue
     contrast: Contrast,           // Standard | High
+    density: Density,             // Comfortable | Compact: layout, not colour (see Density and text size)
+    text_size: TextSize,          // 90 | 100 | 110 | 125 %: the type scale, not colour
 }
 ```
 
-`theme_for(&spec, dark)` and `kit_for(&spec, dark)` return a `&'static Theme` / `&'static Kit`, built once per distinct look and cached (at most `ThemeSpec::LOOKS` = 8 x 5 x 2 x 2 x 2 = 320 each, so the cache is bounded; `appearance` only decides `dark`). `theme(dark)` and `kit(dark)` are the default spec's. **Components keep the same call shape**: they take `&Kit` and call `theme_of(k)`, which returns the theme that kit was built from (a lookup by the kit's address, kept in `kit.rs`), so one kit carries the whole look through the tree and nothing is set globally (there is no thread-local palette any more). An app builds the kit once per frame from its spec; `ThemePreview` builds a miniature of any spec for settings tiles and the gallery. `ThemeSpec` is serde-serialisable (kebab-case strings, missing fields default) for apps that save it.
+`theme_for(&spec, dark)` and `kit_for(&spec, dark)` return a `&'static Theme` / `&'static Kit`, built once per distinct look and cached (the theme: at most `ThemeSpec::LOOKS` = 8 x 5 x 2 x 2 x 2 = 320, so the cache is bounded; `appearance` only decides `dark`. The kit: one per look and `Metrics`, at most `ThemeSpec::KITS` = 320 x 8 = 2,560. `density` and `text_size` never change a colour, so every `Metrics` of one look shares one `Theme`). `theme(dark)` and `kit(dark)` are the default spec's. **Components keep the same call shape**: they take `&Kit` and call `theme_of(k)`, which returns the theme that kit was built from (a lookup kept in `kit.rs`, keyed by an identity stored *inside* the kit, so a `Kit::clone()` moved into a `'static` closure, as the virtualized lists do, still finds its theme and metrics), so one kit carries the whole look through the tree and nothing is set globally (there is no thread-local palette any more). `metrics_of(k)` answers the same way for density and text size. An app builds the kit once per frame from its spec; `ThemePreview` builds a miniature of any spec for settings tiles and the gallery. `ThemeSpec` is serde-serialisable (kebab-case strings, missing fields default) for apps that save it.
 
 **Presets only.** There is no colour picker, and there will not be: every accent x background x appearance x tint x contrast combination is checked by the contrast tests, and a free colour could not be. Add a preset, and the tests cover it for all the rest.
 
@@ -116,6 +118,8 @@ Neutral is true grey (chroma 0). Cool is slate, hue 250 to 255, chroma .008 to .
 
 ## Type (`tokens/type_.rs`)
 
+The table is the 100% scale. Components never use the constants directly: they call `type_::at(k, STYLE)`, which scales by the kit's text size (see Density and text size).
+
 Instrument Sans for UI, JetBrains Mono for code (ligatures off). Size / line height, weight.
 
 | Style | Size / LH | Weight | Use |
@@ -146,12 +150,12 @@ regions there is exactly one edge. There are no rules under headers, above foote
 cards; settings are told apart by 28pt of vertical rhythm, not lines.
 
 The shell insets the rail, sidebar and panel 8pt from the window's top and bottom, then lines up headers and footers on one y:
-`HEADER_H` = 48 for the sidebar title, the channel header and the member panel title (their titles share a baseline);
-`FOOTER_H` = 64 for the sidebar's user strip and the composer zone (a multi-line composer grows its zone upward; at rest
+`header_h()` = 48 (Compact 40) for the sidebar title, the channel header and the member panel title (their titles share a baseline);
+`footer_h()` = 64 (Compact 52) for the sidebar's user strip and the composer zone (a multi-line composer grows its zone upward; at rest
 they match). The composer card floats in its zone with 12pt on every side. Headers and the footer carry **no divider at
 rest**; the sidebar sits on `bg` and the panel's own 1pt `border` outline is the only edge between them. Widths: the
 sidebar is 240 from 1100pt up and 208 below; the member panel is only offered from 1000pt. In the transcript a group's
-rows sit 2pt apart and groups ~16pt apart.
+rows sit 2pt apart and groups ~16pt apart (1pt and ~10pt Compact). Every size here is a `Metrics` method; see Density and text size.
 
 ### Scroll edges (`components/scroll_edges.rs`)
 
@@ -169,6 +173,48 @@ in and out rather than popping. Keep one `ScrollEdges` per viewport in app state
 `edges.bottom()` in tests. The line sits where the header ends and the footer begins, so the sidebar's and the panel's
 lines share one y. Used by the transcript, the sidebar list, the member list and both settings pages. A short list that
 fits shows neither line. A `--at 1` snapshot is needed to see the lines at rest (they fade in on the first frames).
+
+## Density and text size (`tokens/metrics.rs`)
+
+Two choices in `ThemeSpec` (Appearance settings, saved with the look; a look saved before they existed loads as Comfortable / 100%):
+
+- **`Density`**: `Comfortable` (the shipped sizes, default) or `Compact`.
+- **`TextSize`**: 90, 100 (default), 110 or 125 %, serialised as `"90"`, `"100"`, `"110"`, `"125"`.
+
+`Metrics { density, text }` (`Copy`) holds them, and **every derived size is a method on it**, so screens never branch on the density themselves. A component reads them from the kit it was given: `let m = metrics_of(k);` and `type_::at(k, type_::BODY)` for a scaled style. `ThemeSpec::metrics()` builds one from a spec, and `kit_for` builds `k.ty` (rune-kit's own type scale) from it, so rune-kit controls scale too. There is no global.
+
+| Method | Comfortable | Compact | Notes |
+|---|---|---|---|
+| `font(style)` | size x f, line height x f (to the half point) | same | f = .90 / 1 / 1.10 / 1.25; weight and tracking unchanged |
+| `icon(base)` | base x (1 + (f - 1) / 2), rounded | same | 16 becomes 18 at 125% and 15 at 90%; 14 becomes 16 and 13 |
+| `em(base)` | base x f, rounded | same | lengths that sit with text: inline and jumbo emoji, badge / kbd / count heights, reaction chips |
+| `row_h()` | 32 | 28 | sidebar, DM and member rows; never shorter than the control line plus 4 |
+| `row_pitch()` | 34 | 30 | row plus the 2pt gap; what a drag steps over |
+| `section_h()` | 28 | 24 | collapsible section header |
+| `control_h()` | 32 | 28 | Md `Button` / `IconButton`, `Segmented` |
+| `field_h()` | 32 | 28 | the composer's input line; never shorter than the body line plus 6 |
+| `header_h()` | 48 | 40 | sidebar title, channel header, member title, settings headers |
+| `zone_pad()` | 12 | 8 | the composer card's margin in its zone |
+| `footer_h()` | 64 | 52 | `field_h + 8 + 2 x zone_pad`: the composer zone and the sidebar's user strip |
+| `group_gap()` | 12 | 7 | above a message group |
+| `msg_pad(head)` | 3 / 1 and 1 / 1 | 2 / .5 and .5 / .5 | message row padding (top, bottom): about 16 between groups and 2 between rows in a group, against about 10 and 1 |
+| `msg_avatar()` | 32 | 24 | the transcript avatar and the gutter beside follow-ups (32 again at 125%) |
+| `rail_tile()` | 40 | 32 | server rail tiles; the rail is the tile plus 24 wide |
+| `table_row(base)`, `pad(base)` | base | base - 8, base x .75 | admin tables, settings page rhythm |
+
+`header_h` and `footer_h` are one function each, so the sidebar, channel header, member panel and composer zone cannot drift apart; the desktop tests check the alignment, the zone margins and the transcript's edges for all eight combinations. Heights are also floors under the scaled text (a row is at least its line plus 4), so a larger text size lengthens a row before it ever clips; where a line still doesn't fit (the topic, a long channel name) it truncates with an ellipsis.
+
+**Intentionally fixed** (they are grids or pictures, not reading text; they keep their own geometry at every setting):
+
+- the emoji picker (32pt cells, 304pt body) and the icon picker (36pt cells), glyphs included;
+- attachment cards, image grids, the video card and the composer's tray chips;
+- guild badges and avatars (their sizes are chosen by the caller: 20 / 24 / 32 / 40; only the transcript's and the rail's choice follows density);
+- `rune_kit::TextInput` (28pt, `.large()` 32pt): its height is Rune's, its text still scales;
+- the role list of server settings (36pt rows, 42pt pitch) and the admin tables' column widths.
+
+**Animation.** The Appearance controls ask Rune for the layout to reflow on `motion-reflow` and the colours to cross on the calm spring; reduced motion snaps the layout.
+
+**Tests**: `tokens/tests.rs` `metrics_tests` (defaults, compact, scaling, every combination, kits and clones); the desktop's `sizing` tests (alignment x 8, row height on a switch, the header title inside its header at 1280x800 and 1000x700) and the `appearance` persistence tests.
 
 ## Spacing, radius, elevation, motion
 
@@ -206,8 +252,8 @@ Data in, callbacks out: no app state types, every one takes the `Kit` like the c
 | Component | For | States |
 |---|---|---|
 | `GuildBadge`, `RailTile` | The server icon, sizes 24/32/40, avatar radii, deterministic warm fill; `RailTile` is the same tile with an icon on a neutral face (Home, and the outlined "+"). A left rail holds the indicator. | rest, hover (short bar), selected (tall accent bar; `RailTile` adds an `accent_subtle` face), unread (4pt dot), mention count on the corner (overhangs the face 2pt; the rail gap is 12) |
-| `NavRow`, `ChannelRow` | Sidebar rows, 32pt (`ROW_H`), 2pt apart, 8pt padding, 16pt icon, `radius-md`. Nav rows take an icon and a label (`NavRow::new(label, &icons::HOUSE)`); `NavRow::person` shows the user's 20pt `Avatar` instead; channels show `#` or their own Phosphor icon (`.icon`), tinted by a palette colour (`.tint`; the selected highlight takes a 12% wash of it), and a `.trailing` "more" button that fades in on hover. | selected (highlight, strong text, `accent_text` icon; a channel's own tint wins), unread (brighter, heavier, dot), mentions (pill), muted (faint), hover |
-| `SidebarSection` | A collapsible group header (28pt) with a chevron, a hover "+" and an optional hover "more" button (`.more`); `.decorate_header` lets the app add a context menu or a drag to the title. | open, closed, add shown |
+| `NavRow`, `ChannelRow` | Sidebar rows, 32pt (`row_h()`; 28 Compact), 2pt apart, 8pt padding, 16pt icon, `radius-md`. Nav rows take an icon and a label (`NavRow::new(label, &icons::HOUSE)`); `NavRow::person` shows the user's 20pt `Avatar` instead; channels show `#` or their own Phosphor icon (`.icon`), tinted by a palette colour (`.tint`; the selected highlight takes a 12% wash of it), and a `.trailing` "more" button that fades in on hover. | selected (highlight, strong text, `accent_text` icon; a channel's own tint wins), unread (brighter, heavier, dot), mentions (pill), muted (faint), hover |
+| `SidebarSection` | A collapsible group header (28pt; 24 Compact) with a chevron, a hover "+" and an optional hover "more" button (`.more`); `.decorate_header` lets the app add a context menu or a drag to the title. | open, closed, add shown |
 | `MessageGroup`, `ChatMessage` | Avatar (`.avatars(..)` supplies pictures by author id), author (`.name_colors(..)`: the colour of their role, as `palette_text`), time, one or more bodies (`.mention_ink(..)` colours `@name` chips of coloured members). `MessageGroup::runs` splits a transcript: same author, at most 5 minutes (`GROUP_WINDOW_SECS`) apart. Follow-ups show their time in the gutter on hover. Bodies are markup (see "Message markup"). `links::<S>()` makes links and spoilers pressable. | `Sent`, `Pending` (body at 0.55, no spinner), `Failed` ("Failed to send · Retry"), mentions you (`accent_wash` + 2pt accent bar), hover (row highlight + floating reply/copy/more) |
 | `DateDivider`, `NewMessagesDivider` | A hairline with the date; an accent line with a "New" tag. | static |
 | `Composer` | The message box: "+", a field that grows to 8 lines then scrolls, smiley, Send. `bind` wires the field and send; Enter sends, Shift+Enter breaks the line; whitespace never sends. | empty (Send ghost, disabled), text (Send primary), focused (focus ring), disabled with a reason |

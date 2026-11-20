@@ -112,7 +112,7 @@ impl StatCard {
             .fill(t.bg.color())
             .child(
                 text(self.label)
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.text_muted.color())
                     .max_lines(1)
                     .a11y_hidden(),
@@ -331,7 +331,7 @@ impl ActivityChart {
         let scale = |top: u64, ink: Color| {
             let mut c = col().h_full().justify_between().a11y_hidden();
             for v in [top, top * 3 / 4, top / 2, top / 4, 0] {
-                c = c.child(text(compact(v)).font(type_::CAPTION).color(ink));
+                c = c.child(text(compact(v)).font(type_::at(k, type_::CAPTION)).color(ink));
             }
             c
         };
@@ -363,7 +363,7 @@ impl ActivityChart {
                 let at = if n == 1 { 0 } else { i * (n - 1) / 4 };
                 dates = dates.child(
                     text(self.days[at].label.clone())
-                        .font(type_::CAPTION)
+                        .font(type_::at(k, type_::CAPTION))
                         .color(t.text_muted.color()),
                 );
             }
@@ -391,7 +391,7 @@ impl ActivityChart {
                 .child(el().size(8.0, 8.0).radius(radius::FULL).fill(dot))
                 .child(
                     text(label.to_owned())
-                        .font(type_::CONTROL)
+                        .font(type_::at(k, type_::CONTROL))
                         .color(t.text_muted.color())
                         .grow(1.0),
                 )
@@ -417,7 +417,7 @@ impl ActivityChart {
             .inert()
             .child(
                 text(d.title.clone())
-                    .font(type_::CONTROL_STRONG)
+                    .font(type_::at(k, type_::CONTROL_STRONG))
                     .color(t.text.color()),
             )
             .child(line("Messages", d.messages, t.accent.color()))

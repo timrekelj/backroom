@@ -7,13 +7,14 @@
 
 use rune::{col, el, row, text, Color, El, ScrollSpec, Tx};
 use rune_kit::Kit;
+use thehideout_design::metrics_of;
 use thehideout_design::components::{
-    switch, IconButton, Kbd, NavRow, Segmented, ThemePreview, HEADER_H,
+    switch, Avatar, IconButton, Kbd, NavRow, Segmented, ThemePreview,
 };
 use thehideout_design::icons::{self, X};
 use thehideout_design::{
     motion, radius, theme_for, theme_of, type_, AccentPreset, Appearance, BackgroundPreset, Contrast,
-    ThemeSpec,
+    Density, TextSize, ThemeSpec,
 };
 
 use crate::app::App;
@@ -30,6 +31,13 @@ pub(super) const PAGE_W: f32 = 760.0;
 fn change(a: &mut App, tx: &mut Tx, f: impl FnOnce(&mut Look)) {
     tx.color_motion(motion::CALM);
     a.act(|s| s.edit_look(f));
+}
+
+/// [`change`] for a size or density: the layout follows on the reflow spring (Rune plays it
+/// unless motion is reduced, then it snaps), and the colours cross on the calm one as usual.
+fn resize(a: &mut App, tx: &mut Tx, f: impl FnOnce(&mut Look)) {
+    tx.motion(motion::REFLOW);
+    change(a, tx, f);
 }
 
 pub fn build(a: &App, k: &Kit, section: Section, bar: f32) -> El {
@@ -104,10 +112,10 @@ pub(super) fn nav_shell(k: &Kit, title: &str, rows: Vec<El>) -> El {
         .child(
             row()
                 .w_full()
-                .h(HEADER_H)
+                .h(metrics_of(k).header_h())
                 .px(16.0)
                 .center_y()
-                .child(text(title.to_owned()).font(type_::TITLE).color(t.text.color()).max_lines(1)),
+                .child(text(title.to_owned()).font(type_::at(k, type_::TITLE)).color(t.text.color()).max_lines(1)),
         )
         .child(col().w_full().px(8.0).gap(2.0).children(rows))
 }
@@ -117,12 +125,12 @@ pub(super) fn header(k: &Kit, title: &str, close: impl Fn(&mut App) + 'static) -
     let t = theme_of(k);
     row()
         .w_full()
-        .h(HEADER_H)
+        .h(metrics_of(k).header_h())
         .gap(8.0)
         .center_y()
         .child(
             text(title.to_owned())
-                .font(type_::HEADING)
+                .font(type_::at(k, type_::HEADING))
                 .color(t.text.color())
                 .grow(1.0),
         )
@@ -170,6 +178,20 @@ fn appearance(a: &App, k: &Kit) -> El {
     .label("Contrast")
     .on_pick_tx(|a: &mut App, i, tx| change(a, tx, |l| l.spec.contrast = Contrast::ALL[i]))
     .build(k);
+    let density = Segmented::new(
+        &Density::ALL.map(Density::name),
+        Density::ALL.iter().position(|p| *p == spec.density).unwrap_or(0),
+    )
+    .label("Density")
+    .on_pick_tx(|a: &mut App, i, tx| resize(a, tx, |l| l.spec.density = Density::ALL[i]))
+    .build(k);
+    let text_size = Segmented::new(
+        &TextSize::ALL.map(TextSize::name),
+        TextSize::ALL.iter().position(|p| *p == spec.text_size).unwrap_or(0),
+    )
+    .label("Text size")
+    .on_pick_tx(|a: &mut App, i, tx| resize(a, tx, |l| l.spec.text_size = TextSize::ALL[i]))
+    .build(k);
     let motion_seg = Segmented::new(
         &ReduceMotion::ALL.map(ReduceMotion::name),
         ReduceMotion::ALL.iter().position(|p| *p == look.reduce_motion).unwrap_or(0),
@@ -190,27 +212,82 @@ fn appearance(a: &App, k: &Kit) -> El {
         .child(setting(k, "Background", "The greys behind everything, shown in the current appearance.", backgrounds))
         .child(toggle(k, "Tint surfaces with accent", "A faint accent hue in backgrounds and borders.", col().key("set-tint").child(tint)))
         .child(setting(k, "Contrast", "High pushes muted text and borders further from the background.", col().key("set-contrast").w(240.0).child(contrast)))
+        .child(setting(k, "Density", "Comfortable is roomy; Compact fits more rows and messages on screen.", col().key("set-density").w(320.0).child(density)))
+        .child(setting(
+            k,
+            "Text size",
+            "Scales text, icons and rows everywhere; the preview shows the effect.",
+            col().key("set-text-size").w_full().gap(12.0).child(col().w(320.0).child(text_size)).child(size_preview(k)),
+        ))
         .child(setting(k, "Reduce motion", "System follows your operating system. On keeps changes to quick fades.", col().key("set-motion").w(240.0).child(motion_seg)));
     // The column is centred in the panel, whatever its width.
     col().w_full().items_center().child(page)
 }
 
+/// A message as the chat draws it, so the density and text size are judged on the real thing.
+fn size_preview(k: &Kit) -> El {
+    let t = theme_of(k);
+    let m = metrics_of(k);
+    let side = m.msg_avatar();
+    let (pt, pb) = m.msg_pad(true);
+    let line = |who: &str, at: &str, body: &str, head: bool| {
+        let (pt, pb) = if head { (pt, pb) } else { m.msg_pad(false) };
+        let gutter = if head {
+            Avatar::new(who.to_owned(), who.to_owned()).size(side).build(k)
+        } else {
+            el().w(side as f32).h(0.0)
+        };
+        let mut content = col().grow(1.0).shrink().min_w(0.0).gap(2.0);
+        if head {
+            content = content.child(
+                row()
+                    .gap(8.0)
+                    .center_y()
+                    .child(text(who.to_owned()).font(type_::at(k, type_::BODY_STRONG)).color(t.text.color()))
+                    .child(text(at.to_owned()).font(type_::at(k, type_::CAPTION)).color(t.text_muted.color())),
+            );
+        }
+        row()
+            .w_full()
+            .px(12.0)
+            .pt(pt)
+            .pb(pb)
+            .gap(12.0)
+            .items_start()
+            .child(gutter)
+            .child(content.child(text(body.to_owned()).font(type_::at(k, type_::BODY)).color(t.text.color()).wrap()))
+    };
+    col()
+        .key("size-preview")
+        .w_full()
+        .max_w(480.0)
+        .py(m.pad(8.0))
+        .radius(radius::LG)
+        .fill(t.bg.color())
+        .child(line("Ana", "12:04", "Anyone up for lunch? The ramen place opens at noon.", true))
+        .child(line("Ana", "12:04", "I can book a table for four.", false))
+        .child(col().h(m.group_gap()))
+        .child(line("Bruno", "12:06", "Count me in. Should I bring the speaker?", true))
+}
+
 /// A title, its description and the control; settings are told apart by spacing, not rules.
 pub(super) fn setting(k: &Kit, title: &str, description: &str, control: El) -> El {
+    let m = metrics_of(k);
     col()
         .w_full()
-        .gap(12.0)
-        .py(14.0)
+        .gap(m.pad(12.0))
+        .py(m.pad(14.0))
         .child(labels(k, title, description))
         .child(control)
 }
 
 /// Like `setting`, with the control to the right of the text.
 pub(super) fn toggle(k: &Kit, title: &str, description: &str, control: El) -> El {
+    let m = metrics_of(k);
     row()
         .w_full()
         .gap(16.0)
-        .py(14.0)
+        .py(m.pad(14.0))
         .center_y()
         .child(labels(k, title, description).grow(1.0))
         .child(control)
@@ -220,10 +297,10 @@ pub(super) fn labels(k: &Kit, title: &str, description: &str) -> El {
     let t = theme_of(k);
     col()
         .gap(2.0)
-        .child(text(title.to_owned()).font(type_::CONTROL_STRONG).color(t.text.color()))
+        .child(text(title.to_owned()).font(type_::at(k, type_::CONTROL_STRONG)).color(t.text.color()))
         .child(
             text(description.to_owned())
-                .font(type_::CAPTION)
+                .font(type_::at(k, type_::CAPTION))
                 .color(t.text_muted.color())
                 .wrap(),
         )
@@ -259,7 +336,7 @@ fn accent_swatch(k: &Kit, spec: ThemeSpec, dark: bool, preset: AccentPreset) -> 
         )
         .child(
             text(preset.name().to_owned())
-                .font(type_::CAPTION)
+                .font(type_::at(k, type_::CAPTION))
                 .color(if selected { t.text } else { t.text_muted }.color())
                 .a11y_hidden(),
         )
@@ -289,7 +366,7 @@ fn background_tile(k: &Kit, spec: ThemeSpec, dark: bool, preset: BackgroundPrese
         )
         .child(
             text(preset.name().to_owned())
-                .font(type_::CAPTION)
+                .font(type_::at(k, type_::CAPTION))
                 .color(if selected { t.text } else { t.text_muted }.color())
                 .a11y_hidden(),
         )

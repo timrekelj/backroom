@@ -98,9 +98,9 @@ impl PickerTabs {
                 .child(
                     text(label)
                         .font(if on {
-                            type_::CONTROL_STRONG
+                            type_::at(k, type_::CONTROL_STRONG)
                         } else {
-                            type_::CONTROL
+                            type_::at(k, type_::CONTROL)
                         })
                         .color(ink.color())
                         .a11y_hidden(),
@@ -109,7 +109,7 @@ impl PickerTabs {
                 tab = tab
                     .child(
                         text("Soon")
-                            .font(type_::CAPTION)
+                            .font(type_::at(k, type_::CAPTION))
                             .color(t.text_faint.color())
                             .a11y_hidden(),
                     )
@@ -173,7 +173,7 @@ impl IconGrid {
         if self.results.is_empty() {
             return col().key("icon-grid").w_full().h(CELL * self.visible_rows as f32).center().child(
                 text("No icons match")
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.text_faint.color()),
             );
         }

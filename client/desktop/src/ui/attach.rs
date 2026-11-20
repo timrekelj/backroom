@@ -343,7 +343,7 @@ fn post_text(k: &Kit, msg: u64, i: usize, title: &str, description: &str) -> El 
     if !title.is_empty() {
         c = c.child(
             text(title.to_owned())
-                .font(type_::BODY_STRONG)
+                .font(type_::at(k, type_::BODY_STRONG))
                 .color(t.text.color())
                 .wrap()
                 .w_full(),
@@ -608,7 +608,7 @@ pub fn drop_hint(a: &App, k: &Kit) -> Option<El> {
                     .fill(t.surface_overlay.color())
                     .child(
                         text("Drop files to attach")
-                            .font(type_::CONTROL_STRONG)
+                            .font(type_::at(k, type_::CONTROL_STRONG))
                             .color(t.accent_text.color()),
                     ),
             )

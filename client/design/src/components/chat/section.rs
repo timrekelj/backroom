@@ -75,7 +75,8 @@ impl SidebarSection {
 
     pub fn build(self, k: &Kit) -> El {
         let t = theme_of(k);
-        let chevron = icon(&CHEVRON_RIGHT, isize::XS)
+        let isz = crate::metrics_of(k).icon(isize::XS);
+        let chevron = icon(&CHEVRON_RIGHT, crate::metrics_of(k).icon(isize::XS))
             .key("chevron")
             .color(t.text_faint.color())
             .rotate(if self.open { FRAC_PI_2 } else { 0.0 })
@@ -87,7 +88,7 @@ impl SidebarSection {
             .label(self.title.clone())
             .expanded(self.open)
             .grow(1.0)
-            .h(28.0)
+            .h(crate::metrics_of(k).section_h())
             .px(4.0)
             .gap(4.0)
             .center_y()
@@ -95,10 +96,10 @@ impl SidebarSection {
             .focusable(true)
             .focus_ring(2.0, 0.0, k.c.border_focus)
             .hover(t.hover.color())
-            .child(el().size(14.0, 14.0).center().child(chevron))
+            .child(el().size(isz, isz).center().child(chevron))
             .child(
                 text(self.title)
-                    .font(type_::LABEL)
+                    .font(type_::at(k, type_::LABEL))
                     .color(t.text_muted.color())
                     .a11y_hidden(),
             );

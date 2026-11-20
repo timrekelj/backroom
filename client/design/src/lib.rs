@@ -16,13 +16,14 @@ pub mod icons;
 pub mod kit;
 pub mod tokens;
 
-pub use kit::{kit, kit_for, theme_of};
+pub use kit::{kit, kit_for, metrics_of, theme_of};
 pub use tokens::accent::AccentPreset;
 pub use tokens::background::BackgroundPreset;
+pub use tokens::metrics::{Density, Metrics, TextSize};
 pub use tokens::spec::{Appearance, Contrast, ThemeSpec};
 pub use tokens::palette::{PALETTE_KEYS, palette_color, palette_text, palette_wash};
 pub use tokens::theme::{Theme, theme, theme_for};
-pub use tokens::{accent, background, color, spec, elevation, icon, motion, radius, space, type_};
+pub use tokens::{accent, background, color, spec, elevation, icon, metrics, motion, radius, space, type_};
 
 /// Instrument Sans (variable, wdth and wght axes) and JetBrains Mono (Regular, Bold), for
 /// `AppSpec::fonts`. Both SIL OFL 1.1; licence texts sit next to the files in `fonts/`.

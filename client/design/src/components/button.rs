@@ -9,7 +9,7 @@ use rune::{El, Icon, icon, row, text};
 use rune_kit::{Kit, State};
 
 use super::util::{Acts, Surface, paint};
-use crate::theme_of;
+use crate::{metrics_of, theme_of};
 use crate::tokens::icon as size;
 use crate::tokens::{radius, type_};
 
@@ -34,10 +34,10 @@ pub enum Size {
 }
 
 impl Size {
-    pub(super) fn height(self) -> f32 {
+    pub(super) fn height(self, m: crate::Metrics) -> f32 {
         match self {
             Size::Sm => 24.0,
-            Size::Md => 32.0,
+            Size::Md => m.control_h(),
         }
     }
     pub(super) fn radius(self) -> f32 {
@@ -150,14 +150,15 @@ impl Button {
 
     pub fn build(self, k: &Kit) -> El {
         let s = skin(k, self.variant);
+        let m = metrics_of(k);
         let (px, font, icon_px) = match self.size {
-            Size::Sm => (8.0, type_::LABEL, size::XS),
-            Size::Md => (12.0, type_::CONTROL_STRONG, size::SM),
+            Size::Sm => (8.0, m.font(type_::LABEL), m.icon(size::XS)),
+            Size::Md => (12.0, m.font(type_::CONTROL_STRONG), m.icon(size::SM)),
         };
         let mut e = row()
             .role("button")
             .label(self.label.clone())
-            .h(self.size.height())
+            .h(self.size.height(m))
             .px(px)
             .gap(6.0)
             .center()

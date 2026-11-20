@@ -4,7 +4,7 @@
 use rune::{El, row, text};
 use rune_kit::Kit;
 
-use crate::theme_of;
+use crate::{metrics_of, theme_of};
 use crate::tokens::color::Tone;
 use crate::tokens::{radius, type_};
 
@@ -46,17 +46,18 @@ impl Badge {
             BadgeVariant::Danger => (t.danger_bg, t.danger, t.danger_border),
             BadgeVariant::Info => (t.info_bg, t.info, t.info_border),
         };
-        let font = rune::TextStyle {
+        let m = metrics_of(k);
+        let font = m.font(rune::TextStyle {
             size: 11.0,
             weight: 600.0,
             line_height: 14.0,
             tracking: 0.04,
             ..type_::LABEL
-        };
+        });
         row()
             .role("status")
             .label(self.label.clone())
-            .h(18.0)
+            .h(m.em(18.0))
             .px(6.0)
             .center()
             .radius(radius::XS)

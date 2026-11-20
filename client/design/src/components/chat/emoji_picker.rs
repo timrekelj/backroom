@@ -474,12 +474,13 @@ impl EmojiPicker {
             } else {
                 "No emoji match"
             };
-            return col().key(format!("{}-grid", self.key)).w_full().h(height).center().child(text(msg).font(type_::CONTROL).color(t.text_faint.color()));
+            return col().key(format!("{}-grid", self.key)).w_full().h(height).center().child(text(msg).font(type_::at(k, type_::CONTROL)).color(t.text_faint.color()));
         }
         let layout = self.layout.clone();
         let (key, set, highlight) = (self.key.clone(), self.set.clone(), self.highlight);
         let focus = k.c.border_focus;
         let kit = k.clone();
+        let title_font = type_::at(k, type_::LABEL);
         let list = col().key(format!("{}-rows", self.key)).w_full().growth(GrowthSpec::default()).virtual_rows(
             layout.lines.len(),
             CELL,
@@ -492,7 +493,7 @@ impl EmojiPicker {
                 let mut line_el = row().key(row_key(&key, r)).w_full().h(CELL);
                 match line {
                     Line::Title(sec) => {
-                        line_el = line_el.px(4.0).center_y().child(text(layout.sections[sec].title.clone()).font(type_::LABEL).color(t.text_muted.color()));
+                        line_el = line_el.px(4.0).center_y().child(text(layout.sections[sec].title.clone()).font(title_font).color(t.text_muted.color()));
                     }
                     Line::Cells(sec, start, len) => {
                         let first = layout.range_of(sec).start;
@@ -520,10 +521,10 @@ impl EmojiPicker {
         let mut line = row().key(format!("{}-preview", self.key)).w_full().h(24.0).gap(8.0).center_y().px(4.0);
         match self.highlight.and_then(|h| self.layout.pick(h)) {
             Some(p) => {
-                line = line.child(text(p.label()).font(type_::CONTROL).color(t.text.color()).max_lines(1));
+                line = line.child(text(p.label()).font(type_::at(k, type_::CONTROL)).color(t.text.color()).max_lines(1));
             }
             None => {
-                line = line.child(text("Pick an emoji").font(type_::CONTROL).color(t.text_faint.color()));
+                line = line.child(text("Pick an emoji").font(type_::at(k, type_::CONTROL)).color(t.text_faint.color()));
             }
         }
         line
@@ -636,7 +637,7 @@ impl EmojiSuggest {
                 .center_y()
                 .radius(radius::SM)
                 .child(row().w(24.0).center().child(art))
-                .child(text(format!(":{}:", s.name)).font(type_::CONTROL).color(if on { t.accent_text } else { t.text }.color()).max_lines(1).a11y_hidden());
+                .child(text(format!(":{}:", s.name)).font(type_::at(k, type_::CONTROL)).color(if on { t.accent_text } else { t.text }.color()).max_lines(1).a11y_hidden());
             r = if on { r.fill(t.accent_subtle.color()) } else { r.hover(t.hover.color()).press(t.pressed.color()) };
             if let Some(p) = &self.pick {
                 r = p(r, i);

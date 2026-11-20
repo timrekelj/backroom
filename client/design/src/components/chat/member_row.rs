@@ -87,7 +87,7 @@ impl MemberRow {
             .role("button")
             .label(self.name.clone())
             .w_full()
-            .h(32.0)
+            .h(crate::metrics_of(k).row_h())
             .px(8.0)
             .gap(10.0)
             .center_y()
@@ -101,7 +101,7 @@ impl MemberRow {
         };
         e = e.child(avatar.build(k)).child(
             text(self.name)
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(ink)
                 .max_lines(1)
                 .grow(1.0)
@@ -110,7 +110,7 @@ impl MemberRow {
         );
         if self.owner {
             e = e.child(
-                icon(&CROWN, size::SM)
+                icon(&CROWN, crate::metrics_of(k).icon(size::SM))
                     .key("owner")
                     .label("Owner")
                     .color(t.accent_text.color()),

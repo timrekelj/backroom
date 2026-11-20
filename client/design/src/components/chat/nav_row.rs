@@ -11,7 +11,6 @@ use rune::{El, Icon, Transition, el, icon, row, text};
 use rune_kit::{Kit, State};
 
 use crate::components::util::{Acts, over};
-use super::ROW_H;
 use crate::components::{Avatar, MentionPill, UnreadDot};
 use crate::icons::HASH;
 use crate::theme_of;
@@ -85,9 +84,9 @@ impl Row {
         };
         let glyph = self.glyph;
         let font = if strong {
-            type_::CONTROL_STRONG
+            type_::at(k, type_::CONTROL_STRONG)
         } else {
-            type_::CONTROL
+            type_::at(k, type_::CONTROL)
         };
 
         let mut e = row()
@@ -95,7 +94,7 @@ impl Row {
             .role("button")
             .label(self.label.clone())
             .w_full()
-            .h(ROW_H)
+            .h(crate::metrics_of(k).row_h())
             .px(8.0)
             .gap(8.0)
             .center_y()
@@ -132,7 +131,7 @@ impl Row {
                 .backdrop(t.bg.color())
                 .build(k)
                 .key("avatar"),
-            (None, None) => icon(glyph, size::SM)
+            (None, None) => icon(glyph, crate::metrics_of(k).icon(size::SM))
                 .key("icon")
                 .color(icon_ink.color())
                 .a11y_hidden(),

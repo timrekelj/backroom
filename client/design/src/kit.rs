@@ -11,6 +11,7 @@ use rune::{Color, Shadow};
 use rune_kit::{Kit, PaletteFocus, PaletteSeed, StateColors};
 
 use crate::tokens::color::Tone;
+use crate::tokens::metrics::Metrics;
 use crate::tokens::elevation::{Level, shadows};
 use crate::tokens::spec::ThemeSpec;
 use crate::tokens::theme::{Theme, theme_for};
@@ -21,26 +22,29 @@ pub fn kit(dark: bool) -> &'static Kit {
     kit_for(&ThemeSpec::default(), dark)
 }
 
-/// Every kit this module has built, by address, with the theme it was built from.
-static REGISTRY: Mutex<Option<HashMap<usize, &'static Theme>>> = Mutex::new(None);
+/// Every kit this module has built, by identity (see [`identity`]), with the theme and metrics it
+/// was built from.
+static REGISTRY: Mutex<Option<HashMap<usize, (&'static Theme, Metrics)>>> = Mutex::new(None);
 
 thread_local! {
     /// The last `theme_of` answer on this thread: a frame asks for the same kit thousands of times.
-    static LAST: Cell<Option<(usize, &'static Theme)>> = const { Cell::new(None) };
+    static LAST: Cell<Option<(usize, &'static Theme, Metrics)>> = const { Cell::new(None) };
 }
 
-/// The kit for `spec` drawn `dark`, built once per distinct look (at most `ThemeSpec::LOOKS`).
+/// The kit for `spec` drawn `dark`, built once per distinct look and metrics (at most
+/// `ThemeSpec::KITS`); the theme under it is shared by every metrics of one look.
 pub fn kit_for(spec: &ThemeSpec, dark: bool) -> &'static Kit {
     static CACHE: Mutex<Vec<Option<&'static Kit>>> = Mutex::new(Vec::new());
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if cache.is_empty() {
-        cache.resize(ThemeSpec::LOOKS, None);
+        cache.resize(ThemeSpec::KITS, None);
     }
-    cache[spec.look_index(dark)].get_or_insert_with(|| {
+    cache[spec.kit_index(dark)].get_or_insert_with(|| {
         let theme = theme_for(spec, dark);
-        let kit: &'static Kit = Box::leak(Box::new(build(theme)));
+        let metrics = spec.metrics();
+        let kit: &'static Kit = Box::leak(Box::new(build(theme, metrics)));
         let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-        reg.get_or_insert_with(HashMap::new).insert(kit as *const Kit as usize, theme);
+        reg.get_or_insert_with(HashMap::new).insert(identity(kit), (theme, metrics));
         kit
     })
 }
@@ -49,20 +53,38 @@ pub fn kit_for(spec: &ThemeSpec, dark: bool) -> &'static Kit {
 /// tokens, so one kit carries the whole look through the tree with no global to set. A kit not
 /// made by `kit_for` falls back to the default theme for its appearance.
 pub fn theme_of(k: &Kit) -> &'static Theme {
-    let addr = k as *const Kit as usize;
-    if let Some((a, t)) = LAST.with(Cell::get)
+    entry_of(k).0
+}
+
+/// The density and text size a kit was built for (the default for a kit not made by `kit_for`).
+/// Components read their sizes from it: `type_::at(k, style)`, `metrics_of(k).row_h()`, ...
+pub fn metrics_of(k: &Kit) -> Metrics {
+    entry_of(k).1
+}
+
+/// What names a kit: the address of its `glyph.dash`, which `build` gives every kit its own copy
+/// of (the same icon, never drawn by our components). It lives inside the `Kit`, so a clone of it
+/// (a `'static` closure that needs one) still finds its theme and metrics, which the kit's own
+/// address could not do.
+fn identity(k: &Kit) -> usize {
+    k.glyph.dash as *const rune::Icon as usize
+}
+
+fn entry_of(k: &Kit) -> (&'static Theme, Metrics) {
+    let addr = identity(k);
+    if let Some((a, t, m)) = LAST.with(Cell::get)
         && a == addr
     {
-        return t;
+        return (t, m);
     }
     let found = REGISTRY
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .and_then(|r| r.get(&addr).copied());
-    let t = found.unwrap_or_else(|| crate::tokens::theme::theme(k.dark));
-    LAST.with(|l| l.set(Some((addr, t))));
-    t
+    let (t, m) = found.unwrap_or_else(|| (crate::tokens::theme::theme(k.dark), Metrics::default()));
+    LAST.with(|l| l.set(Some((addr, t, m))));
+    (t, m)
 }
 
 fn ring(color: Color, spread: f32) -> Shadow {
@@ -82,7 +104,7 @@ fn state(bg: Tone, fg: Tone, border: Tone) -> StateColors {
     }
 }
 
-fn build(t: &Theme) -> Kit {
+fn build(t: &Theme, m: Metrics) -> Kit {
     let dark = t.dark;
     let c = |x: Tone| x.color();
     let mut k = Kit::from_palette_focus(
@@ -169,7 +191,10 @@ fn build(t: &Theme) -> Kit {
     e.overlay = shadows(Level::Modal, dark);
     *e = std::mem::take(e).with_input(vec![ring(c(t.border_strong), 1.0)]);
 
-    k.ty = type_::kit();
+    // A private copy of an unused glyph names this kit (see `identity`).
+    let dash = k.glyph.dash;
+    k.glyph.dash = Box::leak(Box::new(rune::Icon { name: dash.name, view: dash.view, body: dash.body }));
+    k.ty = type_::kit(m);
     k.radius = radius::kit();
     k.motion = motion::kit();
     k.blend_over = Some(c(t.bg));

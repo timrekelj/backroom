@@ -3,7 +3,8 @@
 
 use rune::{El, col, el, row, text};
 use rune_kit::Kit;
-use thehideout_design::components::{Avatar, ChannelHeader, HEADER_H, IconButton};
+use thehideout_design::metrics_of;
+use thehideout_design::components::{Avatar, ChannelHeader, IconButton};
 use thehideout_design::icons::{GEAR, HASH, USERS, catalog};
 use thehideout_design::{palette_color, radius, theme_of, type_};
 
@@ -158,7 +159,7 @@ fn header(a: &App, k: &Kit, lay: Layout) -> El {
                 .role("banner")
                 .label(name.clone())
                 .w_full()
-                .h(HEADER_H)
+                .h(metrics_of(k).header_h())
                 .px(16.0)
                 .gap(10.0)
                 .center_y()
@@ -171,7 +172,7 @@ fn header(a: &App, k: &Kit, lay: Layout) -> El {
                 )
                 .child(
                     text(name)
-                        .font(type_::TITLE)
+                        .font(type_::at(k, type_::TITLE))
                         .color(t.text.color())
                         .grow(1.0),
                 )
@@ -182,6 +183,6 @@ fn header(a: &App, k: &Kit, lay: Layout) -> El {
             .role("banner")
             .label("No channel")
             .w_full()
-            .h(HEADER_H),
+            .h(metrics_of(k).header_h()),
     }
 }

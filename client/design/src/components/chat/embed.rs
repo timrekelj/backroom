@@ -189,7 +189,7 @@ impl EmbedCard {
         } else {
             self.provider.name().to_owned()
         };
-        let chevron = icon(&CHEVRON_RIGHT, isize::XS)
+        let chevron = icon(&CHEVRON_RIGHT, crate::metrics_of(k).icon(isize::XS))
             .key("chevron")
             .color(t.text_faint.color())
             .rotate(if self.collapsed { 0.0 } else { FRAC_PI_2 })
@@ -210,20 +210,20 @@ impl EmbedCard {
             .focus_ring(2.0, 0.0, k.c.border_focus)
             .hover(t.hover.color())
             .child(
-                icon(self.provider.icon(), isize::XS)
+                icon(self.provider.icon(), crate::metrics_of(k).icon(isize::XS))
                     .color(t.text_muted.color())
                     .a11y_hidden(),
             )
             .child(
                 text(site)
-                    .font(type_::LABEL)
+                    .font(type_::at(k, type_::LABEL))
                     .color(t.text_muted.color())
                     .a11y_hidden(),
             );
         if !self.author.is_empty() && self.collapsed {
             head = head.child(
                 text(format!("\u{b7} {}", self.author))
-                    .font(type_::LABEL)
+                    .font(type_::at(k, type_::LABEL))
                     .color(t.text_faint.color())
                     .truncate()
                     .shrink()
@@ -234,7 +234,7 @@ impl EmbedCard {
         if self.collapsed && !self.title.is_empty() {
             head = head.child(
                 text(self.title.clone())
-                    .font(type_::LABEL)
+                    .font(type_::at(k, type_::LABEL))
                     .color(t.text_faint.color())
                     .truncate()
                     .grow(1.0)
@@ -305,7 +305,7 @@ impl EmbedCard {
                 out.push(
                     who.child(
                         text(self.author.clone())
-                            .font(type_::BODY_STRONG)
+                            .font(type_::at(k, type_::BODY_STRONG))
                             .color(t.text.color()),
                     ),
                 );
@@ -318,7 +318,7 @@ impl EmbedCard {
             if !self.published.is_empty() {
                 foot = foot.child(
                     text(self.published.clone())
-                        .font(type_::CAPTION)
+                        .font(type_::at(k, type_::CAPTION))
                         .color(t.text_muted.color()),
                 );
             }
@@ -334,13 +334,13 @@ impl EmbedCard {
                     .focus_ring(2.0, 1.0, k.c.border_focus)
                     .hover(t.hover.color())
                     .child(
-                        icon(&ARROW_SQUARE_OUT, isize::XS)
+                        icon(&ARROW_SQUARE_OUT, crate::metrics_of(k).icon(isize::XS))
                             .color(t.accent_text.color())
                             .a11y_hidden(),
                     )
                     .child(
                         text("Open original")
-                            .font(type_::CONTROL_STRONG)
+                            .font(type_::at(k, type_::CONTROL_STRONG))
                             .color(t.accent_text.color()),
                     ),
             );
@@ -355,7 +355,7 @@ impl EmbedCard {
             texts = texts.child((self.open_link)(
                 text(self.title.clone())
                     .key("title")
-                    .font(type_::BODY_STRONG)
+                    .font(type_::at(k, type_::BODY_STRONG))
                     .color(t.accent_text.color())
                     .wrap()
                     .w_full()
@@ -370,7 +370,7 @@ impl EmbedCard {
             texts = texts.child(
                 text(self.description.clone())
                     .key("description")
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.text_muted.color())
                     .wrap()
                     .max_lines(DESCRIPTION_LINES)

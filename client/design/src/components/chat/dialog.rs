@@ -95,13 +95,13 @@ impl Dialog {
         }
         let mut head = col().grow(1.0).gap(2.0).child(
             text(self.title.clone())
-                .font(type_::TITLE)
+                .font(type_::at(k, type_::TITLE))
                 .color(t.text.color()),
         );
         if let Some(d) = self.description.clone() {
             head = head.child(
                 text(d)
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.text_muted.color())
                     .wrap(),
             );
@@ -200,7 +200,7 @@ pub fn dialog_field(k: &Kit, label: &str, input: TextInput, error: Option<&str>)
     let t = theme_of(k);
     let mut c = col().w_full().gap(6.0).child(
         text(label.to_owned())
-            .font(type_::LABEL)
+            .font(type_::at(k, type_::LABEL))
             .color(t.text_muted.color()),
     );
     c = c.child(
@@ -215,7 +215,7 @@ pub fn dialog_field(k: &Kit, label: &str, input: TextInput, error: Option<&str>)
         Some(e) => c.child(
             text(e.to_owned())
                 .key("error")
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(t.danger.color())
                 .wrap()
                 .w_full(),

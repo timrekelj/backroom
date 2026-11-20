@@ -141,8 +141,9 @@ impl Composer {
         let t = theme_of(k);
         let blocked = self.reason.is_some();
         let has_text = !self.edit.text.trim().is_empty() || self.allow_empty;
-        let style: TextStyle = type_::BODY;
-        let pad = (32.0 - style.line_px()) / 2.0;
+        let m = crate::metrics_of(k);
+        let style: TextStyle = m.font(type_::BODY);
+        let pad = (m.field_h() - style.line_px()) / 2.0;
 
         let mid = if let Some(reason) = self.reason {
             row()

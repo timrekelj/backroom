@@ -60,7 +60,7 @@ impl Segmented {
             .role("radiogroup")
             .focus_group()
             .w_full()
-            .h(32.0)
+            .h(crate::metrics_of(k).control_h())
             .padding(2.0)
             .gap(2.0)
             .center_y()
@@ -91,9 +91,9 @@ impl Segmented {
                     text(l)
                         .key("label")
                         .font(if on {
-                            type_::CONTROL_STRONG
+                            type_::at(k, type_::CONTROL_STRONG)
                         } else {
-                            type_::CONTROL
+                            type_::at(k, type_::CONTROL)
                         })
                         .color(ink.color())
                         .truncate()

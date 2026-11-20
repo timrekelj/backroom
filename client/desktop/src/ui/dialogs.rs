@@ -5,12 +5,12 @@
 
 use rune::{col, icon, row, text, El, Key, TextEdit, Tx};
 use rune_kit::{Kit, Select};
+use thehideout_design::metrics_of;
 use thehideout_design::components::chat::emoji::glyph_label;
 use thehideout_design::components::chat::pickers::row_key;
 use thehideout_design::components::{
     dialog_field, Avatar, Button, ColorSwatches, Dialog, EmojiPicker, EmojiPickerState,
     EmojiScope, IconButton, IconGrid, PickerTabs, Pick, Size, TextInput, ToastKind, Variant,
-    ROW_H,
 };
 use thehideout_design::icons::{catalog, CHEVRON_DOWN, COPY, HASH, SEARCH, X};
 use thehideout_design::{palette_color, radius, theme_of, type_};
@@ -193,7 +193,7 @@ fn delete_section(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState, sectio
     if let Some(e) = &d.error {
         body = body.child(
             text(e.clone())
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(t.danger.color())
                 .wrap()
                 .w_full(),
@@ -264,7 +264,7 @@ fn channel_dialog(
             .key("color-field")
             .w_full()
             .gap(6.0)
-            .child(text("Colour").font(type_::LABEL).color(t.text_muted.color()))
+            .child(text("Colour").font(type_::at(k, type_::LABEL)).color(t.text_muted.color()))
             .child(
                 ColorSwatches::new(f.color)
                     .on_pick(|a: &mut App, key: &'static str| a.act(|s| s.pick_color(key)))
@@ -329,7 +329,7 @@ fn icon_row(a: &App, k: &Kit, f: &ChannelForm, guild: u64) -> El {
         })
         .child(
             text(label)
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(t.text.color())
                 .grow(1.0)
                 .max_lines(1)
@@ -358,7 +358,7 @@ fn icon_row(a: &App, k: &Kit, f: &ChannelForm, guild: u64) -> El {
         .key("icon-field-wrap")
         .w_full()
         .gap(6.0)
-        .child(text("Icon").font(type_::LABEL).color(t.text_muted.color()))
+        .child(text("Icon").font(type_::at(k, type_::LABEL)).color(t.text_muted.color()))
         .child(line)
 }
 
@@ -482,7 +482,7 @@ fn section_field(a: &App, k: &Kit, layer: &mut Vec<El>, f: &ChannelForm, guild: 
         .gap(6.0)
         .child(
             text("Section")
-                .font(type_::LABEL)
+                .font(type_::at(k, type_::LABEL))
                 .color(t.text_muted.color()),
         )
         .child(select.build(k, layer))
@@ -513,7 +513,7 @@ fn new_dm(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState) {
                 .role("button")
                 .label(name.clone())
                 .w_full()
-                .h(ROW_H)
+                .h(metrics_of(k).row_h())
                 .px(8.0)
                 .gap(10.0)
                 .center_y()
@@ -539,7 +539,7 @@ fn new_dm(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState) {
                 )
                 .child(
                     text(u.username.clone())
-                        .font(type_::CONTROL)
+                        .font(type_::at(k, type_::CONTROL))
                         .color(t.text.color())
                         .a11y_hidden(),
                 ),
@@ -589,7 +589,7 @@ fn invite(a: &App, k: &Kit, layer: &mut Vec<El>, guild: u64) {
         .label(format!("Invite code {}", g.invite_code))
         .child(
             text(g.invite_code.clone())
-                .font(type_::CODE)
+                .font(type_::at(k, type_::CODE))
                 .color(t.text.color())
                 .a11y_hidden(),
         );
@@ -680,7 +680,7 @@ fn profile(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState) {
                 .child(
                     text(if busy { "Uploading\u{2026}" } else { "PNG, JPEG, WebP or GIF, up to 8 MiB. Drop a file here." })
                         .key("profile-hint")
-                        .font(type_::CAPTION)
+                        .font(type_::at(k, type_::CAPTION))
                         .color(t.text_muted.color())
                         .wrap(),
                 ),
@@ -698,7 +698,7 @@ fn profile(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState) {
         });
     let mut body = col().key("profile-body").w_full().gap(12.0).child(zone);
     if let Some(e) = &d.error {
-        body = body.child(text(e.clone()).key("profile-error").font(type_::CONTROL).color(t.danger.color()).wrap().w_full());
+        body = body.child(text(e.clone()).key("profile-error").font(type_::at(k, type_::CONTROL)).color(t.danger.color()).wrap().w_full());
     }
     Dialog::new("dlg", "Profile")
         .description(format!("This is how you look to everyone, {name}."))
@@ -720,9 +720,9 @@ fn delete_emoji(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState, guild: u
     let t = theme_of(k);
     let name = a.state.emoji(guild, emoji).map_or_else(String::new, |e| e.name.clone());
     let busy = d.phase == Phase::Busy;
-    let mut body = col().key("dialog-confirm").w_full().gap(8.0).child(row().gap(10.0).center_y().child(super::emoji::emoji_tile(a, k, guild, emoji, 32.0)).child(text(format!(":{name}:")).font(type_::BODY_STRONG).color(t.text.color())));
+    let mut body = col().key("dialog-confirm").w_full().gap(8.0).child(row().gap(10.0).center_y().child(super::emoji::emoji_tile(a, k, guild, emoji, 32.0)).child(text(format!(":{name}:")).font(type_::at(k, type_::BODY_STRONG)).color(t.text.color())));
     if let Some(e) = &d.error {
-        body = body.child(text(e.clone()).font(type_::CONTROL).color(t.danger.color()).wrap().w_full());
+        body = body.child(text(e.clone()).font(type_::at(k, type_::CONTROL)).color(t.danger.color()).wrap().w_full());
     }
     Dialog::new("dlg", "Delete emoji")
         .description("It disappears from the picker and from reactions. Old messages that used it show its name instead. This can't be undone.")
@@ -749,7 +749,7 @@ fn delete_role(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState, guild: u6
     let busy = d.phase == Phase::Busy;
     let mut body = col().key("dialog-confirm").w_full().gap(6.0);
     if let Some(e) = &d.error {
-        body = body.child(text(e.clone()).font(type_::CONTROL).color(t.danger.color()).wrap().w_full());
+        body = body.child(text(e.clone()).font(type_::at(k, type_::CONTROL)).color(t.danger.color()).wrap().w_full());
     }
     let who = match holders {
         0 => "No one has it right now.".to_owned(),

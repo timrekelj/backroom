@@ -202,12 +202,13 @@ pub fn jumbo(x: &Inlines, set: Option<&EmojiSet>) -> Option<Vec<Jumbo>> {
 
 fn jumbo_el(cx: &Cx, items: Vec<Jumbo>) -> El {
     let t = theme_of(cx.k);
+    let m = crate::metrics_of(cx.k);
     let mut r = row().key("jumbo").w_full().flex_wrap().gap(4.0).items_center();
     for it in items {
         r = r.child(match it {
-            Jumbo::Unicode(g) => text(g).font(TextStyle::new(40.0, 400.0).lh(EMOJI_JUMBO)).color(t.text.color()),
+            Jumbo::Unicode(g) => text(g).font(m.font(TextStyle::new(40.0, 400.0).lh(EMOJI_JUMBO))).color(t.text.color()),
             Jumbo::Custom(img) => match cx.emoji {
-                Some(set) => picture(cx.k, set, &img, EMOJI_JUMBO, false).role("img").label(format!(":{}:", img.name)),
+                Some(set) => picture(cx.k, set, &img, m.em(EMOJI_JUMBO), false).role("img").label(format!(":{}:", img.name)),
                 None => el(),
             },
         });
@@ -281,13 +282,13 @@ fn block_el(cx: &mut Cx, b: &md::Block, depth: usize) -> El {
             {
                 return jumbo_el(cx, items);
             }
-            inline_el(cx, i, type_::BODY, 600.0)
+            inline_el(cx, i, type_::at(k, type_::BODY), 600.0)
         }
         md::Block::Heading(level, i) => {
             let font = match level {
-                1 => type_::TITLE,
-                2 => TextStyle::new(15.0, 600.0).lh(22.0),
-                _ => type_::BODY_STRONG,
+                1 => type_::at(k, type_::TITLE),
+                2 => crate::metrics_of(k).font(TextStyle::new(15.0, 600.0).lh(22.0)),
+                _ => type_::at(k, type_::BODY_STRONG),
             };
             inline_el(cx, i, font, 700.0).mt(4.0)
         }
@@ -302,7 +303,7 @@ fn block_el(cx: &mut Cx, b: &md::Block, depth: usize) -> El {
                 .fill(t.bg.color())
                 .child(
                     text(code.clone())
-                        .font(type_::CODE)
+                        .font(type_::at(k, type_::CODE))
                         .color(t.text.color())
                         .wrap()
                         .wrap_anywhere()
@@ -346,7 +347,7 @@ fn block_el(cx: &mut Cx, b: &md::Block, depth: usize) -> El {
                         .items_start()
                         .child(
                             row().w(w).justify_end().child(
-                                text(mark).font(type_::BODY).color(t.text_muted.color()),
+                                text(mark).font(type_::at(k, type_::BODY)).color(t.text_muted.color()),
                             ),
                         )
                         .child(
@@ -407,7 +408,7 @@ fn inline_el(cx: &mut Cx, x: &Inlines, font: TextStyle, bold: f32) -> El {
             Kind::Code => code.push(
                 Span::new(a, b)
                     .mono()
-                    .size(12.5)
+                    .size(crate::metrics_of(cx.k).font(type_::CODE).size)
                     .bg(t.surface_raised.color(), 3.0),
             ),
             Kind::Mention => {
@@ -483,7 +484,7 @@ fn inline_el(cx: &mut Cx, x: &Inlines, font: TextStyle, bold: f32) -> El {
             Some(p) => InlineIcon::image(p.clone()),
             None => InlineIcon::glyph(&crate::icons::SMILEY).color(t.text_faint.color()),
         };
-        e = e.inline_icon(*at, icon.size(EMOJI_INLINE).gap(2.0).radius(radius::SM));
+        e = e.inline_icon(*at, icon.size(crate::metrics_of(cx.k).em(EMOJI_INLINE)).gap(2.0).radius(radius::SM));
     }
     e.selectable(true).selection_color(k.selection())
 }

@@ -1,11 +1,10 @@
 //! ChannelHeader: `#` + channel name + muted topic, with trailing IconButtons (members toggle,
-//! search). The breadcrumb variant reads "Guild / # channel". `HEADER_H` tall, no rule under it (a scroll-edge hairline appears there while content is scrolled under).
+//! search). The breadcrumb variant reads "Guild / # channel". `Metrics::header_h` tall, no rule under it (a scroll-edge hairline appears there while content is scrolled under).
 //! Static: nothing animates here.
 
 use rune::{col, icon, row, text, El, Icon};
 use rune_kit::Kit;
 
-use super::HEADER_H;
 use crate::icons::{CHEVRON_RIGHT, HASH};
 use crate::theme_of;
 use crate::tokens::color::Tone;
@@ -65,7 +64,7 @@ impl ChannelHeader {
         let t = theme_of(k);
         let hash = match self.art {
             Some(art) => row().size(size::MD, size::MD).center().child(art),
-            None => icon(self.glyph, size::MD)
+            None => icon(self.glyph, crate::metrics_of(k).icon(size::MD))
                 .color(self.tint.unwrap_or(t.text_faint).color())
                 .a11y_hidden(),
         };
@@ -74,18 +73,18 @@ impl ChannelHeader {
             left = left
                 .child(
                     text(g.clone())
-                        .font(type_::CONTROL_STRONG)
+                        .font(type_::at(k, type_::CONTROL_STRONG))
                         .color(t.text_muted.color()),
                 )
                 .child(
-                    icon(&CHEVRON_RIGHT, size::XS)
+                    icon(&CHEVRON_RIGHT, crate::metrics_of(k).icon(size::XS))
                         .color(t.text_faint.color())
                         .a11y_hidden(),
                 );
         }
         left = left.child(hash).child(
             text(self.channel.clone())
-                .font(type_::TITLE)
+                .font(type_::at(k, type_::TITLE))
                 .color(t.text.color()),
         );
         if let (Some(topic), None) = (&self.topic, &self.guild) {
@@ -93,7 +92,7 @@ impl ChannelHeader {
                 .child(col().w(1.0).h(16.0).fill(t.border_subtle.color()))
                 .child(
                     text(topic.clone())
-                        .font(type_::CONTROL)
+                        .font(type_::at(k, type_::CONTROL))
                         .color(t.text_muted.color())
                         .max_lines(1)
                         .shrink(),
@@ -103,7 +102,7 @@ impl ChannelHeader {
             .role("banner")
             .label(self.channel)
             .w_full()
-            .h(HEADER_H)
+            .h(crate::metrics_of(k).header_h())
             .px(16.0)
             .gap(12.0)
             .center_y()

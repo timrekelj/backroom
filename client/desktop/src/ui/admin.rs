@@ -10,6 +10,7 @@ use rune_kit::{Kit, Select};
 use thehideout_api::{
     AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, AuditEntry, StorageBreakdown,
 };
+use thehideout_design::metrics_of;
 use thehideout_design::components::avatar::picture;
 use thehideout_design::components::{
     ActivityChart, Avatar, Badge, BadgeVariant, BarSegment, Button, Checkbox, Dialog, EmptyState,
@@ -32,10 +33,16 @@ use crate::state::AppState;
 /// Space between the window edge and the panel, as on the other full-window pages.
 const INSET: f32 = 8.0;
 /// Side padding of the page's header, controls and rows.
-const PAD: f32 = 32.0;
+fn pad(k: &Kit) -> f32 {
+    metrics_of(k).pad(32.0)
+}
 const MAX_W: f32 = 1040.0;
-const ROW_H: f32 = 52.0;
-const FILE_ROW_H: f32 = 56.0;
+fn row_h(k: &Kit) -> f32 {
+    metrics_of(k).table_row(52.0)
+}
+fn file_row_h(k: &Kit) -> f32 {
+    metrics_of(k).table_row(56.0)
+}
 
 const FIGURES: TextStyle = TextStyle {
     features: "'tnum' 1",
@@ -77,7 +84,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32, compact: bool) -> 
     };
     let mut top = col()
         .w_full()
-        .px(PAD)
+        .px(pad(k))
         .child(header(k, title, close).key("admin-header"));
     if let Some(controls) = parts.controls {
         top = top.child(col().w_full().pb(12.0).child(controls));
@@ -177,7 +184,7 @@ fn card(k: &Kit) -> El {
 
 fn muted(k: &Kit, s: impl Into<String>) -> El {
     text(s.into())
-        .font(type_::CONTROL)
+        .font(type_::at(k, type_::CONTROL))
         .color(theme_of(k).text_muted.color())
 }
 
@@ -200,7 +207,7 @@ fn head_cell(k: &Kit, label: &str, w: Option<f32>, right: bool) -> El {
     let cell = if right { cell.justify_end() } else { cell };
     cell.child(
         text(label.to_owned())
-            .font(type_::LABEL)
+            .font(type_::at(k, type_::LABEL))
             .color(t.text_muted.color())
             .max_lines(1),
     )
@@ -245,7 +252,7 @@ fn list_foot(k: &Kit, pending: bool, error: &Option<String>) -> Option<El> {
                 .py(16.0)
                 .gap(12.0)
                 .center()
-                .child(text(e.clone()).font(type_::CONTROL).color(t.danger.color()))
+                .child(text(e.clone()).font(type_::at(k, type_::CONTROL)).color(t.danger.color()))
                 .child(
                     Button::new("Try again")
                         .variant(Variant::Secondary)
@@ -383,8 +390,8 @@ fn overview(a: &App, k: &Kit, ad: &AdminState) -> El {
         .key("page-admin-overview")
         .w_full()
         .max_w(MAX_W)
-        .px(PAD)
-        .pb(PAD)
+        .px(pad(k))
+        .pb(pad(k))
         .gap(12.0)
         .child(cards)
         .child(storage_card(k, o.map(|o| &o.storage)))
@@ -395,7 +402,7 @@ fn overview(a: &App, k: &Kit, ad: &AdminState) -> El {
                 .key("overview-error")
                 .gap(12.0)
                 .center_y()
-                .child(text(e.clone()).font(type_::CONTROL).color(t.danger.color()))
+                .child(text(e.clone()).font(type_::at(k, type_::CONTROL)).color(t.danger.color()))
                 .child(
                     Button::new("Try again")
                         .variant(Variant::Secondary)
@@ -454,7 +461,7 @@ fn storage_card(k: &Kit, s: Option<&StorageBreakdown>) -> El {
                 )
                 .child(
                     text(label.to_owned())
-                        .font(type_::CONTROL)
+                        .font(type_::at(k, type_::CONTROL))
                         .color(t.text_muted.color())
                         .a11y_hidden(),
                 )
@@ -475,7 +482,7 @@ fn storage_card(k: &Kit, s: Option<&StorageBreakdown>) -> El {
                 .center_y()
                 .child(
                     text("Storage")
-                        .font(type_::TITLE)
+                        .font(type_::at(k, type_::TITLE))
                         .color(t.text.color())
                         .grow(1.0),
                 )
@@ -545,7 +552,7 @@ fn activity_card(a: &App, k: &Kit, ad: &AdminState) -> El {
                 .flex_wrap()
                 .gap(12.0)
                 .center_y()
-                .child(text("Activity").font(type_::TITLE).color(t.text.color()))
+                .child(text("Activity").font(type_::at(k, type_::TITLE)).color(t.text.color()))
                 .child(legend)
                 .child(el().grow(1.0))
                 .child(range),
@@ -595,7 +602,7 @@ fn servers(k: &Kit, ad: &AdminState, compact: bool) -> Parts {
         let list = rows(
             "admin-server-rows",
             feed.items.len(),
-            ROW_H,
+            row_h(k),
             k,
             |s, i| {
                 s.admin().map_or_else(String::new, |ad| {
@@ -607,8 +614,8 @@ fn servers(k: &Kit, ad: &AdminState, compact: bool) -> Parts {
         col()
             .w_full()
             .max_w(MAX_W)
-            .px(PAD - 8.0)
-            .pb(PAD)
+            .px(pad(k) - 8.0)
+            .pb(pad(k))
             .child(list)
             .children(list_foot(k, feed.pending, &feed.error))
     };
@@ -628,7 +635,7 @@ fn servers(k: &Kit, ad: &AdminState, compact: bool) -> Parts {
 fn server_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
     let t = theme_of(k);
     let Some(r) = a.state.admin().and_then(|ad| ad.servers.items.get(i)) else {
-        return el().key(format!("server-gone-{i}")).h(ROW_H);
+        return el().key(format!("server-gone-{i}")).h(row_h(k));
     };
     let max = a
         .state
@@ -650,7 +657,7 @@ fn server_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
         .and_then(|key| a.state.data.media.pixels(key));
     let name = col().grow(1.0).shrink().min_w(0.0).child(
         text(r.guild.name.clone())
-            .font(type_::CONTROL_STRONG)
+            .font(type_::at(k, type_::CONTROL_STRONG))
             .color(t.text.color())
             .max_lines(1),
     );
@@ -664,7 +671,7 @@ fn server_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
             bytes(r.storage_bytes)
         ))
         .w_full()
-        .h(ROW_H)
+        .h(row_h(k))
         .px(8.0)
         .gap(12.0)
         .center_y()
@@ -910,7 +917,7 @@ fn files(k: &Kit, layer: &mut Vec<El>, ad: &AdminState, compact: bool) -> Parts 
         let list = rows(
             "admin-file-rows",
             feed.items.len(),
-            FILE_ROW_H,
+            file_row_h(k),
             k,
             |s, i| {
                 s.admin().map_or_else(String::new, |ad| {
@@ -922,8 +929,8 @@ fn files(k: &Kit, layer: &mut Vec<El>, ad: &AdminState, compact: bool) -> Parts 
         col()
             .w_full()
             .max_w(MAX_W)
-            .px(PAD - 8.0)
-            .pb(PAD)
+            .px(pad(k) - 8.0)
+            .pb(pad(k))
             .child(list)
             .children(list_foot(k, feed.pending, &feed.error))
     };
@@ -981,10 +988,10 @@ fn preview(a: &App, k: &Kit, r: &AdminFileRow) -> El {
 fn file_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
     let t = theme_of(k);
     let Some(ad) = a.state.admin() else {
-        return el().key(format!("file-gone-{i}")).h(FILE_ROW_H);
+        return el().key(format!("file-gone-{i}")).h(file_row_h(k));
     };
     let Some(r) = ad.files.items.get(i) else {
-        return el().key(format!("file-gone-{i}")).h(FILE_ROW_H);
+        return el().key(format!("file-gone-{i}")).h(file_row_h(k));
     };
     let key = r.key.clone();
     let selected = ad.selected.contains(&key);
@@ -1011,7 +1018,7 @@ fn file_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
         ))
         .focus_selected(selected)
         .w_full()
-        .h(FILE_ROW_H)
+        .h(file_row_h(k))
         .px(8.0)
         .gap(12.0)
         .center_y()
@@ -1041,14 +1048,14 @@ fn file_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
                         .min_w(0.0)
                         .child(
                             text(title.clone())
-                                .font(type_::CONTROL_STRONG)
+                                .font(type_::at(k, type_::CONTROL_STRONG))
                                 .color(t.text.color())
                                 .max_lines(1)
                                 .help_when_truncated(title.clone()),
                         )
                         .child(
                             text(r.content_type.clone())
-                                .font(type_::CAPTION)
+                                .font(type_::at(k, type_::CAPTION))
                                 .color(t.text_faint.color())
                                 .max_lines(1),
                         ),
@@ -1057,7 +1064,7 @@ fn file_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
         .child(
             row().w(FILE_KIND_W).shrink().child(
                 text(kind_label(r.kind).to_owned())
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.text_muted.color())
                     .max_lines(1),
             ),
@@ -1072,7 +1079,7 @@ fn file_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
             .child(
                 row().w(FILE_SERVER_W).shrink().child(
                     text(server)
-                        .font(type_::CONTROL)
+                        .font(type_::at(k, type_::CONTROL))
                         .color(t.text_muted.color())
                         .max_lines(1),
                 ),
@@ -1080,7 +1087,7 @@ fn file_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
             .child(
                 row().w(FILE_OWNER_W).shrink().child(
                     text(owner)
-                        .font(type_::CONTROL)
+                        .font(type_::at(k, type_::CONTROL))
                         .color(t.text_muted.color())
                         .max_lines(1),
                 ),
@@ -1091,7 +1098,7 @@ fn file_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
         line = line.child(
             row().w(FILE_DATE_W).shrink().child(
                 text(when)
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.text_muted.color())
                     .max_lines(1),
             ),
@@ -1157,7 +1164,7 @@ fn users(k: &Kit, ad: &AdminState, compact: bool) -> Parts {
         let list = rows(
             "admin-user-rows",
             feed.items.len(),
-            ROW_H,
+            row_h(k),
             k,
             |s, i| {
                 s.admin().map_or_else(String::new, |ad| {
@@ -1169,8 +1176,8 @@ fn users(k: &Kit, ad: &AdminState, compact: bool) -> Parts {
         col()
             .w_full()
             .max_w(MAX_W)
-            .px(PAD - 8.0)
-            .pb(PAD)
+            .px(pad(k) - 8.0)
+            .pb(pad(k))
             .child(list)
             .children(list_foot(k, feed.pending, &feed.error))
     };
@@ -1204,10 +1211,10 @@ fn last_active(a: &App, r: &AdminUserRow) -> String {
 fn user_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
     let t = theme_of(k);
     let Some(ad) = a.state.admin() else {
-        return el().key(format!("user-gone-{i}")).h(ROW_H);
+        return el().key(format!("user-gone-{i}")).h(row_h(k));
     };
     let Some(r) = ad.users.items.get(i) else {
-        return el().key(format!("user-gone-{i}")).h(ROW_H);
+        return el().key(format!("user-gone-{i}")).h(row_h(k));
     };
     let id = r.user.id;
     let name = r.user.username.clone();
@@ -1215,7 +1222,7 @@ fn user_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
     let on = r.user.is_admin;
     let mut who = row().gap(8.0).center_y().child(
         text(name.clone())
-            .font(type_::CONTROL_STRONG)
+            .font(type_::at(k, type_::CONTROL_STRONG))
             .color(t.text.color())
             .max_lines(1),
     );
@@ -1232,7 +1239,7 @@ fn user_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
         labels = labels.child(
             text(e.clone())
                 .key(format!("user-error-{id}"))
-                .font(type_::CAPTION)
+                .font(type_::at(k, type_::CAPTION))
                 .color(t.danger.color())
                 .wrap()
                 .w_full(),
@@ -1254,7 +1261,7 @@ fn user_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
             bytes(r.storage_bytes)
         ))
         .w_full()
-        .min_h(ROW_H)
+        .min_h(row_h(k))
         .px(8.0)
         .py(6.0)
         .gap(12.0)
@@ -1292,7 +1299,7 @@ fn user_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
         line = line.child(
             row().w(USER_LAST_W).shrink().child(
                 text(last_active(a, r))
-                    .font(type_::CONTROL)
+                    .font(type_::at(k, type_::CONTROL))
                     .color(t.text_muted.color())
                     .max_lines(1),
             ),
@@ -1343,8 +1350,8 @@ fn audit(k: &Kit, ad: &AdminState, compact: bool) -> Parts {
         col()
             .w_full()
             .max_w(MAX_W)
-            .px(PAD - 8.0)
-            .pb(PAD)
+            .px(pad(k) - 8.0)
+            .pb(pad(k))
             .child(list)
             .children(list_foot(k, feed.pending, &feed.error))
     };
@@ -1389,7 +1396,7 @@ fn audit_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
         };
         c.child(
             text(s.clone())
-                .font(type_::CONTROL)
+                .font(type_::at(k, type_::CONTROL))
                 .color(if muted { t.text_muted } else { t.text }.color())
                 .max_lines(1)
                 .help_when_truncated(s),
@@ -1426,7 +1433,7 @@ fn audit_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
                 )
                 .child(
                     text(actor)
-                        .font(type_::CONTROL_STRONG)
+                        .font(type_::at(k, type_::CONTROL_STRONG))
                         .color(t.text.color())
                         .max_lines(1),
                 ),
@@ -1522,7 +1529,7 @@ fn confirm(k: &Kit, layer: &mut Vec<El>, ad: &AdminState) {
                 .child(dialog_field(k, "Reason (optional)", input, None).w_full())
                 .child(
                     text("Recorded in the audit log.")
-                        .font(type_::CAPTION)
+                        .font(type_::at(k, type_::CAPTION))
                         .color(t.text_muted.color()),
                 );
             Dialog::new("admin-dlg", title)

@@ -14,7 +14,7 @@ use thehideout_design::{palette_color, theme_of};
 
 use crate::app::App;
 use crate::layout::{self, Item};
-use crate::state::{AppState, DialogKind, Menu as MenuState, ROW_PITCH};
+use crate::state::{AppState, DialogKind, Menu as MenuState};
 
 const SECTION_GAP: f32 = 8.0;
 /// Points a press must travel before it is a drag, not a click.
@@ -223,9 +223,9 @@ fn channel_shift(s: &AppState, guild: u64, id: u64) -> (f32, bool) {
         return (0.0, false);
     };
     let shift = if from < at && at <= to {
-        -ROW_PITCH
+        -s.ui.look.spec.metrics().row_pitch()
     } else if to <= at && at < from {
-        ROW_PITCH
+        s.ui.look.spec.metrics().row_pitch()
     } else {
         0.0
     };

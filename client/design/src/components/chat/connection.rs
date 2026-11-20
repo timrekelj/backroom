@@ -49,7 +49,7 @@ impl ConnectionPill {
         row()
             .role("status")
             .label(label.clone())
-            .h(22.0)
+            .h(crate::metrics_of(k).em(22.0))
             .px(8.0)
             .gap(6.0)
             .center_y()
@@ -66,7 +66,7 @@ impl ConnectionPill {
             .child(
                 text(label)
                     .key("label")
-                    .font(type_::LABEL)
+                    .font(type_::at(k, type_::LABEL))
                     .color(ink.color())
                     .a11y_hidden(),
             )

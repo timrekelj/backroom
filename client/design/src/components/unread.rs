@@ -4,7 +4,7 @@
 use rune::{El, SpringPair, TextStyle, Transition, el, row, text};
 use rune_kit::Kit;
 
-use crate::theme_of;
+use crate::{metrics_of, theme_of};
 use crate::tokens::{motion, radius};
 
 pub struct UnreadDot;
@@ -45,19 +45,20 @@ impl MentionPill {
         } else {
             self.count.to_string()
         };
-        let font = TextStyle {
+        let m = metrics_of(k);
+        let font = m.font(TextStyle {
             size: 11.0,
             weight: 650.0,
             line_height: 14.0,
             tracking: 0.0,
             features: "'tnum' 1",
             ..crate::tokens::type_::CAPTION
-        };
+        });
         row()
             .role("status")
             .label(format!("{} mentions", self.count))
-            .h(16.0)
-            .min_w(16.0)
+            .h(m.em(16.0))
+            .min_w(m.em(16.0))
             .px(5.0)
             .center()
             .radius(radius::FULL)

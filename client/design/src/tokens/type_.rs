@@ -3,6 +3,8 @@
 
 use rune::TextStyle;
 
+use super::metrics::Metrics;
+
 /// Small print: timestamps, counts, helper text. 11 / 16.
 pub const CAPTION: TextStyle = TextStyle::new(11.0, 450.0).lh(16.0).tracking(0.05);
 /// Section labels and chips. 12 / 16.
@@ -37,7 +39,31 @@ pub const SCALE: [(&str, TextStyle); 9] = [
     ("code", CODE),
 ];
 
-pub const fn kit() -> rune_kit::Type {
+pub fn kit(m: Metrics) -> rune_kit::Type {
+    let f = |s: TextStyle| m.font(s);
+    let base = base_kit();
+    rune_kit::Type {
+        ui: f(base.ui),
+        ui_medium: f(base.ui_medium),
+        ui_compact: f(base.ui_compact),
+        small: f(base.small),
+        small_medium: f(base.small_medium),
+        body: f(base.body),
+        body_medium: f(base.body_medium),
+        text_small: f(base.text_small),
+        text_small_medium: f(base.text_small_medium),
+        text_xsmall: f(base.text_xsmall),
+        text_xsmall_medium: f(base.text_xsmall_medium),
+        mono: f(base.mono),
+    }
+}
+
+/// `style` at the size the kit `k` was built for.
+pub fn at(k: &rune_kit::Kit, style: TextStyle) -> TextStyle {
+    crate::kit::metrics_of(k).font(style)
+}
+
+const fn base_kit() -> rune_kit::Type {
     rune_kit::Type {
         ui: CONTROL,
         ui_medium: CONTROL_STRONG,

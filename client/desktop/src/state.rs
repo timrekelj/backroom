@@ -243,8 +243,6 @@ pub struct Drag {
     pub dy: f32,
 }
 
-/// Points between rows (32 for a row, 2 for the gap): what a drag of `dy` points steps over.
-pub const ROW_PITCH: f32 = 34.0;
 
 /// Whether the event stream has been whole since the last `Connected`. The gateway doesn't
 /// replay what it missed, and `ConnectionStatus` can't say: `Connecting` arrives before every
