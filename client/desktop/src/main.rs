@@ -6,6 +6,9 @@
 
 #![forbid(unsafe_code)]
 
+mod admin;
+#[cfg(test)]
+mod admin_tests;
 mod app;
 mod apply;
 mod backend;
@@ -13,9 +16,10 @@ mod emoji;
 #[cfg(test)]
 mod emoji_tests;
 mod fake;
+mod fake_admin;
 mod fake_lines;
-mod forms;
 mod format;
+mod forms;
 mod layout;
 mod look;
 mod media;

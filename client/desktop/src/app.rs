@@ -3,15 +3,15 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rune::{el, Cx, El, Key, KeyEvent, SpringPair, Transition, Tx, Waker};
+use rune::{Cx, El, Key, KeyEvent, SpringPair, Transition, Tx, Waker, el};
 use thehideout_design::{kit_for, motion, theme_for};
 
 use crate::apply::apply;
 use crate::backend::{Backend, Command};
-use crate::fake::{now_unix, FakeBackend};
+use crate::fake::{FakeBackend, now_unix};
 use crate::format::Tz;
 use crate::look::{self, Saver};
-use crate::real::{default_server, open_prefs, RealBackend, SharedPrefs};
+use crate::real::{RealBackend, SharedPrefs, default_server, open_prefs};
 use crate::state::{AppState, Auth, Screen};
 use crate::ui;
 
@@ -123,7 +123,9 @@ const HEADLESS: &[&str] = &[
 ];
 
 fn headless() -> bool {
-    std::env::args().skip(1).any(|a| HEADLESS.contains(&a.as_str()))
+    std::env::args()
+        .skip(1)
+        .any(|a| HEADLESS.contains(&a.as_str()))
 }
 
 /// Whether this run uses the deterministic fake: `--fake`, or any headless run (scenes,
@@ -156,7 +158,11 @@ pub fn init() -> App {
     let mut state = AppState::new(real_now, Tz::Local);
     state.auth = Auth::new(&default_server());
     state.screen = Screen::Loading;
-    let mut app = App::start(Box::new(RealBackend::with_shared(prefs.clone())), state, prefs);
+    let mut app = App::start(
+        Box::new(RealBackend::with_shared(prefs.clone())),
+        state,
+        prefs,
+    );
     app.boot = 1;
     app
 }
@@ -208,12 +214,25 @@ pub fn poll(a: &mut App, clock: f64, tx: &mut Tx) -> bool {
 }
 
 /// Keys no focused control took: Cmd/Ctrl+W closes the window, Cmd/Ctrl+Q quits, Alt+Up and
-/// Alt+Down move between channels, Escape leaves the settings. (Escape belongs to an open modal
+/// Alt+Down move between channels, Escape leaves the settings, Cmd/Ctrl+Shift+A opens the admin dashboard (admins only). (Escape belongs to an open modal
 /// or menu first.)
 pub fn on_key(a: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     match ev.key {
         Key::Command('w') => tx.close_window(),
         Key::Command('q') => tx.quit(),
+        Key::Command(c) if c.eq_ignore_ascii_case(&'a') && ev.mods.shift && a.state.is_admin() => {
+            a.act(|s| s.open_admin())
+        }
+        Key::Escape
+            if a.state
+                .ui
+                .admin
+                .as_ref()
+                .is_some_and(|ad| ad.confirm.is_some()) =>
+        {
+            a.act(|s| s.cancel_admin_confirm())
+        }
+        Key::Escape if a.state.ui.admin.is_some() => a.act(|s| s.close_admin()),
         Key::Escape if a.state.ui.settings.is_some() => a.act(|s| s.close_settings()),
         Key::Escape if a.state.ui.server_settings.is_some() => a.act(|s| s.close_server_settings()),
         Key::Up if ev.mods.alt && a.state.screen == Screen::Main => a.act(|s| s.step_channel(-1)),

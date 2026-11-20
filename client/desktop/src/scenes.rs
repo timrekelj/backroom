@@ -5,13 +5,17 @@ use thehideout_api::ApiError;
 use thehideout_design::components::ToastKind;
 use thehideout_design::{AccentPreset, Appearance, BackgroundPreset, ThemeSpec};
 
-use crate::app::{fake_now, App};
+use crate::admin::{AdminPage, Confirm};
+use crate::app::{App, fake_now};
 use crate::backend::Command;
 use crate::emoji::PickerTarget;
-use crate::fake::{FakeBackend, ANA, ARCHIVE, BRUNO, CVETKA, DESIGN, DEV, DM_ANA, GENERAL, HIDEOUT_DESIGNERS, HIDEOUT_MODS, MEMES, MUSIC, PLANS, RANDOM, SMUG_CAT};
+use crate::fake::{
+    ANA, ARCHIVE, BRUNO, CVETKA, DESIGN, DEV, DM_ANA, FakeBackend, GENERAL, HIDEOUT_DESIGNERS,
+    HIDEOUT_MODS, MEMES, MUSIC, PLANS, RANDOM, SMUG_CAT,
+};
 use crate::format::Tz;
 use crate::server_settings::ServerPage;
-use crate::state::{auth_error, AppState, AuthMode, DialogKind, Menu};
+use crate::state::{AppState, AuthMode, DialogKind, Menu, auth_error};
 
 /// A signed-in app on the fake world, in the given theme, with The Hideout's #general open.
 pub fn booted(dark: bool) -> (App, FakeBackend) {
@@ -22,7 +26,11 @@ pub fn booted(dark: bool) -> (App, FakeBackend) {
 pub fn booted_as(dark: bool, who: &str) -> (App, FakeBackend) {
     let fake = FakeBackend::new();
     let mut state = AppState::new(fake_now, Tz::Fixed(0));
-    state.ui.look.spec.appearance = if dark { Appearance::Dark } else { Appearance::Light };
+    state.ui.look.spec.appearance = if dark {
+        Appearance::Dark
+    } else {
+        Appearance::Light
+    };
     let mut app = App::new(Box::new(fake.clone()), state);
     app.state.auth.username.replace_text(who);
     app.state.auth.password.replace_text("hunter22");
@@ -33,7 +41,11 @@ pub fn booted_as(dark: bool, who: &str) -> (App, FakeBackend) {
 
 fn signed_out(dark: bool) -> App {
     let mut state = AppState::new(fake_now, Tz::Fixed(0));
-    state.ui.look.spec.appearance = if dark { Appearance::Dark } else { Appearance::Light };
+    state.ui.look.spec.appearance = if dark {
+        Appearance::Dark
+    } else {
+        Appearance::Light
+    };
     App::new(Box::new(FakeBackend::new()), state)
 }
 
@@ -86,7 +98,13 @@ fn main_(a: &mut App, dark: bool) {
 }
 
 /// The busy main screen in a chosen look (accent, background, tint, contrast), for review.
-fn main_look(a: &mut App, dark: bool, accent: AccentPreset, background: BackgroundPreset, tint: bool) {
+fn main_look(
+    a: &mut App,
+    dark: bool,
+    accent: AccentPreset,
+    background: BackgroundPreset,
+    tint: bool,
+) {
     *a = main_screen(dark).0;
     a.state.ui.look.spec = ThemeSpec {
         accent,
@@ -172,7 +190,12 @@ fn sections(a: &mut App, dark: bool) {
 /// The channel settings dialog for #dev with the icon picker open on its Icons tab.
 fn channel_settings(a: &mut App, dark: bool, search: &str) {
     *a = main_screen(dark).0;
-    a.act(|s| s.open_dialog(DialogKind::ChannelSettings { guild: 1, channel: DEV }));
+    a.act(|s| {
+        s.open_dialog(DialogKind::ChannelSettings {
+            guild: 1,
+            channel: DEV,
+        })
+    });
     a.act(|s| s.toggle_picker());
     if let Some(f) = a.state.channel_form() {
         f.search.replace_text(search);
@@ -183,7 +206,10 @@ fn channel_settings(a: &mut App, dark: bool, search: &str) {
 /// A channel's context menu, open where a right-click landed.
 fn reorder_menu(a: &mut App, dark: bool) {
     *a = main_screen(dark).0;
-    a.state.ui.menu = Menu::Channel { id: DESIGN, at: Some((110, 330)) };
+    a.state.ui.menu = Menu::Channel {
+        id: DESIGN,
+        at: Some((110, 330)),
+    };
 }
 
 /// The busy main screen with pictures: every member has an avatar, The Hideout an icon, role
@@ -192,7 +218,11 @@ fn avatars_screen(dark: bool) -> (App, FakeBackend) {
     let (mut a, fake) = main_screen(dark);
     fake.give_avatars();
     fake.give_icon(1);
-    fake.incoming(GENERAL, BRUNO, "@ana @cvetka the mockups are in #design, could you both take a look?");
+    fake.incoming(
+        GENERAL,
+        BRUNO,
+        "@ana @cvetka the mockups are in #design, could you both take a look?",
+    );
     fake.incoming(GENERAL, CVETKA, "on it. @bruno thanks for the heads up");
     fake.incoming(GENERAL, ANA, "@tim you can merge when ready");
     a.pump();
@@ -238,7 +268,10 @@ fn server_settings_limited(a: &mut App, dark: bool) {
 /// The profile dialog with a picture chosen and waiting to be saved.
 fn profile_dialog(a: &mut App, dark: bool) {
     let (mut app, _fake) = avatars_screen(dark);
-    let path = std::env::temp_dir().join(format!("thehideout-profile-scene-{}.png", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "thehideout-profile-scene-{}.png",
+        std::process::id()
+    ));
     std::fs::write(&path, crate::media::generated_png(41, 96)).ok();
     app.act(|s| {
         s.open_profile();
@@ -246,7 +279,13 @@ fn profile_dialog(a: &mut App, dark: bool) {
     });
     app.pump();
     app.state.data.media.settle();
-    if let Some(d) = app.state.ui.dialog.as_ref().and_then(|d| d.pick.draft.as_ref()) {
+    if let Some(d) = app
+        .state
+        .ui
+        .dialog
+        .as_ref()
+        .and_then(|d| d.pick.draft.as_ref())
+    {
         let _ = d.preview.wait();
     }
     std::fs::remove_file(&path).ok();
@@ -269,8 +308,19 @@ fn emoji_picker(a: &mut App, dark: bool) {
     app.act(|s| s.open_picker(PickerTarget::Composer, "composer-emoji"));
     // A few recents, as if the user had been reacting.
     app.act(|s| {
-        for key in ["u:\u{1f44d}", "c:7002", "u:\u{1f602}", "u:\u{2764}\u{fe0f}", "c:7001", "u:\u{1f389}"].iter().rev() {
-            if let Some(p) = thehideout_design::components::Pick::from_key(key, &s.server_emojis()) {
+        for key in [
+            "u:\u{1f44d}",
+            "c:7002",
+            "u:\u{1f602}",
+            "u:\u{2764}\u{fe0f}",
+            "c:7001",
+            "u:\u{1f389}",
+        ]
+        .iter()
+        .rev()
+        {
+            if let Some(p) = thehideout_design::components::Pick::from_key(key, &s.server_emojis())
+            {
                 s.record_recent(&p);
             }
         }
@@ -296,7 +346,12 @@ fn reactions(a: &mut App, dark: bool, picker: bool) {
     app.act(|s| s.select_channel(GENERAL));
     app.pump();
     if picker {
-        let target = app.state.current_channel().and_then(|c| app.state.log(c)).and_then(|l| l.messages.iter().rev().nth(2)).map(|m| (m.channel_id, m.id));
+        let target = app
+            .state
+            .current_channel()
+            .and_then(|c| app.state.log(c))
+            .and_then(|l| l.messages.iter().rev().nth(2))
+            .map(|m| (m.channel_id, m.id));
         if let Some((channel, message)) = target {
             let anchor = format!("react-add-m:{message}");
             app.act(|s| s.open_picker(PickerTarget::Reaction { channel, message }, anchor));
@@ -309,7 +364,11 @@ fn reactions(a: &mut App, dark: bool, picker: bool) {
 fn jumbo_emoji(a: &mut App, dark: bool) {
     let (mut app, fake) = memes(dark);
     fake.incoming(MEMES, ANA, "<:blob_love:7004>");
-    fake.incoming(MEMES, ANA, "<a:dance_cat:7005><a:dance_cat:7005><a:dance_cat:7005>");
+    fake.incoming(
+        MEMES,
+        ANA,
+        "<a:dance_cat:7005><a:dance_cat:7005><a:dance_cat:7005>",
+    );
     fake.incoming(MEMES, BRUNO, "\u{1f680} \u{2728} \u{1f525}");
     fake.incoming(MEMES, BRUNO, "<:smug_cat:7001> \u{1f60e}");
     app.pump();
@@ -329,7 +388,13 @@ fn server_settings_emojis(a: &mut App, dark: bool) {
     });
     app.pump();
     app.state.data.media.settle();
-    if let Some(d) = app.state.ui.server_settings.as_ref().and_then(|s| s.emojis.draft.as_ref()) {
+    if let Some(d) = app
+        .state
+        .ui
+        .server_settings
+        .as_ref()
+        .and_then(|s| s.emojis.draft.as_ref())
+    {
         let _ = d.image.preview.wait();
     }
     std::fs::remove_file(&path).ok();
@@ -340,16 +405,94 @@ fn server_settings_emojis(a: &mut App, dark: bool) {
 /// sidebar already shows a Unicode emoji icon on #general and a custom one on #memes.
 fn channel_icon_emoji(a: &mut App, dark: bool, tab: usize) {
     let (mut app, _fake) = memes(dark);
-    let set = |channel: u64, icon: thehideout_api::ChannelIconRef| Command::UpdateChannel { guild: 1, channel, name: None, icon: Some(icon), color: None, topic: None };
-    app.state.outbox.push(set(GENERAL, thehideout_api::ChannelIconRef::Unicode("\u{1f4ac}".into())));
-    app.state.outbox.push(set(MEMES, thehideout_api::ChannelIconRef::Custom(SMUG_CAT)));
+    let set = |channel: u64, icon: thehideout_api::ChannelIconRef| Command::UpdateChannel {
+        guild: 1,
+        channel,
+        name: None,
+        icon: Some(icon),
+        color: None,
+        topic: None,
+    };
+    app.state.outbox.push(set(
+        GENERAL,
+        thehideout_api::ChannelIconRef::Unicode("\u{1f4ac}".into()),
+    ));
+    app.state
+        .outbox
+        .push(set(MEMES, thehideout_api::ChannelIconRef::Custom(SMUG_CAT)));
     app.act(|s| s.select_channel(DEV));
     app.pump();
     app.state.data.media.settle();
-    app.act(|s| s.open_dialog(DialogKind::ChannelSettings { guild: 1, channel: DEV }));
+    app.act(|s| {
+        s.open_dialog(DialogKind::ChannelSettings {
+            guild: 1,
+            channel: DEV,
+        })
+    });
     app.act(|s| s.toggle_picker());
     app.act(|s| s.set_picker_tab(tab));
     app.state.data.media.settle();
+    *a = app;
+}
+
+// ---- site admin ------------------------------------------------------------------------------
+
+/// The admin dashboard signed in as cvetka (the fake site admin), on `page` with its data in.
+fn admin_at(dark: bool, page: AdminPage) -> App {
+    let (mut app, _fake) = booted_as(dark, "cvetka");
+    app.act(|s| s.open_admin());
+    app.pump();
+    app.act(|s| s.admin_page(page));
+    app.pump();
+    app.state.data.media.settle();
+    app
+}
+
+fn admin_overview(a: &mut App, dark: bool) {
+    *a = admin_at(dark, AdminPage::Overview);
+}
+
+fn admin_servers(a: &mut App, dark: bool) {
+    *a = admin_at(dark, AdminPage::Servers);
+}
+
+fn admin_files(a: &mut App, dark: bool) {
+    *a = admin_at(dark, AdminPage::Files);
+}
+
+fn admin_users(a: &mut App, dark: bool) {
+    *a = admin_at(dark, AdminPage::Users);
+}
+
+fn admin_audit(a: &mut App, dark: bool) {
+    *a = admin_at(dark, AdminPage::Audit);
+}
+
+/// The Files page with the delete confirmation open on the largest stored file, reason typed.
+fn admin_files_delete(a: &mut App, dark: bool) {
+    let mut app = admin_at(dark, AdminPage::Files);
+    app.act(|s| {
+        let key = s
+            .admin()
+            .and_then(|ad| ad.files.items.first().map(|r| r.key.clone()))
+            .unwrap_or_default();
+        s.ask_delete_files(vec![key]);
+        if let Some(Confirm::DeleteFiles(d)) =
+            s.ui.admin.as_mut().and_then(|ad| ad.confirm.as_mut())
+        {
+            d.reason.replace_text("spam");
+        }
+    });
+    app.pump();
+    *a = app;
+}
+
+/// A server without the admin service: the dashboard says so.
+fn admin_unavailable(a: &mut App, dark: bool) {
+    let (mut app, fake) = booted_as(dark, "cvetka");
+    fake.admin_unavailable(true);
+    app.act(|s| s.open_admin());
+    app.pump();
     *a = app;
 }
 
@@ -379,7 +522,9 @@ pub const SCENES: &[Scene] = &[
     ("reconnecting", |a| reconnecting(a, true)),
     ("reconnecting-light", |a| reconnecting(a, false)),
     ("settings-appearance", |a| settings_appearance(a, true)),
-    ("settings-appearance-light", |a| settings_appearance(a, false)),
+    ("settings-appearance-light", |a| {
+        settings_appearance(a, false)
+    }),
     ("main-ocean-cool", |a| {
         main_look(a, true, AccentPreset::Ocean, BackgroundPreset::Cool, true)
     }),
@@ -387,26 +532,50 @@ pub const SCENES: &[Scene] = &[
         main_look(a, false, AccentPreset::Coral, BackgroundPreset::Paper, true)
     }),
     ("main-graphite-deep", |a| {
-        main_look(a, true, AccentPreset::Graphite, BackgroundPreset::Deep, false)
+        main_look(
+            a,
+            true,
+            AccentPreset::Graphite,
+            BackgroundPreset::Deep,
+            false,
+        )
     }),
     ("sections", |a| sections(a, true)),
     ("sections-light", |a| sections(a, false)),
     ("channel-settings", |a| channel_settings(a, true, "")),
     ("channel-settings-light", |a| channel_settings(a, false, "")),
     ("icon-picker-search", |a| channel_settings(a, true, "game")),
-    ("icon-picker-search-light", |a| channel_settings(a, false, "game")),
+    ("icon-picker-search-light", |a| {
+        channel_settings(a, false, "game")
+    }),
     ("reorder-menu", |a| reorder_menu(a, true)),
     ("reorder-menu-light", |a| reorder_menu(a, false)),
     ("main-avatars", |a| main_avatars(a, true)),
     ("main-avatars-light", |a| main_avatars(a, false)),
-    ("server-settings-overview", |a| server_settings(a, true, ServerPage::Overview, None)),
-    ("server-settings-overview-light", |a| server_settings(a, false, ServerPage::Overview, None)),
-    ("server-settings-roles", |a| server_settings(a, true, ServerPage::Roles, Some(HIDEOUT_MODS))),
-    ("server-settings-roles-light", |a| server_settings(a, false, ServerPage::Roles, Some(HIDEOUT_DESIGNERS))),
-    ("server-settings-roles-limited", |a| server_settings_limited(a, true)),
-    ("server-settings-roles-limited-light", |a| server_settings_limited(a, false)),
-    ("server-settings-members", |a| server_settings(a, true, ServerPage::Members, None)),
-    ("server-settings-members-light", |a| server_settings(a, false, ServerPage::Members, None)),
+    ("server-settings-overview", |a| {
+        server_settings(a, true, ServerPage::Overview, None)
+    }),
+    ("server-settings-overview-light", |a| {
+        server_settings(a, false, ServerPage::Overview, None)
+    }),
+    ("server-settings-roles", |a| {
+        server_settings(a, true, ServerPage::Roles, Some(HIDEOUT_MODS))
+    }),
+    ("server-settings-roles-light", |a| {
+        server_settings(a, false, ServerPage::Roles, Some(HIDEOUT_DESIGNERS))
+    }),
+    ("server-settings-roles-limited", |a| {
+        server_settings_limited(a, true)
+    }),
+    ("server-settings-roles-limited-light", |a| {
+        server_settings_limited(a, false)
+    }),
+    ("server-settings-members", |a| {
+        server_settings(a, true, ServerPage::Members, None)
+    }),
+    ("server-settings-members-light", |a| {
+        server_settings(a, false, ServerPage::Members, None)
+    }),
     ("profile-dialog", |a| profile_dialog(a, true)),
     ("profile-dialog-light", |a| profile_dialog(a, false)),
     ("emoji-picker", |a| emoji_picker(a, true)),
@@ -418,11 +587,35 @@ pub const SCENES: &[Scene] = &[
     ("reactions-picker", |a| reactions(a, true, true)),
     ("jumbo-emoji", |a| jumbo_emoji(a, true)),
     ("jumbo-emoji-light", |a| jumbo_emoji(a, false)),
-    ("server-settings-emojis", |a| server_settings_emojis(a, true)),
-    ("server-settings-emojis-light", |a| server_settings_emojis(a, false)),
-    ("channel-icon-emoji-tabs", |a| channel_icon_emoji(a, true, 2)),
-    ("channel-icon-emoji-tabs-light", |a| channel_icon_emoji(a, false, 2)),
-    ("channel-icon-unicode-tab", |a| channel_icon_emoji(a, true, 1)),
+    ("server-settings-emojis", |a| {
+        server_settings_emojis(a, true)
+    }),
+    ("server-settings-emojis-light", |a| {
+        server_settings_emojis(a, false)
+    }),
+    ("channel-icon-emoji-tabs", |a| {
+        channel_icon_emoji(a, true, 2)
+    }),
+    ("channel-icon-emoji-tabs-light", |a| {
+        channel_icon_emoji(a, false, 2)
+    }),
+    ("channel-icon-unicode-tab", |a| {
+        channel_icon_emoji(a, true, 1)
+    }),
     ("main-small", |a| main_(a, true)),
     ("main-small-light", |a| main_(a, false)),
+    ("admin-overview", |a| admin_overview(a, true)),
+    ("admin-overview-light", |a| admin_overview(a, false)),
+    ("admin-servers", |a| admin_servers(a, true)),
+    ("admin-servers-light", |a| admin_servers(a, false)),
+    ("admin-files", |a| admin_files(a, true)),
+    ("admin-files-light", |a| admin_files(a, false)),
+    ("admin-files-delete", |a| admin_files_delete(a, true)),
+    ("admin-files-delete-light", |a| admin_files_delete(a, false)),
+    ("admin-users", |a| admin_users(a, true)),
+    ("admin-users-light", |a| admin_users(a, false)),
+    ("admin-audit", |a| admin_audit(a, true)),
+    ("admin-audit-light", |a| admin_audit(a, false)),
+    ("admin-unavailable", |a| admin_unavailable(a, true)),
+    ("admin-unavailable-light", |a| admin_unavailable(a, false)),
 ];

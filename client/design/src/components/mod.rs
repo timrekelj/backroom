@@ -13,6 +13,7 @@
 pub mod avatar;
 pub mod badge;
 pub mod button;
+pub mod chart;
 pub mod chat;
 pub mod checkbox;
 pub mod icon_button;
@@ -26,6 +27,9 @@ pub mod util;
 pub use avatar::{Avatar, Presence};
 pub use badge::{Badge, BadgeVariant};
 pub use button::{Button, Size, Variant};
+pub use chart::{
+    ActivityChart, BarSegment, ChartDay, StackedBar, StatCard, compact, group_digits, nice_max,
+};
 pub use checkbox::Checkbox;
 pub use icon_button::IconButton;
 pub use kbd::Kbd;

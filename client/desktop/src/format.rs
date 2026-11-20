@@ -89,6 +89,50 @@ pub fn day_label(day: i64, today: i64) -> String {
     }
 }
 
+/// "Nov 17": the month and day of a day number (chart axes).
+pub fn short_date(day: i64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let (_, m, d) = civil(day);
+    format!("{} {d}", MONTHS[m as usize - 1])
+}
+
+/// The day number of a `YYYY-MM-DD` date.
+pub fn parse_date(date: &str) -> Option<i64> {
+    let mut parts = date.split('-');
+    let (y, m, d) = (
+        parts.next()?.parse::<i64>().ok()?,
+        parts.next()?.parse::<u32>().ok()?,
+        parts.next()?.parse::<u32>().ok()?,
+    );
+    ((1..=12).contains(&m) && (1..=31).contains(&d) && parts.next().is_none())
+        .then(|| utc(y, m, d, 0, 0).div_euclid(DAY))
+}
+
+/// A byte count as people read it: "512 B", "1.5 KiB", "38 MiB", "1.2 GiB".
+pub fn bytes(n: u64) -> String {
+    const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    let mut v = n as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit < UNITS.len() - 1 {
+        v /= 1024.0;
+        unit += 1;
+    }
+    // One decimal below 10, none above; a value that rounds up to 1024 moves to the next unit.
+    if v >= 1023.5 && unit < UNITS.len() - 1 {
+        return format!("1 {}", UNITS[unit + 1]);
+    }
+    if v < 10.0 {
+        format!("{:.1} {}", (v * 10.0).round() / 10.0, UNITS[unit])
+    } else {
+        format!("{v:.0} {}", UNITS[unit])
+    }
+}
+
 /// Unix seconds of a wall-clock date and time in UTC (fake data).
 pub fn utc(y: i64, m: u32, d: u32, hh: i64, mm: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -155,6 +199,28 @@ mod tests {
         assert_eq!(label(tz, midnight - 1, midnight), "Yesterday");
         assert_eq!(until_next_day(tz, midnight), DAY);
         assert_eq!(until_next_day(tz, midnight - 1), 1);
+    }
+
+    #[test]
+    fn byte_sizes_read_naturally() {
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(512), "512 B");
+        assert_eq!(bytes(1024), "1.0 KiB");
+        assert_eq!(bytes(1536), "1.5 KiB");
+        assert_eq!(bytes(10 * 1024), "10 KiB");
+        assert_eq!(bytes(38 * 1024 * 1024 + 300_000), "38 MiB");
+        assert_eq!(bytes(1_288_490_189), "1.2 GiB");
+        assert_eq!(bytes(1024 * 1024 - 1), "1 MiB");
+        assert_eq!(bytes(u64::MAX), "16 EiB");
+    }
+
+    #[test]
+    fn dates_parse_and_shorten() {
+        let day = parse_date("2026-11-17").unwrap();
+        assert_eq!(day, utc(2026, 11, 17, 0, 0).div_euclid(DAY));
+        assert_eq!(short_date(day), "Nov 17");
+        assert_eq!(parse_date("2026-13-01"), None);
+        assert_eq!(parse_date("nope"), None);
     }
 
     #[test]

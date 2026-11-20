@@ -6,7 +6,7 @@
 //! (`over_transcript`), so it never covers the input. Screens without a composer (auth, Home
 //! with no conversation) keep it at the window's bottom centre (`build`).
 
-use rune::{col, el, El};
+use rune::{El, col, el};
 use rune_kit::Kit;
 use thehideout_design::components::Toast;
 
@@ -20,7 +20,11 @@ const PILL: f32 = 40.0;
 
 /// Whether the shell shows a composer, so toasts go over the transcript instead.
 fn above_composer(a: &App) -> bool {
-    a.state.screen == Screen::Main && a.state.current_channel().is_some()
+    a.state.screen == Screen::Main
+        && a.state.current_channel().is_some()
+        && a.state.ui.settings.is_none()
+        && a.state.ui.server_settings.is_none()
+        && a.state.ui.admin.is_none()
 }
 
 fn host(a: &App, k: &Kit, bottom: f32) -> El {

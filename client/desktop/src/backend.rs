@@ -7,17 +7,22 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use thehideout_api::{
-    ApiError, Channel, ChannelIconRef, DmChannel, Emoji, GatewayUpdate, Guild, GuildLayout, Member, Message, Page, PaletteColor, Permissions, ReactionEmoji, Role,
-    RoleList, Section, User,
+    ActivityPoint, AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, ApiError, AuditEntry,
+    Channel, ChannelIconRef, DmChannel, Emoji, GatewayUpdate, Guild, GuildLayout, Member, Message,
+    Overview, Page, Paged, PaletteColor, Permissions, ReactionEmoji, Role, RoleList, Section, User,
 };
 
 /// What a picked picture is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImagePurpose {
     Avatar,
-    GuildIcon { guild: u64 },
+    GuildIcon {
+        guild: u64,
+    },
     /// A custom emoji to add to `guild`.
-    Emoji { guild: u64 },
+    Emoji {
+        guild: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,6 +190,46 @@ pub enum Command {
         message: u64,
         emoji: ReactionEmoji,
     },
+    /// Site totals (admins only; every `Admin*` command answers `Unimplemented` from a server without the service).
+    AdminOverview,
+    /// Per-day activity of the last `days` days.
+    AdminActivity {
+        days: u32,
+    },
+    /// A page of servers. `epoch` names the list the answer belongs to (a new search starts a new one).
+    AdminGuilds {
+        epoch: u64,
+        query: String,
+        page_token: Option<String>,
+        limit: u32,
+    },
+    AdminUsers {
+        epoch: u64,
+        query: String,
+        page_token: Option<String>,
+        limit: u32,
+    },
+    /// Stored files, largest first.
+    AdminFiles {
+        epoch: u64,
+        guild: Option<u64>,
+        kind: Option<AdminFileKind>,
+        page_token: Option<String>,
+        limit: u32,
+    },
+    AdminAudit {
+        epoch: u64,
+        page_token: Option<String>,
+        limit: u32,
+    },
+    AdminSetAdmin {
+        user: u64,
+        is_admin: bool,
+    },
+    AdminDeleteFile {
+        key: String,
+        reason: String,
+    },
     SignOut,
     /// Launch: validate the saved session, if there is one.
     Resume,
@@ -328,6 +373,36 @@ pub enum Reply {
         message: u64,
         emoji: ReactionEmoji,
         add: bool,
+        result: R<()>,
+    },
+    AdminOverview(R<Overview>),
+    AdminActivity {
+        days: u32,
+        result: R<Vec<ActivityPoint>>,
+    },
+    AdminGuilds {
+        epoch: u64,
+        result: R<Paged<AdminGuildRow>>,
+    },
+    AdminUsers {
+        epoch: u64,
+        result: R<Paged<AdminUserRow>>,
+    },
+    AdminFiles {
+        epoch: u64,
+        result: R<Paged<AdminFileRow>>,
+    },
+    AdminAudit {
+        epoch: u64,
+        result: R<Paged<AuditEntry>>,
+    },
+    AdminAdminSet {
+        user: u64,
+        is_admin: bool,
+        result: R<User>,
+    },
+    AdminFileDeleted {
+        key: String,
         result: R<()>,
     },
     SignedOut,

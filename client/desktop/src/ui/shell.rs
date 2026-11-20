@@ -1,13 +1,13 @@
 //! The main screen: rail, sidebar and the inset panel holding the header, transcript, composer
 //! and the member panel. Works from 800x600 up; the transcript takes whatever width is left.
 
-use rune::{col, el, row, text, El};
+use rune::{El, col, el, row, text};
 use rune_kit::Kit;
-use thehideout_design::components::{Avatar, ChannelHeader, IconButton, HEADER_H};
-use thehideout_design::icons::{catalog, GEAR, HASH, USERS};
+use thehideout_design::components::{Avatar, ChannelHeader, HEADER_H, IconButton};
+use thehideout_design::icons::{GEAR, HASH, USERS, catalog};
 use thehideout_design::{palette_color, radius, theme_of, type_};
 
-use super::{composer, members, rail, server_settings, settings, sidebar, transcript};
+use super::{admin, composer, members, rail, server_settings, settings, sidebar, transcript};
 use crate::app::App;
 use crate::state::{DialogKind, Place};
 
@@ -57,6 +57,11 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32, lay: Layout) -> El
     if a.state.ui.server_settings.is_some() {
         return server_settings::build(a, k, layer, bar);
     }
+    // The admin dashboard replaces the shell the same way; below 1000pt the window is narrow
+    // enough to drop the secondary columns of its tables.
+    if a.state.ui.admin.is_some() {
+        return admin::build(a, k, layer, bar, !lay.members);
+    }
     let t = theme_of(k);
     let panel = row()
         .key("main-panel")
@@ -88,14 +93,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32, lay: Layout) -> El
         .pb(INSET)
         .child(rail::build(a, k, layer))
         .child(sidebar::build(a, k, layer, lay.sidebar))
-        .child(
-            col()
-                .grow(1.0)
-                .min_w(0.0)
-                .h_full()
-                .pr(INSET)
-                .child(panel),
-        );
+        .child(col().grow(1.0).min_w(0.0).h_full().pr(INSET).child(panel));
     col()
         .key("shell")
         .w_full()
@@ -133,7 +131,14 @@ fn header(a: &App, k: &Kit, lay: Layout) -> El {
                     h = h.action(
                         IconButton::new(&GEAR, "Channel settings")
                             .size(thehideout_design::components::Size::Md)
-                            .on_press(move |a: &mut App| a.act(|s| s.open_dialog(DialogKind::ChannelSettings { guild: g, channel: id })))
+                            .on_press(move |a: &mut App| {
+                                a.act(|s| {
+                                    s.open_dialog(DialogKind::ChannelSettings {
+                                        guild: g,
+                                        channel: id,
+                                    })
+                                })
+                            })
                             .build(k)
                             .key("channel-settings-button"),
                     );

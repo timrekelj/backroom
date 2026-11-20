@@ -9,14 +9,16 @@ use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use thehideout_api::{
-    ApiError, Channel, ChannelIcon, ChannelIconRef, DmChannel, Emoji, Event, GatewayUpdate, Guild, GuildLayout, LayoutEntry, Member, Message, Page,
-    PaletteColor, Permissions, Reaction, ReactionEmoji, Role, RoleList, Section, User,
+    ApiError, Channel, ChannelIcon, ChannelIconRef, DmChannel, Emoji, Event, GatewayUpdate, Guild,
+    GuildLayout, LayoutEntry, Member, Message, Page, PaletteColor, Permissions, Reaction,
+    ReactionEmoji, Role, RoleList, Section, User,
 };
 
 use crate::backend::{Backend, Command, GuildAccess, Initial, Reply, Session};
+use crate::fake_admin::AdminWorld;
+use crate::fake_lines::{DEV_LINES, DM_ANA_LINES, DM_BRUNO_LINES, general_line};
+use crate::format::{DAY, utc};
 use crate::layout;
-use crate::fake_lines::{general_line, DEV_LINES, DM_ANA_LINES, DM_BRUNO_LINES};
-use crate::format::{utc, DAY};
 
 const PAGE: usize = 50;
 const MAX_ROLE_NAME: usize = crate::server_settings::MAX_ROLE_NAME;
@@ -122,6 +124,8 @@ struct World {
     next_emoji: u64,
     /// The next `n` reaction calls fail with a network error.
     fail_reactions: u32,
+    /// The site-admin side (users, servers, files, activity, audit).
+    admin: AdminWorld,
 }
 
 impl Default for World {
@@ -145,12 +149,14 @@ impl Lcg {
 
 impl World {
     fn new() -> World {
-        let users = vec![
+        let mut users = vec![
             user(TIM, "tim"),
             user(ANA, "ana"),
             user(BRUNO, "bruno"),
             user(CVETKA, "cvetka"),
         ];
+        // The one site admin among the four (sign in as cvetka to see the dashboard).
+        users[CVETKA as usize - 1].is_admin = true;
         let ch = |id: u64, guild: u64, position: i32, name: &str| Channel {
             id,
             guild_id: guild,
@@ -191,14 +197,54 @@ impl World {
                 guild(3, "Cooking Club", BRUNO, "COOK333"),
             ],
             channels: vec![
-                look(ch(GENERAL, 1, 0, "general"), "chat-circle-dots", PaletteColor::Teal, "Say hi, share links, plan the weekend"),
-                look(ch(DEV, 1, 1, "dev"), "code", PaletteColor::Blue, "Builds, reviews and the odd rant about lifetimes"),
-                look(ch(RANDOM, 1, 2, "random"), "dice-five", PaletteColor::Amber, ""),
-                look(ch(PLANS, 1, 3, "plans"), "calendar-check", PaletteColor::Green, ""),
-                look(ch(ANNOUNCE, 1, 4, "announcements"), "megaphone", PaletteColor::Orange, "Read-only news from the mods"),
-                look(ch(DESIGN, 1, 5, "design"), "paint-brush", PaletteColor::Pink, ""),
-                look(ch(MUSIC, 1, 6, "music"), "music-notes", PaletteColor::Indigo, ""),
-                look(ch(GAMING, 1, 7, "gaming"), "game-controller", PaletteColor::Red, ""),
+                look(
+                    ch(GENERAL, 1, 0, "general"),
+                    "chat-circle-dots",
+                    PaletteColor::Teal,
+                    "Say hi, share links, plan the weekend",
+                ),
+                look(
+                    ch(DEV, 1, 1, "dev"),
+                    "code",
+                    PaletteColor::Blue,
+                    "Builds, reviews and the odd rant about lifetimes",
+                ),
+                look(
+                    ch(RANDOM, 1, 2, "random"),
+                    "dice-five",
+                    PaletteColor::Amber,
+                    "",
+                ),
+                look(
+                    ch(PLANS, 1, 3, "plans"),
+                    "calendar-check",
+                    PaletteColor::Green,
+                    "",
+                ),
+                look(
+                    ch(ANNOUNCE, 1, 4, "announcements"),
+                    "megaphone",
+                    PaletteColor::Orange,
+                    "Read-only news from the mods",
+                ),
+                look(
+                    ch(DESIGN, 1, 5, "design"),
+                    "paint-brush",
+                    PaletteColor::Pink,
+                    "",
+                ),
+                look(
+                    ch(MUSIC, 1, 6, "music"),
+                    "music-notes",
+                    PaletteColor::Indigo,
+                    "",
+                ),
+                look(
+                    ch(GAMING, 1, 7, "gaming"),
+                    "game-controller",
+                    PaletteColor::Red,
+                    "",
+                ),
                 look(ch(MEMES, 1, 8, "memes"), "smiley", PaletteColor::Yellow, ""),
                 look(ch(BOOKS, 1, 9, "books"), "books", PaletteColor::Slate, ""),
                 ch(20, 2, 0, "general"),
@@ -235,7 +281,9 @@ impl World {
             emojis: HashMap::new(),
             next_emoji: 7200,
             fail_reactions: 0,
+            admin: AdminWorld::empty(),
         };
+        f.admin = AdminWorld::new(&f.users, &f.guilds);
         f.seed_structure();
         f.seed();
         f.seed_emojis();
@@ -245,24 +293,60 @@ impl World {
     /// Sections, layouts and roles: Tim owns The Hideout, is a plain member of Garage Band and a
     /// moderator (not owner) of Cooking Club.
     fn seed_structure(&mut self) {
-        let section = |id: u64, name: &str, position: i32| Section { id, guild_id: 1, name: name.into(), position };
+        let section = |id: u64, name: &str, position: i32| Section {
+            id,
+            guild_id: 1,
+            name: name.into(),
+            position,
+        };
         self.layouts.insert(
             1,
             GuildLayout {
                 version: 3,
-                sections: vec![section(BUILDING, "Building", 0), section(HANGOUT, "Hangout", 1), section(ARCHIVE, "Archive", 2)],
+                sections: vec![
+                    section(BUILDING, "Building", 0),
+                    section(HANGOUT, "Hangout", 1),
+                    section(ARCHIVE, "Archive", 2),
+                ],
                 entries: vec![
-                    LayoutEntry { section_id: None, channel_ids: vec![GENERAL, DEV, ANNOUNCE] },
-                    LayoutEntry { section_id: Some(BUILDING), channel_ids: vec![DESIGN, PLANS] },
-                    LayoutEntry { section_id: Some(HANGOUT), channel_ids: vec![RANDOM, MUSIC, GAMING, MEMES] },
-                    LayoutEntry { section_id: Some(ARCHIVE), channel_ids: vec![BOOKS] },
+                    LayoutEntry {
+                        section_id: None,
+                        channel_ids: vec![GENERAL, DEV, ANNOUNCE],
+                    },
+                    LayoutEntry {
+                        section_id: Some(BUILDING),
+                        channel_ids: vec![DESIGN, PLANS],
+                    },
+                    LayoutEntry {
+                        section_id: Some(HANGOUT),
+                        channel_ids: vec![RANDOM, MUSIC, GAMING, MEMES],
+                    },
+                    LayoutEntry {
+                        section_id: Some(ARCHIVE),
+                        channel_ids: vec![BOOKS],
+                    },
                 ],
             },
         );
         for (g, ids) in [(2, vec![20, 21]), (3, vec![30, 31])] {
-            self.layouts.insert(g, GuildLayout { version: 1, sections: vec![], entries: vec![LayoutEntry { section_id: None, channel_ids: ids }] });
+            self.layouts.insert(
+                g,
+                GuildLayout {
+                    version: 1,
+                    sections: vec![],
+                    entries: vec![LayoutEntry {
+                        section_id: None,
+                        channel_ids: ids,
+                    }],
+                },
+            );
         }
-        let role = |id: u64, guild: u64, name: &str, color: PaletteColor, position: i32, permissions: Permissions| Role {
+        let role = |id: u64,
+                    guild: u64,
+                    name: &str,
+                    color: PaletteColor,
+                    position: i32,
+                    permissions: Permissions| Role {
             id,
             guild_id: guild,
             name: name.into(),
@@ -275,9 +359,30 @@ impl World {
         self.roles.insert(
             1,
             vec![
-                role(HIDEOUT_ADMINS, 1, "Admin", C::Red, 3, Permissions::ADMINISTRATOR),
-                role(HIDEOUT_MODS, 1, "Moderator", C::Teal, 2, Permissions::MANAGE_CHANNELS),
-                role(HIDEOUT_DESIGNERS, 1, "Designer", C::Pink, 1, Permissions::NONE),
+                role(
+                    HIDEOUT_ADMINS,
+                    1,
+                    "Admin",
+                    C::Red,
+                    3,
+                    Permissions::ADMINISTRATOR,
+                ),
+                role(
+                    HIDEOUT_MODS,
+                    1,
+                    "Moderator",
+                    C::Teal,
+                    2,
+                    Permissions::MANAGE_CHANNELS,
+                ),
+                role(
+                    HIDEOUT_DESIGNERS,
+                    1,
+                    "Designer",
+                    C::Pink,
+                    1,
+                    Permissions::NONE,
+                ),
                 role(HIDEOUT_MEMBERS, 1, "Regular", C::None, 0, Permissions::NONE),
             ],
         );
@@ -285,12 +390,29 @@ impl World {
             2,
             vec![
                 role(BAND_DRUMMER, 2, "Drummer", C::Orange, 3, Permissions::NONE),
-                role(BAND_ROADIE, 2, "Roadie", C::Blue, 2, Permissions::MANAGE_ROLES | Permissions::MANAGE_EMOJIS),
+                role(
+                    BAND_ROADIE,
+                    2,
+                    "Roadie",
+                    C::Blue,
+                    2,
+                    Permissions::MANAGE_ROLES | Permissions::MANAGE_EMOJIS,
+                ),
                 role(BAND_GUEST, 2, "Guest", C::Slate, 1, Permissions::NONE),
                 role(BAND_FAN, 2, "Fan", C::None, 0, Permissions::NONE),
             ],
         );
-        self.roles.insert(3, vec![role(COOK_MODS, 3, "Moderator", C::Teal, 0, Permissions::MANAGE_CHANNELS)]);
+        self.roles.insert(
+            3,
+            vec![role(
+                COOK_MODS,
+                3,
+                "Moderator",
+                C::Teal,
+                0,
+                Permissions::MANAGE_CHANNELS,
+            )],
+        );
         self.member_roles.insert((1, BRUNO), vec![HIDEOUT_MODS]);
         self.member_roles.insert((1, ANA), vec![HIDEOUT_DESIGNERS]);
         self.member_roles.insert((1, CVETKA), vec![HIDEOUT_ADMINS]);
@@ -325,31 +447,65 @@ impl World {
                 emoji(WOBBLE, HIDEOUT, "wobble", true, ANA),
             ],
         );
-        self.emojis.insert(2, vec![emoji(DRUM_SOLO, 2, "drum_solo", false, ANA)]);
+        self.emojis
+            .insert(2, vec![emoji(DRUM_SOLO, 2, "drum_solo", false, ANA)]);
         let mut at = now_unix() - 3 * 3600;
         let mut say = |f: &mut World, who: u64, text: &str| {
             at += 40;
             f.push(MEMES, who, at, text);
         };
         say(self, ANA, "okay but the new emoji pack <:blob_love:7004>");
-        say(self, BRUNO, "look at this guy <a:dance_cat:7005> and this one <:smug_cat:7001>");
+        say(
+            self,
+            BRUNO,
+            "look at this guy <a:dance_cat:7005> and this one <:smug_cat:7001>",
+        );
         say(self, TIM, "shipping the release tonight <:shipit:7003>");
         say(self, CVETKA, "<a:party_parrot:7002>");
-        say(self, ANA, "<:smug_cat:7001> <:blob_love:7004> <:shipit:7003>");
+        say(
+            self,
+            ANA,
+            "<:smug_cat:7001> <:blob_love:7004> <:shipit:7003>",
+        );
         say(self, BRUNO, "\u{1f389}\u{1f389}\u{1f389}");
-        say(self, TIM, "unknown ones stay text: <:gone:99999> and a flag \u{1f1f8}\u{1f1ee}");
-        say(self, CVETKA, "**bold** with <:smug_cat:7001> inline, and a long enough line to wrap over to the next row so you can see how pictures sit in the text flow");
+        say(
+            self,
+            TIM,
+            "unknown ones stay text: <:gone:99999> and a flag \u{1f1f8}\u{1f1ee}",
+        );
+        say(
+            self,
+            CVETKA,
+            "**bold** with <:smug_cat:7001> inline, and a long enough line to wrap over to the next row so you can see how pictures sit in the text flow",
+        );
         let unicode = |e: &str| ReactionEmoji::Unicode(e.into());
         let r = |emoji: ReactionEmoji, count: u32, me: bool| Reaction { emoji, count, me };
         let memes = self.messages.entry(MEMES).or_default();
         let n = memes.len();
-        memes[n - 8].reactions = vec![r(unicode("\u{2764}\u{fe0f}"), 3, true), r(ReactionEmoji::Custom(BLOB_LOVE), 2, false), r(unicode("\u{1f44d}"), 1, false)];
-        memes[n - 7].reactions = vec![r(ReactionEmoji::Custom(DANCE_CAT), 4, true), r(ReactionEmoji::Custom(SMUG_CAT), 1, false), r(unicode("\u{1f602}"), 6, false)];
-        memes[n - 6].reactions = vec![r(unicode("\u{1f680}"), 2, false), r(ReactionEmoji::Custom(SHIPIT), 5, true)];
-        memes[n - 5].reactions = vec![r(ReactionEmoji::Custom(PARROT), 12, false), r(unicode("\u{1f389}"), 7, true)];
+        memes[n - 8].reactions = vec![
+            r(unicode("\u{2764}\u{fe0f}"), 3, true),
+            r(ReactionEmoji::Custom(BLOB_LOVE), 2, false),
+            r(unicode("\u{1f44d}"), 1, false),
+        ];
+        memes[n - 7].reactions = vec![
+            r(ReactionEmoji::Custom(DANCE_CAT), 4, true),
+            r(ReactionEmoji::Custom(SMUG_CAT), 1, false),
+            r(unicode("\u{1f602}"), 6, false),
+        ];
+        memes[n - 6].reactions = vec![
+            r(unicode("\u{1f680}"), 2, false),
+            r(ReactionEmoji::Custom(SHIPIT), 5, true),
+        ];
+        memes[n - 5].reactions = vec![
+            r(ReactionEmoji::Custom(PARROT), 12, false),
+            r(unicode("\u{1f389}"), 7, true),
+        ];
         let general = self.messages.entry(GENERAL).or_default();
         let n = general.len();
-        general[n - 3].reactions = vec![r(unicode("\u{1f44d}"), 2, false), r(unicode("\u{1f440}"), 1, true)];
+        general[n - 3].reactions = vec![
+            r(unicode("\u{1f44d}"), 2, false),
+            r(unicode("\u{1f440}"), 1, true),
+        ];
         general[n - 5].reactions = vec![r(unicode("\u{1f602}"), 3, false)];
     }
 
@@ -360,16 +516,28 @@ impl World {
     }
 
     fn emojis_event(&self, guild: u64) -> Reply {
-        Reply::Gateway(GatewayUpdate::Event(Event::EmojisUpdated { guild_id: guild, emojis: self.emojis_sorted(guild) }))
+        Reply::Gateway(GatewayUpdate::Event(Event::EmojisUpdated {
+            guild_id: guild,
+            emojis: self.emojis_sorted(guild),
+        }))
     }
 
     /// What the server checks when an emoji is added: permission, name, the 200 cap, the size, the format.
-    fn create_emoji(&mut self, guild: u64, me: u64, name: &str, bytes: Vec<u8>, content_type: &str) -> Result<Emoji, ApiError> {
+    fn create_emoji(
+        &mut self,
+        guild: u64,
+        me: u64,
+        name: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<Emoji, ApiError> {
         if !self.has_perm(guild, me, Permissions::MANAGE_EMOJIS) {
             return Err(ApiError::PermissionDenied);
         }
         if !crate::emoji::valid_name(name) {
-            return Err(ApiError::InvalidArgument("emoji name must match [a-z0-9_]{2,32}".into()));
+            return Err(ApiError::InvalidArgument(
+                "emoji name must match [a-z0-9_]{2,32}".into(),
+            ));
         }
         if bytes.len() > thehideout_api::MAX_EMOJI_BYTES {
             return Err(ApiError::TooLarge);
@@ -377,7 +545,9 @@ impl World {
         check_image(&bytes, content_type)?;
         let list = self.emojis.entry(guild).or_default();
         if list.len() >= crate::emoji::MAX_EMOJIS {
-            return Err(ApiError::Precondition("a server can have at most 200 emojis".into()));
+            return Err(ApiError::Precondition(
+                "a server can have at most 200 emojis".into(),
+            ));
         }
         if list.iter().any(|e| e.name == name) {
             return Err(ApiError::AlreadyExists);
@@ -387,37 +557,77 @@ impl World {
         let (id, key) = (self.next_emoji, format!("up-{}", self.next_media));
         let animated = bytes.starts_with(b"GIF8");
         self.media.insert(key.clone(), bytes);
-        let e = Emoji { id, guild_id: guild, name: name.into(), animated, image: key, creator_id: me, created_at: time(now_unix()) };
+        let e = Emoji {
+            id,
+            guild_id: guild,
+            name: name.into(),
+            animated,
+            image: key,
+            creator_id: me,
+            created_at: time(now_unix()),
+        };
         self.emojis.entry(guild).or_default().push(e.clone());
         Ok(e)
     }
 
-    fn rename_emoji(&mut self, guild: u64, me: u64, emoji: u64, name: &str) -> Result<Emoji, ApiError> {
+    fn rename_emoji(
+        &mut self,
+        guild: u64,
+        me: u64,
+        emoji: u64,
+        name: &str,
+    ) -> Result<Emoji, ApiError> {
         if !self.has_perm(guild, me, Permissions::MANAGE_EMOJIS) {
             return Err(ApiError::PermissionDenied);
         }
         if !crate::emoji::valid_name(name) {
-            return Err(ApiError::InvalidArgument("emoji name must match [a-z0-9_]{2,32}".into()));
+            return Err(ApiError::InvalidArgument(
+                "emoji name must match [a-z0-9_]{2,32}".into(),
+            ));
         }
         let list = self.emojis.entry(guild).or_default();
         if list.iter().any(|e| e.id != emoji && e.name == name) {
             return Err(ApiError::AlreadyExists);
         }
-        let e = list.iter_mut().find(|e| e.id == emoji).ok_or(ApiError::NotFound)?;
+        let e = list
+            .iter_mut()
+            .find(|e| e.id == emoji)
+            .ok_or(ApiError::NotFound)?;
         e.name = name.into();
         Ok(e.clone())
     }
 
     /// Adds or removes `user`'s reaction like the server: idempotent, at most 20 distinct emojis
     /// a message, a custom emoji must belong to the channel's guild (and none in a DM).
-    fn react(&mut self, channel: u64, message: u64, user: u64, emoji: &ReactionEmoji, add: bool) -> Result<(), ApiError> {
-        let guild = self.channels.iter().find(|c| c.id == channel).map(|c| c.guild_id);
+    fn react(
+        &mut self,
+        channel: u64,
+        message: u64,
+        user: u64,
+        emoji: &ReactionEmoji,
+        add: bool,
+    ) -> Result<(), ApiError> {
+        let guild = self
+            .channels
+            .iter()
+            .find(|c| c.id == channel)
+            .map(|c| c.guild_id);
         if let ReactionEmoji::Custom(id) = emoji
-            && !guild.is_some_and(|g| self.emojis.get(&g).is_some_and(|l| l.iter().any(|e| e.id == *id)))
+            && !guild.is_some_and(|g| {
+                self.emojis
+                    .get(&g)
+                    .is_some_and(|l| l.iter().any(|e| e.id == *id))
+            })
         {
-            return Err(ApiError::InvalidArgument("that emoji can't be used in this channel".into()));
+            return Err(ApiError::InvalidArgument(
+                "that emoji can't be used in this channel".into(),
+            ));
         }
-        let m = self.messages.get_mut(&channel).and_then(|v| v.iter_mut().find(|m| m.id == message)).ok_or(ApiError::NotFound)?;
+        let m = self
+            .messages
+            .get_mut(&channel)
+            .and_then(|v| v.iter_mut().find(|m| m.id == message))
+            .ok_or(ApiError::NotFound)?;
         let mine = user == self.me.id;
         let at = m.reactions.iter().position(|r| &r.emoji == emoji);
         match (at, add) {
@@ -429,9 +639,15 @@ impl World {
             }
             (None, true) => {
                 if m.reactions.len() >= thehideout_design::components::MAX_REACTIONS {
-                    return Err(ApiError::Precondition("a message can have at most 20 different reactions".into()));
+                    return Err(ApiError::Precondition(
+                        "a message can have at most 20 different reactions".into(),
+                    ));
                 }
-                m.reactions.push(Reaction { emoji: emoji.clone(), count: 1, me: mine });
+                m.reactions.push(Reaction {
+                    emoji: emoji.clone(),
+                    count: 1,
+                    me: mine,
+                });
             }
             (Some(i), false) => {
                 if !mine || m.reactions[i].me {
@@ -449,7 +665,9 @@ impl World {
 
     /// Channels carry their place too; keep it in step with the layout.
     fn sync_channels(&mut self, guild: u64) {
-        let Some(l) = self.layouts.get(&guild) else { return };
+        let Some(l) = self.layouts.get(&guild) else {
+            return;
+        };
         for e in &l.entries {
             for (i, id) in e.channel_ids.iter().enumerate() {
                 if let Some(c) = self.channels.iter_mut().find(|c| c.id == *id) {
@@ -462,11 +680,27 @@ impl World {
 
     /// The server's `Standing`: (owner, effective permissions, position of the highest role).
     fn standing(&self, guild: u64, user: u64) -> (bool, Permissions, Option<i32>) {
-        let owner = self.guilds.iter().find(|g| g.id == guild).map(|g| g.owner_id) == Some(user);
-        let mine = self.member_roles.get(&(guild, user)).map_or(&[][..], Vec::as_slice);
-        let held: Vec<&Role> = self.roles.get(&guild).map_or(Vec::new(), |rs| rs.iter().filter(|r| mine.contains(&r.id)).collect());
-        let perms = held.iter().fold(Permissions::NONE, |p, r| p | r.permissions);
-        let perms = if owner || perms.contains(Permissions::ADMINISTRATOR) { crate::perms::ALL } else { perms };
+        let owner = self
+            .guilds
+            .iter()
+            .find(|g| g.id == guild)
+            .map(|g| g.owner_id)
+            == Some(user);
+        let mine = self
+            .member_roles
+            .get(&(guild, user))
+            .map_or(&[][..], Vec::as_slice);
+        let held: Vec<&Role> = self.roles.get(&guild).map_or(Vec::new(), |rs| {
+            rs.iter().filter(|r| mine.contains(&r.id)).collect()
+        });
+        let perms = held
+            .iter()
+            .fold(Permissions::NONE, |p, r| p | r.permissions);
+        let perms = if owner || perms.contains(Permissions::ADMINISTRATOR) {
+            crate::perms::ALL
+        } else {
+            perms
+        };
         (owner, perms, held.iter().map(|r| r.position).max())
     }
 
@@ -491,17 +725,34 @@ impl World {
     fn roles_event(&self, guild: u64) -> Reply {
         let roles = self.roles.get(&guild).cloned().unwrap_or_default();
         let version = self.role_versions.get(&guild).copied().unwrap_or(1);
-        Reply::Gateway(GatewayUpdate::Event(Event::RolesUpdated { guild_id: guild, roles, version }))
+        Reply::Gateway(GatewayUpdate::Event(Event::RolesUpdated {
+            guild_id: guild,
+            roles,
+            version,
+        }))
     }
 
     fn member_of(&self, guild: u64, user: u64) -> Option<Member> {
         let u = self.users.iter().find(|u| u.id == user)?.clone();
-        let role_ids = self.member_roles.get(&(guild, user)).cloned().unwrap_or_default();
-        Some(Member { user: u, role_ids, joined_at: time(utc(2026, 1, 6, 9, 0)) })
+        let role_ids = self
+            .member_roles
+            .get(&(guild, user))
+            .cloned()
+            .unwrap_or_default();
+        Some(Member {
+            user: u,
+            role_ids,
+            joined_at: time(utc(2026, 1, 6, 9, 0)),
+        })
     }
 
     fn member_event(&self, guild: u64, user: u64) -> Option<Reply> {
-        self.member_of(guild, user).map(|member| Reply::Gateway(GatewayUpdate::Event(Event::MemberUpdated { guild_id: guild, member })))
+        self.member_of(guild, user).map(|member| {
+            Reply::Gateway(GatewayUpdate::Event(Event::MemberUpdated {
+                guild_id: guild,
+                member,
+            }))
+        })
     }
 
     /// A guild's roles most senior first.
@@ -534,7 +785,10 @@ impl World {
     }
 
     fn layout_event(&self, guild: u64) -> Reply {
-        Reply::Gateway(GatewayUpdate::Event(Event::LayoutUpdated { guild_id: guild, layout: self.layouts.get(&guild).cloned().unwrap_or_default() }))
+        Reply::Gateway(GatewayUpdate::Event(Event::LayoutUpdated {
+            guild_id: guild,
+            layout: self.layouts.get(&guild).cloned().unwrap_or_default(),
+        }))
     }
 
     fn push(&mut self, channel: u64, author: u64, at: i64, content: &str) {
@@ -601,12 +855,7 @@ impl World {
             } else {
                 t += gaps[i];
             }
-            self.push(
-                GENERAL,
-                authors[i],
-                t,
-                general_line(i),
-            );
+            self.push(GENERAL, authors[i], t, general_line(i));
         }
         for (i, line) in DEV_LINES.iter().enumerate() {
             let author = [BRUNO, TIM, ANA][i % 3];
@@ -664,7 +913,11 @@ impl World {
 
     /// `user` gains (or loses) the moderator role of `guild`, announced as the gateway would.
     fn set_moderator(&mut self, guild: u64, user: u64, on: bool) {
-        let role = self.roles.get(&guild).and_then(|r| r.iter().find(|r| r.name == "Moderator")).map(|r| r.id);
+        let role = self
+            .roles
+            .get(&guild)
+            .and_then(|r| r.iter().find(|r| r.name == "Moderator"))
+            .map(|r| r.id);
         let Some(role) = role else { return };
         let ids = self.member_roles.entry((guild, user)).or_default();
         ids.retain(|r| *r != role);
@@ -762,7 +1015,10 @@ impl World {
             .filter(|d| d.participants.iter().any(|p| p.id == self.me.id))
             .cloned()
             .collect();
-        let layouts = mine.iter().filter_map(|g| self.layouts.get(&g.id).map(|l| (g.id, l.clone()))).collect();
+        let layouts = mine
+            .iter()
+            .filter_map(|g| self.layouts.get(&g.id).map(|l| (g.id, l.clone())))
+            .collect();
         Initial {
             me: self.me.clone(),
             guilds: mine,
@@ -852,36 +1108,74 @@ impl World {
             ],
             Command::Refresh => vec![Reply::Refreshed(Ok(self.initial()))],
             Command::LoadChannels { guild } => {
-                let channels = self.channels.iter().filter(|c| c.guild_id == guild).cloned().collect();
+                let channels = self
+                    .channels
+                    .iter()
+                    .filter(|c| c.guild_id == guild)
+                    .cloned()
+                    .collect();
                 let layout = self.layouts.get(&guild).cloned().unwrap_or_default();
-                vec![Reply::Channels { guild, result: Ok((channels, layout)) }]
+                vec![Reply::Channels {
+                    guild,
+                    result: Ok((channels, layout)),
+                }]
             }
             Command::LoadAccess { guild } => {
                 let roles = self.roles_sorted(guild);
                 let version = self.role_versions.get(&guild).copied().unwrap_or(1);
-                let member_roles = self.member_roles.iter().filter(|((g, _), _)| *g == guild).map(|((_, u), r)| (*u, r.clone())).collect();
-                vec![Reply::Access { guild, result: Ok(GuildAccess { roles, version, member_roles }) }]
+                let member_roles = self
+                    .member_roles
+                    .iter()
+                    .filter(|((g, _), _)| *g == guild)
+                    .map(|((_, u), r)| (*u, r.clone()))
+                    .collect();
+                vec![Reply::Access {
+                    guild,
+                    result: Ok(GuildAccess {
+                        roles,
+                        version,
+                        member_roles,
+                    }),
+                }]
             }
             Command::CreateSection { guild, name } => {
                 let r = if !self.can_manage(guild, me) {
                     Err(ApiError::PermissionDenied)
                 } else {
                     self.next_section += 1;
-                    let section = Section { id: self.next_section, guild_id: guild, name, position: 0 };
+                    let section = Section {
+                        id: self.next_section,
+                        guild_id: guild,
+                        name,
+                        position: 0,
+                    };
                     let l = self.layouts.entry(guild).or_default();
                     l.sections.push(section.clone());
-                    l.entries.push(LayoutEntry { section_id: Some(section.id), channel_ids: vec![] });
+                    l.entries.push(LayoutEntry {
+                        section_id: Some(section.id),
+                        channel_ids: vec![],
+                    });
                     let l = self.publish_layout(guild);
                     Ok((section, l))
                 };
                 let echo = r.is_ok().then(|| self.layout_event(guild));
-                std::iter::once(Reply::SectionSaved { guild, result: r }).chain(echo).collect()
+                std::iter::once(Reply::SectionSaved { guild, result: r })
+                    .chain(echo)
+                    .collect()
             }
-            Command::RenameSection { guild, section, name } => {
+            Command::RenameSection {
+                guild,
+                section,
+                name,
+            } => {
                 let r = if !self.can_manage(guild, me) {
                     Err(ApiError::PermissionDenied)
                 } else {
-                    match self.layouts.get_mut(&guild).and_then(|l| l.sections.iter_mut().find(|s| s.id == section)) {
+                    match self
+                        .layouts
+                        .get_mut(&guild)
+                        .and_then(|l| l.sections.iter_mut().find(|s| s.id == section))
+                    {
                         None => Err(ApiError::NotFound),
                         Some(s) => {
                             s.name = name;
@@ -891,17 +1185,28 @@ impl World {
                     }
                 };
                 let echo = r.is_ok().then(|| self.layout_event(guild));
-                std::iter::once(Reply::SectionSaved { guild, result: r }).chain(echo).collect()
+                std::iter::once(Reply::SectionSaved { guild, result: r })
+                    .chain(echo)
+                    .collect()
             }
             Command::DeleteSection { guild, section } => {
                 let r = if !self.can_manage(guild, me) {
                     Err(ApiError::PermissionDenied)
-                } else if !self.layouts.get(&guild).is_some_and(|l| l.sections.iter().any(|s| s.id == section)) {
+                } else if !self
+                    .layouts
+                    .get(&guild)
+                    .is_some_and(|l| l.sections.iter().any(|s| s.id == section))
+                {
                     Err(ApiError::NotFound)
                 } else {
                     let l = self.layouts.get_mut(&guild).unwrap();
                     l.sections.retain(|s| s.id != section);
-                    let moved = l.entries.iter().find(|e| e.section_id == Some(section)).map(|e| e.channel_ids.clone()).unwrap_or_default();
+                    let moved = l
+                        .entries
+                        .iter()
+                        .find(|e| e.section_id == Some(section))
+                        .map(|e| e.channel_ids.clone())
+                        .unwrap_or_default();
                     l.entries.retain(|e| e.section_id != Some(section));
                     if let Some(top) = l.entries.iter_mut().find(|e| e.section_id.is_none()) {
                         top.channel_ids.extend(moved);
@@ -909,9 +1214,14 @@ impl World {
                     Ok(self.publish_layout(guild))
                 };
                 let echo = r.is_ok().then(|| self.layout_event(guild));
-                std::iter::once(Reply::SectionDeleted { guild, result: r }).chain(echo).collect()
+                std::iter::once(Reply::SectionDeleted { guild, result: r })
+                    .chain(echo)
+                    .collect()
             }
-            Command::UpdateLayout { guild, layout: want } => {
+            Command::UpdateLayout {
+                guild,
+                layout: want,
+            } => {
                 let result = if !self.can_manage(guild, me) {
                     Err(ApiError::PermissionDenied)
                 } else if std::mem::take(&mut self.conflict_next) {
@@ -928,10 +1238,13 @@ impl World {
                     let (a, b) = (layout::normalized(&cur), layout::normalized(&want));
                     if want.version != cur.version {
                         Err(ApiError::Conflict)
-                    } else if sorted(a.sections.iter().map(|s| s.id).collect()) != sorted(b.sections.iter().map(|s| s.id).collect())
+                    } else if sorted(a.sections.iter().map(|s| s.id).collect())
+                        != sorted(b.sections.iter().map(|s| s.id).collect())
                         || sorted(layout::channel_order(&a)) != sorted(layout::channel_order(&b))
                     {
-                        Err(ApiError::InvalidArgument("layout is not a permutation of the current one".into()))
+                        Err(ApiError::InvalidArgument(
+                            "layout is not a permutation of the current one".into(),
+                        ))
                     } else {
                         let l = self.layouts.get_mut(&guild).unwrap();
                         l.sections = b.sections.clone();
@@ -940,16 +1253,34 @@ impl World {
                     }
                 };
                 // A refusal for a stale version still means the server's layout moved on.
-                let echo = (result.is_ok() || result == Err(ApiError::Conflict)).then(|| self.layout_event(guild));
-                std::iter::once(Reply::LayoutSaved { guild, result }).chain(echo).collect()
+                let echo = (result.is_ok() || result == Err(ApiError::Conflict))
+                    .then(|| self.layout_event(guild));
+                std::iter::once(Reply::LayoutSaved { guild, result })
+                    .chain(echo)
+                    .collect()
             }
-            Command::UpdateChannel { guild, channel, name, icon, color, topic } => {
+            Command::UpdateChannel {
+                guild,
+                channel,
+                name,
+                icon,
+                color,
+                topic,
+            } => {
                 let r = if !self.can_manage(guild, me) {
                     Err(ApiError::PermissionDenied)
-                } else if name.as_ref().is_some_and(|n| self.channels.iter().any(|c| c.guild_id == guild && c.id != channel && &c.name == n)) {
+                } else if name.as_ref().is_some_and(|n| {
+                    self.channels
+                        .iter()
+                        .any(|c| c.guild_id == guild && c.id != channel && &c.name == n)
+                }) {
                     Err(ApiError::AlreadyExists)
                 } else {
-                    match self.channels.iter_mut().find(|c| c.guild_id == guild && c.id == channel) {
+                    match self
+                        .channels
+                        .iter_mut()
+                        .find(|c| c.guild_id == guild && c.id == channel)
+                    {
                         None => Err(ApiError::NotFound),
                         Some(c) => {
                             if let Some(n) = name {
@@ -969,8 +1300,13 @@ impl World {
                         }
                     }
                 };
-                let echo = r.clone().ok().map(|c| Reply::Gateway(GatewayUpdate::Event(Event::ChannelUpdated(c))));
-                std::iter::once(Reply::ChannelSaved { guild, result: r }).chain(echo).collect()
+                let echo = r
+                    .clone()
+                    .ok()
+                    .map(|c| Reply::Gateway(GatewayUpdate::Event(Event::ChannelUpdated(c))));
+                std::iter::once(Reply::ChannelSaved { guild, result: r })
+                    .chain(echo)
+                    .collect()
             }
             Command::LoadMessages { channel, before } => vec![Reply::Messages {
                 channel,
@@ -1043,7 +1379,17 @@ impl World {
                     topic: String::new(),
                 });
                 self.members.insert(id, vec![me]);
-                self.layouts.insert(id, GuildLayout { version: 1, sections: vec![], entries: vec![LayoutEntry { section_id: None, channel_ids: vec![id * 10] }] });
+                self.layouts.insert(
+                    id,
+                    GuildLayout {
+                        version: 1,
+                        sections: vec![],
+                        entries: vec![LayoutEntry {
+                            section_id: None,
+                            channel_ids: vec![id * 10],
+                        }],
+                    },
+                );
                 vec![Reply::GuildCreated(Ok(g))]
             }
             Command::JoinGuild { code } => {
@@ -1064,13 +1410,23 @@ impl World {
                 };
                 vec![Reply::GuildJoined(r)]
             }
-            Command::CreateChannel { guild, name, section, icon, color } => {
+            Command::CreateChannel {
+                guild,
+                name,
+                section,
+                icon,
+                color,
+            } => {
                 let known = self.guilds.iter().any(|g| g.id == guild);
                 let r = if !known {
                     Err(ApiError::NotFound)
                 } else if !self.can_manage(guild, me) {
                     Err(ApiError::PermissionDenied)
-                } else if self.channels.iter().any(|c| c.guild_id == guild && c.name == name) {
+                } else if self
+                    .channels
+                    .iter()
+                    .any(|c| c.guild_id == guild && c.name == name)
+                {
                     Err(ApiError::AlreadyExists)
                 } else {
                     let c = Channel {
@@ -1093,7 +1449,9 @@ impl World {
                 let mut out = vec![Reply::ChannelCreated(r.clone())];
                 if let Ok(c) = r {
                     // The server announces the channel, then the new layout.
-                    out.push(Reply::Gateway(GatewayUpdate::Event(Event::ChannelCreated(c))));
+                    out.push(Reply::Gateway(GatewayUpdate::Event(Event::ChannelCreated(
+                        c,
+                    ))));
                     self.publish_layout(guild);
                     out.push(self.layout_event(guild));
                 }
@@ -1140,18 +1498,31 @@ impl World {
                 vec![Reply::DmOpened(r)]
             }
             Command::LoadEmojis { guild } => {
-                let result = if self.members.get(&guild).is_some_and(|m| m.contains(&me)) { Ok(self.emojis_sorted(guild)) } else { Err(ApiError::NotFound) };
+                let result = if self.members.get(&guild).is_some_and(|m| m.contains(&me)) {
+                    Ok(self.emojis_sorted(guild))
+                } else {
+                    Err(ApiError::NotFound)
+                };
                 vec![Reply::Emojis { guild, result }]
             }
-            Command::CreateEmoji { guild, name, bytes, content_type } => {
+            Command::CreateEmoji {
+                guild,
+                name,
+                bytes,
+                content_type,
+            } => {
                 let r = self.create_emoji(guild, me, &name, bytes, &content_type);
                 let echo = r.is_ok().then(|| self.emojis_event(guild));
-                std::iter::once(Reply::EmojiSaved { guild, result: r }).chain(echo).collect()
+                std::iter::once(Reply::EmojiSaved { guild, result: r })
+                    .chain(echo)
+                    .collect()
             }
             Command::RenameEmoji { guild, emoji, name } => {
                 let r = self.rename_emoji(guild, me, emoji, &name);
                 let echo = r.is_ok().then(|| self.emojis_event(guild));
-                std::iter::once(Reply::EmojiSaved { guild, result: r }).chain(echo).collect()
+                std::iter::once(Reply::EmojiSaved { guild, result: r })
+                    .chain(echo)
+                    .collect()
             }
             Command::DeleteEmoji { guild, emoji } => {
                 let r = if !self.has_perm(guild, me, Permissions::MANAGE_EMOJIS) {
@@ -1167,36 +1538,108 @@ impl World {
                     }
                 };
                 let echo = r.is_ok().then(|| self.emojis_event(guild));
-                std::iter::once(Reply::EmojiDeleted { guild, emoji, result: r }).chain(echo).collect()
+                std::iter::once(Reply::EmojiDeleted {
+                    guild,
+                    emoji,
+                    result: r,
+                })
+                .chain(echo)
+                .collect()
             }
-            Command::AddReaction { channel, message, emoji } => {
+            Command::AddReaction {
+                channel,
+                message,
+                emoji,
+            } => {
                 let result = if self.fail_reactions > 0 {
                     self.fail_reactions -= 1;
                     Err(ApiError::Network("simulated outage".into()))
                 } else {
                     self.react(channel, message, me, &emoji, true)
                 };
-                let echo = result.is_ok().then(|| Reply::Gateway(GatewayUpdate::Event(Event::ReactionAdded { channel_id: channel, message_id: message, emoji: emoji.clone(), user_id: me })));
-                std::iter::once(Reply::ReactionSaved { channel, message, emoji, add: true, result }).chain(echo).collect()
+                let echo = result.is_ok().then(|| {
+                    Reply::Gateway(GatewayUpdate::Event(Event::ReactionAdded {
+                        channel_id: channel,
+                        message_id: message,
+                        emoji: emoji.clone(),
+                        user_id: me,
+                    }))
+                });
+                std::iter::once(Reply::ReactionSaved {
+                    channel,
+                    message,
+                    emoji,
+                    add: true,
+                    result,
+                })
+                .chain(echo)
+                .collect()
             }
-            Command::RemoveReaction { channel, message, emoji } => {
+            Command::RemoveReaction {
+                channel,
+                message,
+                emoji,
+            } => {
                 let result = if self.fail_reactions > 0 {
                     self.fail_reactions -= 1;
                     Err(ApiError::Network("simulated outage".into()))
                 } else {
                     self.react(channel, message, me, &emoji, false)
                 };
-                let echo = result.is_ok().then(|| Reply::Gateway(GatewayUpdate::Event(Event::ReactionRemoved { channel_id: channel, message_id: message, emoji: emoji.clone(), user_id: me })));
-                std::iter::once(Reply::ReactionSaved { channel, message, emoji, add: false, result }).chain(echo).collect()
+                let echo = result.is_ok().then(|| {
+                    Reply::Gateway(GatewayUpdate::Event(Event::ReactionRemoved {
+                        channel_id: channel,
+                        message_id: message,
+                        emoji: emoji.clone(),
+                        user_id: me,
+                    }))
+                });
+                std::iter::once(Reply::ReactionSaved {
+                    channel,
+                    message,
+                    emoji,
+                    add: false,
+                    result,
+                })
+                .chain(echo)
+                .collect()
+            }
+            cmd @ (Command::AdminOverview
+            | Command::AdminActivity { .. }
+            | Command::AdminGuilds { .. }
+            | Command::AdminUsers { .. }
+            | Command::AdminFiles { .. }
+            | Command::AdminAudit { .. }
+            | Command::AdminSetAdmin { .. }
+            | Command::AdminDeleteFile { .. }) => {
+                let me = self.me.clone();
+                let replies = self.admin.handle(&me, cmd);
+                // Rights granted or taken away show in the rest of the app too.
+                for u in &self.admin.users {
+                    if let Some(w) = self.users.iter_mut().find(|w| w.id == u.id) {
+                        w.is_admin = u.is_admin;
+                    }
+                }
+                replies
             }
             Command::FetchMedia { key } => {
                 let result = match self.media.get(&key) {
                     Some(bytes) => Ok(bytes.clone()),
+                    None if key.starts_with("adm-") => Ok(crate::media::generated_png(
+                        key.bytes()
+                            .fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b))),
+                        48,
+                    )),
                     None => match key.strip_prefix("gen-").and_then(|n| n.parse::<u64>().ok()) {
                         Some(seed) => Ok(crate::media::generated_png(seed, 64)),
-                        None => match key.strip_prefix("emoji-").and_then(|n| n.parse::<u64>().ok()) {
+                        None => match key
+                            .strip_prefix("emoji-")
+                            .and_then(|n| n.parse::<u64>().ok())
+                        {
                             Some(id) => match self.emojis.values().flatten().find(|e| e.id == id) {
-                                Some(e) if e.animated => Ok(crate::media::generated_animated_emoji(id, 64, 8)),
+                                Some(e) if e.animated => {
+                                    Ok(crate::media::generated_animated_emoji(id, 64, 8))
+                                }
                                 Some(_) => Ok(crate::media::generated_emoji(id, 64)),
                                 None => Err(ApiError::NotFound),
                             },
@@ -1206,23 +1649,40 @@ impl World {
                 };
                 vec![Reply::Media { key, result }]
             }
-            Command::ReadImage { path, purpose } => vec![Reply::ImageRead { purpose, result: crate::media::read_image(&path) }],
-            Command::UploadAvatar { bytes, content_type } => {
+            Command::ReadImage { path, purpose } => vec![Reply::ImageRead {
+                purpose,
+                result: crate::media::read_image(&path),
+            }],
+            Command::UploadAvatar {
+                bytes,
+                content_type,
+            } => {
                 let r = check_image(&bytes, &content_type).map(|()| {
                     self.next_media += 1;
                     let key = format!("up-{}", self.next_media);
                     self.media.insert(key.clone(), bytes);
-                    self.set_user_avatar(me, Some(key)).expect("the signed-in user exists")
+                    self.set_user_avatar(me, Some(key))
+                        .expect("the signed-in user exists")
                 });
-                let echo = r.clone().ok().map(|u| Reply::Gateway(GatewayUpdate::Event(Event::UserUpdated(u))));
+                let echo = r
+                    .clone()
+                    .ok()
+                    .map(|u| Reply::Gateway(GatewayUpdate::Event(Event::UserUpdated(u))));
                 std::iter::once(Reply::AvatarSaved(r)).chain(echo).collect()
             }
             Command::RemoveAvatar => {
                 let u = self.set_user_avatar(me, None).ok_or(ApiError::NotFound);
-                let echo = u.clone().ok().map(|u| Reply::Gateway(GatewayUpdate::Event(Event::UserUpdated(u))));
+                let echo = u
+                    .clone()
+                    .ok()
+                    .map(|u| Reply::Gateway(GatewayUpdate::Event(Event::UserUpdated(u))));
                 std::iter::once(Reply::AvatarSaved(u)).chain(echo).collect()
             }
-            Command::UploadGuildIcon { guild, bytes, content_type } => {
+            Command::UploadGuildIcon {
+                guild,
+                bytes,
+                content_type,
+            } => {
                 let r = self.guild_edit(guild, me, |w, g| {
                     check_image(&bytes, &content_type)?;
                     w.next_media += 1;
@@ -1244,18 +1704,27 @@ impl World {
                 let r = self.guild_edit(guild, me, |_, g| {
                     let n = name.trim().chars().count();
                     if !(2..=32).contains(&n) {
-                        return Err(ApiError::InvalidArgument("name must be 2 to 32 characters".into()));
+                        return Err(ApiError::InvalidArgument(
+                            "name must be 2 to 32 characters".into(),
+                        ));
                     }
                     g.name = name.trim().to_owned();
                     Ok(())
                 });
                 self.guild_replies(guild, r)
             }
-            Command::CreateRole { guild, name, color, permissions } => {
+            Command::CreateRole {
+                guild,
+                name,
+                color,
+                permissions,
+            } => {
                 let r = if !self.has_perm(guild, me, Permissions::MANAGE_ROLES) {
                     Err(ApiError::PermissionDenied)
                 } else if !(1..=MAX_ROLE_NAME).contains(&name.trim().chars().count()) {
-                    Err(ApiError::InvalidArgument(format!("role name must be 1 to {MAX_ROLE_NAME} characters")))
+                    Err(ApiError::InvalidArgument(format!(
+                        "role name must be 1 to {MAX_ROLE_NAME} characters"
+                    )))
                 } else if !self.holds_all(guild, me, permissions.bits()) {
                     Err(ApiError::PermissionDenied)
                 } else {
@@ -1265,24 +1734,50 @@ impl World {
                     let list = self.roles.entry(guild).or_default();
                     list.iter_mut().for_each(|r| r.position += 1);
                     self.next_role += 1;
-                    let role = Role { id: self.next_role, guild_id: guild, name: name.trim().to_owned(), color, position: 0, permissions, created_at: time(now_unix()) };
+                    let role = Role {
+                        id: self.next_role,
+                        guild_id: guild,
+                        name: name.trim().to_owned(),
+                        color,
+                        position: 0,
+                        permissions,
+                        created_at: time(now_unix()),
+                    };
                     list.push(role.clone());
                     Ok((role, version))
                 };
                 let echo = r.is_ok().then(|| self.roles_event(guild));
-                std::iter::once(Reply::RoleCreated { guild, result: r }).chain(echo).collect()
+                std::iter::once(Reply::RoleCreated { guild, result: r })
+                    .chain(echo)
+                    .collect()
             }
-            Command::UpdateRole { guild, role, name, color, permissions } => {
+            Command::UpdateRole {
+                guild,
+                role,
+                name,
+                color,
+                permissions,
+            } => {
                 let r = self.update_role(guild, me, role, name, color, permissions);
                 let echo = r.is_ok().then(|| self.roles_event(guild));
-                std::iter::once(Reply::RoleUpdated { guild, result: r }).chain(echo).collect()
+                std::iter::once(Reply::RoleUpdated { guild, result: r })
+                    .chain(echo)
+                    .collect()
             }
-            Command::DeleteRole { guild, role, } => {
-                let found = self.roles.get(&guild).and_then(|rs| rs.iter().find(|r| r.id == role)).cloned();
+            Command::DeleteRole { guild, role } => {
+                let found = self
+                    .roles
+                    .get(&guild)
+                    .and_then(|rs| rs.iter().find(|r| r.id == role))
+                    .cloned();
                 let r = match found {
                     None => Err(ApiError::NotFound),
-                    Some(_) if !self.has_perm(guild, me, Permissions::MANAGE_ROLES) => Err(ApiError::PermissionDenied),
-                    Some(f) if !self.outranks(guild, me, f.position) => Err(ApiError::PermissionDenied),
+                    Some(_) if !self.has_perm(guild, me, Permissions::MANAGE_ROLES) => {
+                        Err(ApiError::PermissionDenied)
+                    }
+                    Some(f) if !self.outranks(guild, me, f.position) => {
+                        Err(ApiError::PermissionDenied)
+                    }
                     Some(_) => {
                         let version = self.role_versions.entry(guild).or_insert(1);
                         *version += 1;
@@ -1293,10 +1788,17 @@ impl World {
                             v
                         };
                         let n = sorted.len() as i32;
-                        self.roles.insert(guild, sorted.into_iter().enumerate().map(|(i, mut r)| {
-                            r.position = n - 1 - i as i32;
-                            r
-                        }).collect());
+                        self.roles.insert(
+                            guild,
+                            sorted
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, mut r)| {
+                                    r.position = n - 1 - i as i32;
+                                    r
+                                })
+                                .collect(),
+                        );
                         let mut affected = Vec::new();
                         for ((g, u), ids) in self.member_roles.iter_mut() {
                             if *g == guild && ids.contains(&role) {
@@ -1310,23 +1812,55 @@ impl World {
                 match r {
                     Ok((version, mut affected)) => {
                         affected.sort_unstable();
-                        let mut out = vec![Reply::RoleDeleted { guild, role, result: Ok(version) }, self.roles_event(guild)];
-                        out.extend(affected.into_iter().filter_map(|u| self.member_event(guild, u)));
+                        let mut out = vec![
+                            Reply::RoleDeleted {
+                                guild,
+                                role,
+                                result: Ok(version),
+                            },
+                            self.roles_event(guild),
+                        ];
+                        out.extend(
+                            affected
+                                .into_iter()
+                                .filter_map(|u| self.member_event(guild, u)),
+                        );
                         out
                     }
-                    Err(e) => vec![Reply::RoleDeleted { guild, role, result: Err(e) }],
+                    Err(e) => vec![Reply::RoleDeleted {
+                        guild,
+                        role,
+                        result: Err(e),
+                    }],
                 }
             }
-            Command::ReorderRoles { guild, expected_version, role_ids } => {
+            Command::ReorderRoles {
+                guild,
+                expected_version,
+                role_ids,
+            } => {
                 let r = self.reorder_roles(guild, me, expected_version, &role_ids);
                 // A refusal for a stale version still means the server's roles moved on.
-                let echo = (r.is_ok() || r == Err(ApiError::Conflict)).then(|| self.roles_event(guild));
-                std::iter::once(Reply::RolesReordered { guild, result: r }).chain(echo).collect()
+                let echo =
+                    (r.is_ok() || r == Err(ApiError::Conflict)).then(|| self.roles_event(guild));
+                std::iter::once(Reply::RolesReordered { guild, result: r })
+                    .chain(echo)
+                    .collect()
             }
-            Command::SetMemberRoles { guild, user, role_ids } => {
+            Command::SetMemberRoles {
+                guild,
+                user,
+                role_ids,
+            } => {
                 let r = self.set_member_roles(guild, me, user, &role_ids);
                 let echo = r.is_ok().then(|| self.member_event(guild, user)).flatten();
-                std::iter::once(Reply::MemberRolesSet { guild, user, result: r }).chain(echo).collect()
+                std::iter::once(Reply::MemberRolesSet {
+                    guild,
+                    user,
+                    result: r,
+                })
+                .chain(echo)
+                .collect()
             }
             Command::SignOut => vec![Reply::SignedOut],
         }
@@ -1335,8 +1869,17 @@ impl World {
 
 impl World {
     /// Runs `edit` on a guild the caller may manage (MANAGE_SERVER): the new guild or why not.
-    fn guild_edit(&mut self, guild: u64, me: u64, edit: impl FnOnce(&mut World, &mut Guild) -> Result<(), ApiError>) -> Result<Guild, ApiError> {
-        let at = self.guilds.iter().position(|g| g.id == guild).ok_or(ApiError::NotFound)?;
+    fn guild_edit(
+        &mut self,
+        guild: u64,
+        me: u64,
+        edit: impl FnOnce(&mut World, &mut Guild) -> Result<(), ApiError>,
+    ) -> Result<Guild, ApiError> {
+        let at = self
+            .guilds
+            .iter()
+            .position(|g| g.id == guild)
+            .ok_or(ApiError::NotFound)?;
         if !self.has_perm(guild, me, Permissions::MANAGE_SERVER) {
             return Err(ApiError::PermissionDenied);
         }
@@ -1347,29 +1890,54 @@ impl World {
     }
 
     fn guild_replies(&self, guild: u64, r: Result<Guild, ApiError>) -> Vec<Reply> {
-        let echo = r.clone().ok().map(|g| Reply::Gateway(GatewayUpdate::Event(Event::GuildUpdated(g))));
-        std::iter::once(Reply::GuildSaved { guild, result: r }).chain(echo).collect()
+        let echo = r
+            .clone()
+            .ok()
+            .map(|g| Reply::Gateway(GatewayUpdate::Event(Event::GuildUpdated(g))));
+        std::iter::once(Reply::GuildSaved { guild, result: r })
+            .chain(echo)
+            .collect()
     }
 
-    fn update_role(&mut self, guild: u64, me: u64, role: u64, name: Option<String>, color: Option<PaletteColor>, permissions: Option<Permissions>) -> Result<Role, ApiError> {
+    fn update_role(
+        &mut self,
+        guild: u64,
+        me: u64,
+        role: u64,
+        name: Option<String>,
+        color: Option<PaletteColor>,
+        permissions: Option<Permissions>,
+    ) -> Result<Role, ApiError> {
         if !self.has_perm(guild, me, Permissions::MANAGE_ROLES) {
             return Err(ApiError::PermissionDenied);
         }
-        let old = self.roles.get(&guild).and_then(|rs| rs.iter().find(|r| r.id == role)).cloned().ok_or(ApiError::NotFound)?;
+        let old = self
+            .roles
+            .get(&guild)
+            .and_then(|rs| rs.iter().find(|r| r.id == role))
+            .cloned()
+            .ok_or(ApiError::NotFound)?;
         if !self.outranks(guild, me, old.position) {
             return Err(ApiError::PermissionDenied);
         }
         if let Some(n) = &name
             && !(1..=MAX_ROLE_NAME).contains(&n.trim().chars().count())
         {
-            return Err(ApiError::InvalidArgument(format!("role name must be 1 to {MAX_ROLE_NAME} characters")));
+            return Err(ApiError::InvalidArgument(format!(
+                "role name must be 1 to {MAX_ROLE_NAME} characters"
+            )));
         }
         if let Some(p) = permissions
-            && !(self.holds_all(guild, me, p.bits()) && self.holds_all(guild, me, p.bits() ^ old.permissions.bits()))
+            && !(self.holds_all(guild, me, p.bits())
+                && self.holds_all(guild, me, p.bits() ^ old.permissions.bits()))
         {
             return Err(ApiError::PermissionDenied);
         }
-        let slot = self.roles.get_mut(&guild).and_then(|rs| rs.iter_mut().find(|r| r.id == role)).ok_or(ApiError::NotFound)?;
+        let slot = self
+            .roles
+            .get_mut(&guild)
+            .and_then(|rs| rs.iter_mut().find(|r| r.id == role))
+            .ok_or(ApiError::NotFound)?;
         if let Some(n) = name {
             slot.name = n.trim().to_owned();
         }
@@ -1382,7 +1950,13 @@ impl World {
         Ok(slot.clone())
     }
 
-    fn reorder_roles(&mut self, guild: u64, me: u64, expected: u64, ids: &[u64]) -> Result<RoleList, ApiError> {
+    fn reorder_roles(
+        &mut self,
+        guild: u64,
+        me: u64,
+        expected: u64,
+        ids: &[u64],
+    ) -> Result<RoleList, ApiError> {
         if !self.has_perm(guild, me, Permissions::MANAGE_ROLES) {
             return Err(ApiError::PermissionDenied);
         }
@@ -1400,14 +1974,22 @@ impl World {
         want.sort_unstable();
         have.sort_unstable();
         if want != have || ids.len() != current.len() {
-            return Err(ApiError::InvalidArgument("role_ids must contain every role of the guild exactly once".into()));
+            return Err(ApiError::InvalidArgument(
+                "role_ids must contain every role of the guild exactly once".into(),
+            ));
         }
         let n = ids.len() as i32;
         let mut next = Vec::new();
         for (i, id) in ids.iter().enumerate() {
-            let mut r = current.iter().find(|r| r.id == *id).cloned().expect("validated above");
+            let mut r = current
+                .iter()
+                .find(|r| r.id == *id)
+                .cloned()
+                .expect("validated above");
             let position = n - 1 - i as i32;
-            if r.position != position && !(self.outranks(guild, me, r.position) && self.outranks(guild, me, position)) {
+            if r.position != position
+                && !(self.outranks(guild, me, r.position) && self.outranks(guild, me, position))
+            {
                 return Err(ApiError::PermissionDenied);
             }
             r.position = position;
@@ -1416,10 +1998,19 @@ impl World {
         self.roles.insert(guild, next.clone());
         let version = self.role_versions.entry(guild).or_insert(1);
         *version += 1;
-        Ok(RoleList { roles: next, version: *version })
+        Ok(RoleList {
+            roles: next,
+            version: *version,
+        })
     }
 
-    fn set_member_roles(&mut self, guild: u64, me: u64, user: u64, ids: &[u64]) -> Result<Member, ApiError> {
+    fn set_member_roles(
+        &mut self,
+        guild: u64,
+        me: u64,
+        user: u64,
+        ids: &[u64],
+    ) -> Result<Member, ApiError> {
         if !self.has_perm(guild, me, Permissions::MANAGE_ROLES) {
             return Err(ApiError::PermissionDenied);
         }
@@ -1430,8 +2021,15 @@ impl World {
         if ids.iter().any(|id| !roles.iter().any(|r| r.id == *id)) {
             return Err(ApiError::NotFound);
         }
-        let current = self.member_roles.get(&(guild, user)).cloned().unwrap_or_default();
-        for r in roles.iter().filter(|r| ids.contains(&r.id) != current.contains(&r.id)) {
+        let current = self
+            .member_roles
+            .get(&(guild, user))
+            .cloned()
+            .unwrap_or_default();
+        for r in roles
+            .iter()
+            .filter(|r| ids.contains(&r.id) != current.contains(&r.id))
+        {
             if !self.outranks(guild, me, r.position) {
                 return Err(ApiError::PermissionDenied);
             }
@@ -1446,7 +2044,10 @@ fn check_image(bytes: &[u8], content_type: &str) -> Result<(), ApiError> {
     if bytes.len() > thehideout_api::MAX_MEDIA_BYTES {
         return Err(ApiError::InvalidArgument("image is over 8 MiB".into()));
     }
-    let known = bytes.starts_with(b"\x89PNG") || bytes.starts_with(&[0xff, 0xd8]) || bytes.starts_with(b"GIF8") || (bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"));
+    let known = bytes.starts_with(b"\x89PNG")
+        || bytes.starts_with(&[0xff, 0xd8])
+        || bytes.starts_with(b"GIF8")
+        || (bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"));
     if !known || !content_type.starts_with("image/") {
         return Err(ApiError::InvalidArgument("not a supported image".into()));
     }
@@ -1497,6 +2098,45 @@ impl FakeBackend {
         self.0.borrow_mut().set_latency(secs);
     }
 
+    /// Every admin command answers `Unimplemented`, as a server without the service does.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn admin_unavailable(&self, on: bool) {
+        self.0.borrow_mut().admin.unavailable = on;
+    }
+
+    /// The next `n` admin file deletions fail with a network error.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn admin_fail_deletes(&self, n: u32) {
+        self.0.borrow_mut().admin.fail_deletes = n;
+    }
+
+    /// The next demotion is refused whoever it is for (another admin got there first).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn admin_refuse_next_set(&self) {
+        self.0.borrow_mut().admin.refuse_next_set = true;
+    }
+
+    /// What the admin side holds: `(files, has this key, audit as (action, target, reason) newest first)`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn admin_has_file(&self, key: &str) -> bool {
+        self.0.borrow().admin.has_file(key)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn admin_file_count(&self) -> usize {
+        self.0.borrow().admin.file_count()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn admin_audit(&self) -> Vec<(String, String, String)> {
+        self.0.borrow().admin.audit_actions()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn admin_is_admin(&self, id: u64) -> bool {
+        self.0.borrow().admin.is_admin(id)
+    }
+
     /// The next `n` sends are refused with a network error.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn fail_sends(&self, n: u32) {
@@ -1534,7 +2174,12 @@ impl FakeBackend {
     /// The role ids the server has for `user` in `guild` (tests).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn member_roles(&self, guild: u64, user: u64) -> Vec<u64> {
-        self.0.borrow().member_roles.get(&(guild, user)).cloned().unwrap_or_default()
+        self.0
+            .borrow()
+            .member_roles
+            .get(&(guild, user))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The server's copy of a user (tests).
@@ -1558,13 +2203,23 @@ impl FakeBackend {
     /// The server's layout of `guild` (tests).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn layout(&self, guild: u64) -> GuildLayout {
-        self.0.borrow().layouts.get(&guild).cloned().unwrap_or_default()
+        self.0
+            .borrow()
+            .layouts
+            .get(&guild)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The server's copy of a channel (tests).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn channel(&self, id: u64) -> Option<Channel> {
-        self.0.borrow().channels.iter().find(|c| c.id == id).cloned()
+        self.0
+            .borrow()
+            .channels
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
     }
 
     /// The server's custom emojis of `guild`, by name (tests).
@@ -1581,7 +2236,15 @@ impl FakeBackend {
         for i in have..n {
             w.next_emoji += 1;
             let id = w.next_emoji;
-            let e = Emoji { id, guild_id: guild, name: format!("filler_{i}"), animated: false, image: format!("emoji-{id}"), creator_id: TIM, created_at: time(now_unix()) };
+            let e = Emoji {
+                id,
+                guild_id: guild,
+                name: format!("filler_{i}"),
+                animated: false,
+                image: format!("emoji-{id}"),
+                creator_id: TIM,
+                created_at: time(now_unix()),
+            };
             w.emojis.entry(guild).or_default().push(e);
         }
     }
@@ -1591,14 +2254,38 @@ impl FakeBackend {
     pub fn react_as(&self, channel: u64, message: u64, emoji: ReactionEmoji, user: u64, add: bool) {
         let mut w = self.0.borrow_mut();
         let _ = w.react(channel, message, user, &emoji, add);
-        let event = if add { Event::ReactionAdded { channel_id: channel, message_id: message, emoji, user_id: user } } else { Event::ReactionRemoved { channel_id: channel, message_id: message, emoji, user_id: user } };
+        let event = if add {
+            Event::ReactionAdded {
+                channel_id: channel,
+                message_id: message,
+                emoji,
+                user_id: user,
+            }
+        } else {
+            Event::ReactionRemoved {
+                channel_id: channel,
+                message_id: message,
+                emoji,
+                user_id: user,
+            }
+        };
         w.enqueue(Reply::Gateway(GatewayUpdate::Event(event)));
     }
 
     /// `user` reacts, but the gateway never says so: the client is away and only a fetch finds it (tests).
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn react_missed(&self, channel: u64, message: u64, emoji: ReactionEmoji, user: u64, add: bool) {
-        let _ = self.0.borrow_mut().react(channel, message, user, &emoji, add);
+    pub fn react_missed(
+        &self,
+        channel: u64,
+        message: u64,
+        emoji: ReactionEmoji,
+        user: u64,
+        add: bool,
+    ) {
+        let _ = self
+            .0
+            .borrow_mut()
+            .react(channel, message, user, &emoji, add);
     }
 
     /// Makes the next `n` reaction calls fail, as a network error (tests of the rollback).
@@ -1610,7 +2297,13 @@ impl FakeBackend {
     /// The server's copy of a message (tests).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn message(&self, channel: u64, id: u64) -> Option<Message> {
-        self.0.borrow().messages.get(&channel)?.iter().find(|m| m.id == id).cloned()
+        self.0
+            .borrow()
+            .messages
+            .get(&channel)?
+            .iter()
+            .find(|m| m.id == id)
+            .cloned()
     }
 
     /// `author` posts `content` in `channel`, as the gateway would deliver it.
@@ -1683,9 +2376,11 @@ mod tests {
         let (a, b) = (World::new(), World::new());
         assert_eq!(a.messages[&GENERAL], b.messages[&GENERAL]);
         assert_eq!(a.messages[&GENERAL].len(), 150);
-        assert!(a.messages[&GENERAL]
-            .windows(2)
-            .all(|w| w[0].id < w[1].id && w[0].created_at <= w[1].created_at));
+        assert!(
+            a.messages[&GENERAL]
+                .windows(2)
+                .all(|w| w[0].id < w[1].id && w[0].created_at <= w[1].created_at)
+        );
         assert!(!a.messages.contains_key(&PLANS));
     }
 

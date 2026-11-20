@@ -11,7 +11,7 @@ for mode in "" "-light"; do
   for scene in emoji-picker emoji-autocomplete reactions jumbo-emoji server-settings-emojis channel-icon-emoji-tabs; do
     $BIN --scene "$scene$mode" --size 1280x800 --at 1 --snap "$OUT/$scene$mode.png" "$@"
   done
-  for scene in auth-login auth-signup-error main main-members home-dms home-empty toast empty-channel dialog-create-server reconnecting settings-appearance sections channel-settings icon-picker-search reorder-menu main-avatars server-settings-overview server-settings-roles server-settings-roles-limited server-settings-members profile-dialog; do
+  for scene in auth-login auth-signup-error main main-members home-dms home-empty toast empty-channel dialog-create-server reconnecting settings-appearance sections channel-settings icon-picker-search reorder-menu main-avatars server-settings-overview server-settings-roles server-settings-roles-limited server-settings-members profile-dialog admin-overview admin-servers admin-files admin-files-delete admin-users admin-audit admin-unavailable; do
     $BIN --scene "$scene$mode" --size 1280x800 --at 1 --snap "$OUT/$scene$mode.png" "$@"
   done
   $BIN --scene "main-small$mode" --size 800x600 --at 1 --snap "$OUT/main-small$mode.png" "$@"

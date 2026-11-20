@@ -5,13 +5,18 @@
 use std::time::Duration;
 
 use rune::Tx;
-use thehideout_api::{ApiError, Channel, DmChannel, Event, GatewayUpdate, Guild, Message, Page, User};
+use thehideout_api::{
+    ApiError, Channel, DmChannel, Event, GatewayUpdate, Guild, Message, Page, User,
+};
 use thehideout_design::components::{ConnectionStatus, ToastKind};
 
 use crate::backend::{Command, GuildAccess, Initial, Reply, Session};
 use crate::layout;
 use crate::server_settings::{ROLES_CONFLICT_TOAST, RoleForm, error_text};
-use crate::state::{AppState, chat_id_of, Delivery, DialogKind, Fetch, Marker, Phase, Place, Screen, Stream, auth_error, sentence};
+use crate::state::{
+    AppState, Delivery, DialogKind, Fetch, Marker, Phase, Place, Screen, Stream, auth_error,
+    chat_id_of, sentence,
+};
 
 pub fn apply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
     // A picture arriving can't bring news of other pictures; everything else may.
@@ -33,7 +38,9 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
         }
         // A resumed session that is refused leaves the form without a complaint: the user typed
         // nothing wrong. (An interactive sign-in has the form busy.)
-        Reply::Initial(Err(ApiError::Unauthenticated)) if s.auth.phase != Phase::Busy => s.reset(None),
+        Reply::Initial(Err(ApiError::Unauthenticated)) if s.auth.phase != Phase::Busy => {
+            s.reset(None)
+        }
         Reply::Initial(Err(e)) => auth_failed(s, &e),
         Reply::Resume(Ok(None)) | Reply::Resume(Err(ApiError::Unauthenticated)) => s.reset(None),
         Reply::Resume(Ok(Some((server, session)))) => {
@@ -52,10 +59,17 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
                     s.data.layouts.insert(guild, layout::normalized(&layout));
                 }
             }
-            Err(e) => s.toast(ToastKind::Danger, format!("Couldn't load channels. {}", sentence(&e.to_string()))),
+            Err(e) => s.toast(
+                ToastKind::Danger,
+                format!("Couldn't load channels. {}", sentence(&e.to_string())),
+            ),
         },
         Reply::Access { guild, result } => match result {
-            Ok(GuildAccess { roles, version, member_roles }) => {
+            Ok(GuildAccess {
+                roles,
+                version,
+                member_roles,
+            }) => {
                 s.set_roles(guild, roles, Some(version));
                 s.data.member_roles.insert(guild, member_roles);
             }
@@ -67,7 +81,8 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
             Ok((section, layout)) => {
                 s.set_layout(guild, layout);
                 let kind = s.ui.dialog.as_ref().map(|d| d.kind);
-                if matches!(kind, Some(DialogKind::CreateSection { guild: g }) | Some(DialogKind::RenameSection { guild: g, .. }) if g == guild) {
+                if matches!(kind, Some(DialogKind::CreateSection { guild: g }) | Some(DialogKind::RenameSection { guild: g, .. }) if g == guild)
+                {
                     s.close_dialog();
                 }
                 s.toast(ToastKind::Success, format!("Saved {}", section.name));
@@ -90,8 +105,16 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
             }
             Err(e) => dialog_failed(s, &e),
         },
-        Reply::Messages { channel, before, result } => messages(s, channel, before, result, tx),
-        Reply::Sent { channel, nonce, result } => sent(s, channel, &nonce, result),
+        Reply::Messages {
+            channel,
+            before,
+            result,
+        } => messages(s, channel, before, result, tx),
+        Reply::Sent {
+            channel,
+            nonce,
+            result,
+        } => sent(s, channel, &nonce, result),
         Reply::GuildCreated(r) => guild_done(s, r, DialogKind::CreateGuild, "Server created"),
         Reply::GuildJoined(r) => guild_done(s, r, DialogKind::JoinGuild, "Joined the server"),
         Reply::ChannelCreated(r) => match r {
@@ -128,12 +151,18 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
         Reply::DmOpened(r) => match r {
             Ok(dm) => {
                 let id = dm.id;
-                let peer = s.dm_peer(&dm).map(|u| u.username.clone()).unwrap_or_default();
+                let peer = s
+                    .dm_peer(&dm)
+                    .map(|u| u.username.clone())
+                    .unwrap_or_default();
                 add_dm(s, dm);
                 s.close_dialog();
                 s.go_home();
                 s.select_channel(id);
-                s.toast(ToastKind::Success, format!("Opened a conversation with {peer}"));
+                s.toast(
+                    ToastKind::Success,
+                    format!("Opened a conversation with {peer}"),
+                );
             }
             Err(e) => dialog_failed(s, &e),
         },
@@ -145,12 +174,26 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
         Reply::ImageRead { purpose, result } => s.image_read(purpose, result),
         Reply::AvatarSaved(r) => match r {
             Ok(u) => {
-                let had_draft = s.ui.dialog.as_ref().is_some_and(|d| d.kind == DialogKind::Profile && d.pick.draft.is_some());
+                let had_draft =
+                    s.ui.dialog
+                        .as_ref()
+                        .is_some_and(|d| d.kind == DialogKind::Profile && d.pick.draft.is_some());
                 user_updated(s, u);
-                if s.ui.dialog.as_ref().is_some_and(|d| d.kind == DialogKind::Profile) {
+                if s.ui
+                    .dialog
+                    .as_ref()
+                    .is_some_and(|d| d.kind == DialogKind::Profile)
+                {
                     s.close_dialog();
                 }
-                s.toast(ToastKind::Success, if had_draft { "Profile picture updated" } else { "Profile picture removed" });
+                s.toast(
+                    ToastKind::Success,
+                    if had_draft {
+                        "Profile picture updated"
+                    } else {
+                        "Profile picture removed"
+                    },
+                );
             }
             Err(e) => dialog_failed(s, &e),
         },
@@ -191,14 +234,24 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
             }
             Err(e) => role_form_failed(s, &e),
         },
-        Reply::RoleDeleted { guild, role, result } => match result {
+        Reply::RoleDeleted {
+            guild,
+            role,
+            result,
+        } => match result {
             Ok(version) => {
-                let roles: Vec<_> = s.roles_of(guild).iter().filter(|r| r.id != role).cloned().collect();
+                let roles: Vec<_> = s
+                    .roles_of(guild)
+                    .iter()
+                    .filter(|r| r.id != role)
+                    .cloned()
+                    .collect();
                 s.set_roles(guild, roles, Some(version));
                 if let Some(m) = s.data.member_roles.get_mut(&guild) {
                     m.values_mut().for_each(|ids| ids.retain(|r| *r != role));
                 }
-                if matches!(s.ui.dialog.as_ref().map(|d| d.kind), Some(DialogKind::DeleteRole { role: r, .. }) if r == role) {
+                if matches!(s.ui.dialog.as_ref().map(|d| d.kind), Some(DialogKind::DeleteRole { role: r, .. }) if r == role)
+                {
                     s.close_dialog();
                 }
                 s.toast(ToastKind::Success, "Role deleted");
@@ -224,13 +277,25 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
                 }
             }
         }
-        Reply::MemberRolesSet { guild, user, result } => {
-            if let Some(ss) = s.ui.server_settings.as_mut().filter(|x| x.guild == guild && x.member_busy == Some(user)) {
+        Reply::MemberRolesSet {
+            guild,
+            user,
+            result,
+        } => {
+            if let Some(ss) =
+                s.ui.server_settings
+                    .as_mut()
+                    .filter(|x| x.guild == guild && x.member_busy == Some(user))
+            {
                 ss.member_busy = None;
             }
             match result {
                 Ok(member) => {
-                    s.data.member_roles.entry(guild).or_default().insert(member.user.id, member.role_ids);
+                    s.data
+                        .member_roles
+                        .entry(guild)
+                        .or_default()
+                        .insert(member.user.id, member.role_ids);
                     s.data.users.insert(member.user.id, member.user);
                 }
                 Err(e) => {
@@ -248,8 +313,30 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
             }
         },
         Reply::EmojiSaved { guild, result } => s.emoji_saved(guild, result),
-        Reply::EmojiDeleted { guild, emoji, result } => s.emoji_deleted(guild, emoji, result),
-        Reply::ReactionSaved { channel, message, emoji, add, result } => s.reaction_saved(channel, message, &emoji, add, result),
+        Reply::EmojiDeleted {
+            guild,
+            emoji,
+            result,
+        } => s.emoji_deleted(guild, emoji, result),
+        Reply::ReactionSaved {
+            channel,
+            message,
+            emoji,
+            add,
+            result,
+        } => s.reaction_saved(channel, message, &emoji, add, result),
+        Reply::AdminOverview(r) => s.admin_overview_replied(r),
+        Reply::AdminActivity { days, result } => s.admin_activity_replied(days, result),
+        Reply::AdminGuilds { epoch, result } => s.admin_guilds_replied(epoch, result),
+        Reply::AdminUsers { epoch, result } => s.admin_users_replied(epoch, result),
+        Reply::AdminFiles { epoch, result } => s.admin_files_replied(epoch, result),
+        Reply::AdminAudit { epoch, result } => s.admin_audit_replied(epoch, result),
+        Reply::AdminAdminSet {
+            user,
+            is_admin,
+            result,
+        } => s.admin_set_replied(user, is_admin, result),
+        Reply::AdminFileDeleted { key, result } => s.admin_file_deleted(&key, result),
         Reply::SignedOut => {}
         Reply::Gateway(update) => gateway(s, update, tx),
     }
@@ -270,7 +357,10 @@ fn user_updated(s: &mut AppState, u: User) {
 }
 
 fn guild_saved(s: &mut AppState, guild: u64, result: Result<Guild, ApiError>) {
-    let name_busy = s.ui.server_settings.as_ref().is_some_and(|x| x.guild == guild && x.name_busy);
+    let name_busy =
+        s.ui.server_settings
+            .as_ref()
+            .is_some_and(|x| x.guild == guild && x.name_busy);
     match result {
         Ok(g) => {
             s.set_guild(g);
@@ -279,7 +369,14 @@ fn guild_saved(s: &mut AppState, guild: u64, result: Result<Guild, ApiError>) {
                 ss.icon_busy = false;
                 ss.icon.draft = None;
             }
-            s.toast(ToastKind::Success, if name_busy { "Server renamed" } else { "Server icon updated" });
+            s.toast(
+                ToastKind::Success,
+                if name_busy {
+                    "Server renamed"
+                } else {
+                    "Server icon updated"
+                },
+            );
         }
         Err(e) => {
             if let Some(ss) = s.ui.server_settings.as_mut().filter(|x| x.guild == guild) {
@@ -315,8 +412,17 @@ fn auth_failed(s: &mut AppState, e: &ApiError) {
 }
 
 fn initial(s: &mut AppState, init: Initial) {
-    let Initial { me, guilds, channels, layouts, dms } = init;
-    s.data.layouts = layouts.iter().map(|(g, l)| (*g, layout::normalized(l))).collect();
+    let Initial {
+        me,
+        guilds,
+        channels,
+        layouts,
+        dms,
+    } = init;
+    s.data.layouts = layouts
+        .iter()
+        .map(|(g, l)| (*g, layout::normalized(l)))
+        .collect();
     if let Some(session) = &mut s.session {
         session.me = me.clone();
     }
@@ -351,7 +457,13 @@ fn refreshed(s: &mut AppState, init: Initial) {
     if s.screen != Screen::Main {
         return;
     }
-    let Initial { me, guilds, channels, layouts, dms } = init;
+    let Initial {
+        me,
+        guilds,
+        channels,
+        layouts,
+        dms,
+    } = init;
     for (g, l) in layouts {
         // An edit still out is newer than this answer; its reply settles the layout.
         if !s.data.layout_undo.contains_key(&g) {
@@ -418,7 +530,12 @@ fn set_channels(s: &mut AppState, guild: u64, list: Vec<Channel>) {
 }
 
 fn update_channel(s: &mut AppState, c: Channel) {
-    if let Some(slot) = s.data.channels.get_mut(&c.guild_id).and_then(|l| l.iter_mut().find(|x| x.id == c.id)) {
+    if let Some(slot) = s
+        .data
+        .channels
+        .get_mut(&c.guild_id)
+        .and_then(|l| l.iter_mut().find(|x| x.id == c.id))
+    {
         *slot = c;
     }
 }
@@ -463,10 +580,19 @@ fn guild_done(s: &mut AppState, r: Result<Guild, ApiError>, kind: DialogKind, me
 fn dialog_failed(s: &mut AppState, e: &ApiError) {
     let message = match e {
         ApiError::NotFound => "That invite code doesn't match any server.".to_owned(),
-        ApiError::AlreadyExists if matches!(s.ui.dialog.as_ref().map(|d| d.kind), Some(DialogKind::JoinGuild)) => "You're already in that server.".to_owned(),
+        ApiError::AlreadyExists
+            if matches!(
+                s.ui.dialog.as_ref().map(|d| d.kind),
+                Some(DialogKind::JoinGuild)
+            ) =>
+        {
+            "You're already in that server.".to_owned()
+        }
         ApiError::AlreadyExists => "That name is already taken here.".to_owned(),
         ApiError::PermissionDenied => "You don't have permission to do that.".to_owned(),
-        ApiError::Conflict => "That changed while you were editing. Close this and try again.".to_owned(),
+        ApiError::Conflict => {
+            "That changed while you were editing. Close this and try again.".to_owned()
+        }
         ApiError::InvalidArgument(m) => sentence(m),
         ApiError::Network(_) => "Can't reach the server.".to_owned(),
         other => sentence(&other.to_string()),
@@ -480,9 +606,17 @@ fn dialog_failed(s: &mut AppState, e: &ApiError) {
     }
 }
 
-fn messages(s: &mut AppState, channel: u64, before: Option<u64>, result: Result<Page<Message>, ApiError>, tx: &mut Tx) {
+fn messages(
+    s: &mut AppState,
+    channel: u64,
+    before: Option<u64>,
+    result: Result<Page<Message>, ApiError>,
+    tx: &mut Tx,
+) {
     let me = s.my_id();
-    let Some(log) = s.data.logs.get_mut(&channel) else { return };
+    let Some(log) = s.data.logs.get_mut(&channel) else {
+        return;
+    };
     let page = match result {
         Ok(p) => p,
         Err(e) => {
@@ -491,7 +625,10 @@ fn messages(s: &mut AppState, channel: u64, before: Option<u64>, result: Result<
             if before.is_some() || log.fetch != Fetch::Older {
                 log.fetch = Fetch::Idle;
             }
-            s.toast(ToastKind::Danger, format!("Couldn't load messages. {}", sentence(&e.to_string())));
+            s.toast(
+                ToastKind::Danger,
+                format!("Couldn't load messages. {}", sentence(&e.to_string())),
+            );
             return;
         }
     };
@@ -516,7 +653,8 @@ fn messages(s: &mut AppState, channel: u64, before: Option<u64>, result: Result<
         }
         None => {
             let newest_page_oldest = page.items.iter().map(|m| m.id).min();
-            let gap = log.loaded && matches!((newest_page_oldest, log.newest_id()), (Some(o), Some(n)) if o > n);
+            let gap = log.loaded
+                && matches!((newest_page_oldest, log.newest_id()), (Some(o), Some(n)) if o > n);
             if !log.loaded || gap {
                 log.messages.clear();
                 log.has_more = page.has_more;
@@ -527,7 +665,12 @@ fn messages(s: &mut AppState, channel: u64, before: Option<u64>, result: Result<
         }
     }
     log.oldest_id = log.messages.first().map(|m| m.id);
-    let strangers: Vec<Message> = log.messages.iter().filter(|m| !s.data.users.contains_key(&m.author_id)).cloned().collect();
+    let strangers: Vec<Message> = log
+        .messages
+        .iter()
+        .filter(|m| !s.data.users.contains_key(&m.author_id))
+        .cloned()
+        .collect();
     for m in &strangers {
         s.want_author(m);
     }
@@ -536,13 +679,18 @@ fn messages(s: &mut AppState, channel: u64, before: Option<u64>, result: Result<
 
 /// A "New" divider that was waiting for its history gets its place.
 fn resolve_marker(s: &mut AppState, channel: u64) {
-    let Marker::Pending { channel: c, unread } = s.ui.marker else { return };
+    let Marker::Pending { channel: c, unread } = s.ui.marker else {
+        return;
+    };
     if c != channel {
         return;
     }
     if let Some(log) = s.data.logs.get(&channel) {
         let at = log.messages.len().checked_sub(unread as usize + 1);
-        s.ui.marker = Marker::After { channel, id: at.map(|i| log.messages[i].id) };
+        s.ui.marker = Marker::After {
+            channel,
+            id: at.map(|i| log.messages[i].id),
+        };
     }
 }
 
@@ -559,7 +707,10 @@ fn sent(s: &mut AppState, channel: u64, nonce: &str, result: Result<Message, Api
                 o.state = Delivery::Failed;
             }
             if !e.is_transient() {
-                s.toast(ToastKind::Danger, format!("Message not sent. {}", sentence(&e.to_string())));
+                s.toast(
+                    ToastKind::Danger,
+                    format!("Message not sent. {}", sentence(&e.to_string())),
+                );
             }
         }
     }
@@ -581,7 +732,9 @@ fn gateway(s: &mut AppState, update: GatewayUpdate, tx: &mut Tx) {
         }
         GatewayUpdate::Disconnected { retry_in, .. } => {
             s.ui.stream = Stream::Interrupted;
-            s.ui.connection = ConnectionStatus::Reconnecting(retry_in.max(Duration::from_secs(1)).as_secs() as u32);
+            s.ui.connection = ConnectionStatus::Reconnecting(
+                retry_in.max(Duration::from_secs(1)).as_secs() as u32,
+            );
         }
         GatewayUpdate::AuthExpired => s.reset(Some(auth_error(&ApiError::Unauthenticated))),
         GatewayUpdate::Event(e) => event(s, e, tx),
@@ -592,15 +745,29 @@ fn event(s: &mut AppState, e: Event, tx: &mut Tx) {
     match e {
         Event::Heartbeat => {}
         Event::EmojisUpdated { guild_id, emojis } => s.set_emojis(guild_id, emojis),
-        Event::ReactionAdded { channel_id, message_id, emoji, user_id } => s.reaction_event(channel_id, message_id, &emoji, user_id, true),
-        Event::ReactionRemoved { channel_id, message_id, emoji, user_id } => s.reaction_event(channel_id, message_id, &emoji, user_id, false),
+        Event::ReactionAdded {
+            channel_id,
+            message_id,
+            emoji,
+            user_id,
+        } => s.reaction_event(channel_id, message_id, &emoji, user_id, true),
+        Event::ReactionRemoved {
+            channel_id,
+            message_id,
+            emoji,
+            user_id,
+        } => s.reaction_event(channel_id, message_id, &emoji, user_id, false),
         // handled in the attachments task
         Event::MessageUpdated(_) => {}
         Event::GuildUpdated(g) => s.set_guild(g),
         Event::ChannelUpdated(c) => update_channel(s, c),
         Event::UserUpdated(u) => user_updated(s, u),
         Event::LayoutUpdated { guild_id, layout } => s.set_layout(guild_id, layout),
-        Event::RolesUpdated { guild_id, roles, version } => s.set_roles(guild_id, roles, Some(version)),
+        Event::RolesUpdated {
+            guild_id,
+            roles,
+            version,
+        } => s.set_roles(guild_id, roles, Some(version)),
         Event::MemberUpdated { guild_id, member } => {
             if let Some(m) = s.data.member_roles.get_mut(&guild_id) {
                 m.insert(member.user.id, member.role_ids.clone());
@@ -665,20 +832,48 @@ mod tests {
     use crate::state::Unread;
 
     fn user(id: u64, name: &str) -> User {
-        User { id, username: name.into(), created_at: UNIX_EPOCH, avatar: None, is_admin: false }
+        User {
+            id,
+            username: name.into(),
+            created_at: UNIX_EPOCH,
+            avatar: None,
+            is_admin: false,
+        }
     }
 
     fn msg(id: u64, channel: u64, author: u64, content: &str, nonce: &str) -> Message {
-        Message { id, channel_id: channel, guild_id: Some(1), author_id: author, content: content.into(), created_at: UNIX_EPOCH + Duration::from_secs(id), edited_at: None, nonce: nonce.into(), reactions: vec![], attachments: vec![], embeds: vec![] }
+        Message {
+            id,
+            channel_id: channel,
+            guild_id: Some(1),
+            author_id: author,
+            content: content.into(),
+            created_at: UNIX_EPOCH + Duration::from_secs(id),
+            edited_at: None,
+            nonce: nonce.into(),
+            reactions: vec![],
+            attachments: vec![],
+            embeds: vec![],
+        }
     }
 
     fn state() -> AppState {
         let mut s = AppState::new(|| UNIX_EPOCH, Tz::Fixed(0));
         let me = user(1, "tim");
-        s.session = Some(Session { token: "t".into(), me: me.clone() });
+        s.session = Some(Session {
+            token: "t".into(),
+            me: me.clone(),
+        });
         s.data.users.insert(1, me);
         s.data.users.insert(2, user(2, "ana"));
-        s.data.guilds.push(Guild { id: 1, name: "G".into(), owner_id: 1, invite_code: "abc".into(), created_at: UNIX_EPOCH, icon: None });
+        s.data.guilds.push(Guild {
+            id: 1,
+            name: "G".into(),
+            owner_id: 1,
+            invite_code: "abc".into(),
+            created_at: UNIX_EPOCH,
+            icon: None,
+        });
         let channel = |id: u64, name: &str, position: i32| Channel {
             id,
             guild_id: 1,
@@ -691,7 +886,9 @@ mod tests {
             color: Default::default(),
             topic: String::new(),
         };
-        s.data.channels.insert(1, vec![channel(10, "general", 0), channel(11, "dev", 1)]);
+        s.data
+            .channels
+            .insert(1, vec![channel(10, "general", 0), channel(11, "dev", 1)]);
         s.screen = Screen::Main;
         s.ui.place = Place::Guild(1);
         s.ui.guild_channel.insert(1, 10);
@@ -712,9 +909,20 @@ mod tests {
         let nonce = s.data.outgoing[0].nonce.clone();
         // Echo first, then the RPC reply.
         message_created(&mut s, msg(3, 10, 1, "hello", &nonce));
-        assert!(s.data.outgoing.is_empty(), "the echo settles the pending message");
+        assert!(
+            s.data.outgoing.is_empty(),
+            "the echo settles the pending message"
+        );
         sent(&mut s, 10, &nonce, Ok(msg(3, 10, 1, "hello", &nonce)));
-        assert_eq!(s.log(10).unwrap().messages.iter().filter(|m| m.id == 3).count(), 1);
+        assert_eq!(
+            s.log(10)
+                .unwrap()
+                .messages
+                .iter()
+                .filter(|m| m.id == 3)
+                .count(),
+            1
+        );
         // Reply first, then the echo.
         assert!(s.send("again"));
         let nonce = s.data.outgoing[0].nonce.clone();
@@ -735,7 +943,14 @@ mod tests {
         assert_eq!(s.data.outgoing[0].state, Delivery::Failed);
         s.retry(&nonce);
         assert_eq!(s.data.outgoing[0].state, Delivery::Pending);
-        assert_eq!(s.outbox, vec![Command::Send { channel: 10, content: "hi".into(), nonce }]);
+        assert_eq!(
+            s.outbox,
+            vec![Command::Send {
+                channel: 10,
+                content: "hi".into(),
+                nonce
+            }]
+        );
     }
 
     #[test]
@@ -746,13 +961,25 @@ mod tests {
         message_created(&mut s, msg(5, 11, 2, "plain", ""));
         message_created(&mut s, msg(6, 11, 2, "hey @tim", ""));
         message_created(&mut s, msg(7, 10, 2, "visible", ""));
-        assert_eq!(s.unread_of(11), Unread { count: 2, mentions: 1 });
+        assert_eq!(
+            s.unread_of(11),
+            Unread {
+                count: 2,
+                mentions: 1
+            }
+        );
         assert_eq!(s.unread_of(10), Unread::default());
         assert_eq!(s.guild_unread(1).mentions, 1);
         s.select_channel(11);
         assert_eq!(s.unread_of(11), Unread::default());
         // The divider sits after the last message that was already read.
-        assert_eq!(s.ui.marker, Marker::After { channel: 11, id: Some(3) });
+        assert_eq!(
+            s.ui.marker,
+            Marker::After {
+                channel: 11,
+                id: Some(3)
+            }
+        );
         s.select_channel(10);
         assert_eq!(s.ui.marker, Marker::None);
     }
@@ -768,13 +995,23 @@ mod tests {
         s.outbox.clear();
         s.load_older(10);
         s.load_older(10);
-        assert_eq!(s.outbox, vec![Command::LoadMessages { channel: 10, before: Some(10) }], "asked once while one is in flight");
+        assert_eq!(
+            s.outbox,
+            vec![Command::LoadMessages {
+                channel: 10,
+                before: Some(10)
+            }],
+            "asked once while one is in flight"
+        );
         let log = s.data.logs.get_mut(&10).unwrap();
         log.insert_page(vec![msg(9, 10, 2, "a", ""), msg(8, 10, 2, "b", "")]);
         log.fetch = Fetch::Idle;
         log.has_more = false;
         assert_eq!(log.oldest_id, Some(8));
-        assert_eq!(log.messages.iter().map(|m| m.id).collect::<Vec<_>>(), vec![8, 9, 10, 11, 12]);
+        assert_eq!(
+            log.messages.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![8, 9, 10, 11, 12]
+        );
         s.outbox.clear();
         s.load_older(10);
         assert!(s.outbox.is_empty(), "no more pages");
@@ -786,7 +1023,11 @@ mod tests {
         s.select_channel(11);
         s.select_channel(10);
         s.select_channel(11);
-        let loads = s.outbox.iter().filter(|c| matches!(c, Command::LoadMessages { .. })).count();
+        let loads = s
+            .outbox
+            .iter()
+            .filter(|c| matches!(c, Command::LoadMessages { .. }))
+            .count();
         assert_eq!(loads, 2, "one per channel, not one per visit");
     }
 
@@ -816,10 +1057,24 @@ mod tests {
         message_created(&mut s, msg(6, 10, 9, "again", ""));
         assert_eq!(s.outbox, vec![Command::LoadMembers { guild: 1 }]);
         // A refused answer allows another try; a known author never asks.
-        apply(&mut s, Reply::Members { guild: 1, result: Err(ApiError::Network("x".into())) }, &mut Tx::default());
+        apply(
+            &mut s,
+            Reply::Members {
+                guild: 1,
+                result: Err(ApiError::Network("x".into())),
+            },
+            &mut Tx::default(),
+        );
         message_created(&mut s, msg(7, 10, 9, "hm", ""));
         assert_eq!(s.outbox.len(), 2);
-        apply(&mut s, Reply::Members { guild: 1, result: Ok(vec![user(9, "zed")]) }, &mut Tx::default());
+        apply(
+            &mut s,
+            Reply::Members {
+                guild: 1,
+                result: Ok(vec![user(9, "zed")]),
+            },
+            &mut Tx::default(),
+        );
         message_created(&mut s, msg(8, 10, 9, "ok", ""));
         assert_eq!(s.outbox.len(), 2);
         assert_eq!(s.user_name(9), "zed");
@@ -830,18 +1085,36 @@ mod tests {
         let mut tx = Tx::default();
         let mut s = AppState::new(|| UNIX_EPOCH, Tz::Fixed(0));
         s.screen = Screen::Loading;
-        let session = Session { token: "t".into(), me: user(1, "tim") };
-        apply(&mut s, Reply::Resume(Ok(Some(("http://example:1".into(), session)))), &mut tx);
-        assert_eq!((s.screen, s.server_url().as_str()), (Screen::Loading, "http://example:1"));
+        let session = Session {
+            token: "t".into(),
+            me: user(1, "tim"),
+        };
+        apply(
+            &mut s,
+            Reply::Resume(Ok(Some(("http://example:1".into(), session)))),
+            &mut tx,
+        );
+        assert_eq!(
+            (s.screen, s.server_url().as_str()),
+            (Screen::Loading, "http://example:1")
+        );
         assert_eq!(s.outbox, vec![Command::LoadInitial]);
         // The token is refused when the data is fetched: back to the form, no complaint.
-        apply(&mut s, Reply::Initial(Err(ApiError::Unauthenticated)), &mut tx);
+        apply(
+            &mut s,
+            Reply::Initial(Err(ApiError::Unauthenticated)),
+            &mut tx,
+        );
         assert_eq!((s.screen, s.auth.error.clone()), (Screen::Auth, None));
         s.screen = Screen::Loading;
         apply(&mut s, Reply::Resume(Ok(None)), &mut tx);
         assert_eq!(s.screen, Screen::Auth);
         s.screen = Screen::Loading;
-        apply(&mut s, Reply::Resume(Err(ApiError::Network("down".into()))), &mut tx);
+        apply(
+            &mut s,
+            Reply::Resume(Err(ApiError::Network("down".into()))),
+            &mut tx,
+        );
         assert_eq!((s.screen, s.auth.error.is_some()), (Screen::Auth, true));
     }
 
@@ -850,7 +1123,10 @@ mod tests {
         let mut s = state();
         s.outbox.clear();
         s.sign_out();
-        assert_eq!((s.screen, s.outbox.clone()), (Screen::Auth, vec![Command::SignOut]));
+        assert_eq!(
+            (s.screen, s.outbox.clone()),
+            (Screen::Auth, vec![Command::SignOut])
+        );
     }
 
     #[test]

@@ -6,14 +6,20 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::SystemTime;
 
 use rune::TextEdit;
-use thehideout_api::{Channel, ChannelIconRef, DmChannel, Emoji, Guild, GuildLayout, MAX_MESSAGE_CHARS, Message, PaletteColor, Permissions, Role, User};
+use thehideout_api::{
+    Channel, ChannelIconRef, DmChannel, Emoji, Guild, GuildLayout, MAX_MESSAGE_CHARS, Message,
+    PaletteColor, Permissions, Role, User,
+};
 use thehideout_design::components::{ConnectionStatus, EmojiPickerState, ScrollEdges, ToastKind};
 
 use crate::backend::{Command, Session};
-pub use crate::forms::{Auth, AuthError, AuthField, AuthMode, ChannelForm, DialogKind, DialogState, Phase, auth_error, check_name, sentence};
-use crate::layout::{self, Item};
 use crate::emoji::{PickerUi, Reduced, SuggestUi};
 use crate::format::{Tz, unix};
+pub use crate::forms::{
+    Auth, AuthError, AuthField, AuthMode, ChannelForm, DialogKind, DialogState, Phase, auth_error,
+    check_name, sentence,
+};
+use crate::layout::{self, Item};
 use crate::look::Look;
 use crate::media::MediaCache;
 use crate::server_settings::ServerSettings;
@@ -32,7 +38,6 @@ pub enum Screen {
     Main,
 }
 
-
 // ---- data ------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -40,7 +45,10 @@ pub enum Fetch {
     Idle,
     /// The first page. `since` is stamped by the next poll (the clock a handler sees can be stale)
     /// and `shown` flips once the load has outlasted [`PLACEHOLDER_DELAY`].
-    Initial { since: Option<f64>, shown: bool },
+    Initial {
+        since: Option<f64>,
+        shown: bool,
+    },
     Older,
 }
 
@@ -64,7 +72,15 @@ pub struct ChannelLog {
 
 impl Default for ChannelLog {
     fn default() -> Self {
-        ChannelLog { messages: Vec::new(), oldest_id: None, has_more: false, loaded: false, fetch: Fetch::Idle, breaks: Vec::new(), stale: false }
+        ChannelLog {
+            messages: Vec::new(),
+            oldest_id: None,
+            has_more: false,
+            loaded: false,
+            fetch: Fetch::Idle,
+            breaks: Vec::new(),
+            stale: false,
+        }
     }
 }
 
@@ -171,9 +187,15 @@ pub struct Unread {
 pub enum Marker {
     None,
     /// Entered with `unread` new messages before the history arrived.
-    Pending { channel: u64, unread: u32 },
+    Pending {
+        channel: u64,
+        unread: u32,
+    },
     /// The divider goes after message `id` (`None`: before the first).
-    After { channel: u64, id: Option<u64> },
+    After {
+        channel: u64,
+        id: Option<u64>,
+    },
 }
 
 /// A page of the settings.
@@ -192,11 +214,20 @@ pub enum Menu {
     /// The user strip's gear: settings and sign out.
     User,
     /// A channel's menu (the row's "..." button, or a right-click at `at`).
-    Channel { id: u64, at: Option<(i32, i32)> },
+    Channel {
+        id: u64,
+        at: Option<(i32, i32)>,
+    },
     /// A section header's menu.
-    Section { id: u64, at: Option<(i32, i32)> },
+    Section {
+        id: u64,
+        at: Option<(i32, i32)>,
+    },
     /// The channel menu's "Move to section" submenu.
-    MoveTo { id: u64, at: Option<(i32, i32)> },
+    MoveTo {
+        id: u64,
+        at: Option<(i32, i32)>,
+    },
 }
 
 /// A sidebar row held by the pointer: dragged `dy` points from where it was.
@@ -260,6 +291,8 @@ pub struct Ui {
     pub settings: Option<Section>,
     /// The server's settings page (roles, members, icon), which replaces the shell the same way.
     pub server_settings: Option<ServerSettings>,
+    /// The site-admin dashboard (admins only), which replaces the shell the same way.
+    pub admin: Option<crate::admin::AdminState>,
     /// Text for the next poll to put on the clipboard (a press handler has no `Tx`).
     pub copy_request: Option<String>,
     pub toast_seq: u64,
@@ -286,6 +319,8 @@ pub struct Edges {
     pub members: ScrollEdges,
     /// The settings pages (user and server): only one is open at a time.
     pub page: ScrollEdges,
+    /// The admin pages' scrolling body.
+    pub admin: ScrollEdges,
 }
 
 impl Ui {
@@ -314,6 +349,7 @@ impl Ui {
             look_dirty: false,
             settings: None,
             server_settings: None,
+            admin: None,
             copy_request: None,
             toast_seq: 0,
             picker: None,
@@ -366,9 +402,21 @@ impl AppState {
         self.auth.server.text.trim().to_owned()
     }
 
+    /// The URL a stored file's bytes are served at on the configured server (what
+    /// `Client::media_url` builds from the same base URL).
+    pub fn media_url(&self, key: &str) -> String {
+        format!("{}/media/{key}", self.server_url().trim_end_matches('/'))
+    }
+
     /// Back to a fresh signed-out app, keeping the server URL and the look.
     pub fn reset(&mut self, error: Option<AuthError>) {
-        let (server, look, today, tz, now) = (self.server_url(), self.ui.look, self.today, self.tz, self.now);
+        let (server, look, today, tz, now) = (
+            self.server_url(),
+            self.ui.look,
+            self.today,
+            self.tz,
+            self.now,
+        );
         let collapsed = std::mem::take(&mut self.ui.collapsed);
         let recents = std::mem::take(&mut self.ui.recents);
         // The picture cache keeps its decoder (and the waker it was given); the pictures go.
@@ -395,7 +443,10 @@ impl AppState {
     }
 
     pub fn user_name(&self, id: u64) -> String {
-        self.data.users.get(&id).map_or_else(|| format!("user {id}"), |u| u.username.clone())
+        self.data
+            .users
+            .get(&id)
+            .map_or_else(|| format!("user {id}"), |u| u.username.clone())
     }
 
     pub fn guild(&self, id: u64) -> Option<&Guild> {
@@ -409,9 +460,17 @@ impl AppState {
     /// A guild's channels in sidebar order: the layout's, then any the layout doesn't list yet.
     pub fn ordered_channels(&self, guild: u64) -> Vec<&Channel> {
         let all = self.channels_of(guild);
-        let Some(l) = self.data.layouts.get(&guild) else { return all.iter().collect() };
-        let mut out: Vec<&Channel> = layout::channel_order(l).into_iter().filter_map(|id| all.iter().find(|c| c.id == id)).collect();
-        let unlisted: Vec<&Channel> = all.iter().filter(|c| !out.iter().any(|o| o.id == c.id)).collect();
+        let Some(l) = self.data.layouts.get(&guild) else {
+            return all.iter().collect();
+        };
+        let mut out: Vec<&Channel> = layout::channel_order(l)
+            .into_iter()
+            .filter_map(|id| all.iter().find(|c| c.id == id))
+            .collect();
+        let unlisted: Vec<&Channel> = all
+            .iter()
+            .filter(|c| !out.iter().any(|o| o.id == c.id))
+            .collect();
         out.extend(unlisted);
         out
     }
@@ -422,9 +481,21 @@ impl AppState {
 
     /// What the signed-in user may do in `guild` (nothing until its roles have arrived, unless they own it).
     pub fn perms(&self, guild: u64) -> Permissions {
-        let Some(g) = self.guild(guild) else { return Permissions::NONE };
-        let mine = self.data.member_roles.get(&guild).and_then(|m| m.get(&self.my_id())).map_or(&[][..], Vec::as_slice);
-        crate::perms::effective(g, self.my_id(), mine, self.data.roles.get(&guild).map_or(&[][..], Vec::as_slice))
+        let Some(g) = self.guild(guild) else {
+            return Permissions::NONE;
+        };
+        let mine = self
+            .data
+            .member_roles
+            .get(&guild)
+            .and_then(|m| m.get(&self.my_id()))
+            .map_or(&[][..], Vec::as_slice);
+        crate::perms::effective(
+            g,
+            self.my_id(),
+            mine,
+            self.data.roles.get(&guild).map_or(&[][..], Vec::as_slice),
+        )
     }
 
     /// Whether the structure controls (drag, menus, create section, settings) are offered.
@@ -443,7 +514,10 @@ impl AppState {
     /// The other participant of a DM.
     pub fn dm_peer<'a>(&self, dm: &'a DmChannel) -> Option<&'a User> {
         let me = self.my_id();
-        dm.participants.iter().find(|u| u.id != me).or(dm.participants.first())
+        dm.participants
+            .iter()
+            .find(|u| u.id != me)
+            .or(dm.participants.first())
     }
 
     /// The channel (or DM) being read.
@@ -472,8 +546,15 @@ impl AppState {
     pub fn current_channel_name(&self) -> Option<String> {
         let id = self.current_channel()?;
         match self.ui.place {
-            Place::Home => self.dm(id).and_then(|d| self.dm_peer(d)).map(|u| u.username.clone()),
-            Place::Guild(g) => self.channels_of(g).iter().find(|c| c.id == id).map(|c| c.name.clone()),
+            Place::Home => self
+                .dm(id)
+                .and_then(|d| self.dm_peer(d))
+                .map(|u| u.username.clone()),
+            Place::Guild(g) => self
+                .channels_of(g)
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.name.clone()),
         }
     }
 
@@ -486,16 +567,24 @@ impl AppState {
     }
 
     pub fn guild_unread(&self, guild: u64) -> Unread {
-        self.channels_of(guild).iter().fold(Unread::default(), |a, c| {
-            let u = self.unread_of(c.id);
-            Unread { count: a.count + u.count, mentions: a.mentions + u.mentions }
-        })
+        self.channels_of(guild)
+            .iter()
+            .fold(Unread::default(), |a, c| {
+                let u = self.unread_of(c.id);
+                Unread {
+                    count: a.count + u.count,
+                    mentions: a.mentions + u.mentions,
+                }
+            })
     }
 
     pub fn home_unread(&self) -> Unread {
         self.data.dms.iter().fold(Unread::default(), |a, d| {
             let u = self.unread_of(d.id);
-            Unread { count: a.count + u.count, mentions: a.mentions + u.mentions }
+            Unread {
+                count: a.count + u.count,
+                mentions: a.mentions + u.mentions,
+            }
         })
     }
 
@@ -509,12 +598,18 @@ impl AppState {
 
     /// Asks for every avatar and server icon that isn't cached, on its way or given up on.
     pub fn want_media(&mut self) {
-        let mut keys: Vec<String> = self.data.users.values().filter_map(|u| u.avatar.clone()).collect();
+        let mut keys: Vec<String> = self
+            .data
+            .users
+            .values()
+            .filter_map(|u| u.avatar.clone())
+            .collect();
         keys.extend(self.data.guilds.iter().filter_map(|g| g.icon.clone()));
         // Only the open server's emojis are fetched; the cache is bounded.
         if let Some(g) = self.emoji_guild() {
             keys.extend(self.emojis_of(g).iter().map(|e| e.image.clone()));
         }
+        keys.extend(self.admin_media_keys());
         keys.sort();
         keys.dedup();
         for key in keys {
@@ -527,19 +622,31 @@ impl AppState {
 
     /// The decoded avatar of `user`, if they have one and it is cached.
     pub fn avatar_pixels(&self, user: u64) -> Option<rune::Pixels> {
-        self.data.users.get(&user)?.avatar.as_deref().and_then(|k| self.data.media.pixels(k))
+        self.data
+            .users
+            .get(&user)?
+            .avatar
+            .as_deref()
+            .and_then(|k| self.data.media.pixels(k))
     }
 
     /// The decoded icon of `guild`.
     pub fn icon_pixels(&self, guild: u64) -> Option<rune::Pixels> {
-        self.guild(guild)?.icon.as_deref().and_then(|k| self.data.media.pixels(k))
+        self.guild(guild)?
+            .icon
+            .as_deref()
+            .and_then(|k| self.data.media.pixels(k))
     }
 
     /// Whether the composer may send: the gateway is up (or still coming up).
     pub fn composer_block(&self) -> Option<String> {
         match self.ui.connection {
-            ConnectionStatus::Reconnecting(_) => Some("Reconnecting\u{2026} you can send again once you're back online".into()),
-            ConnectionStatus::Offline => Some("You're offline. Messages can't be sent right now".into()),
+            ConnectionStatus::Reconnecting(_) => {
+                Some("Reconnecting\u{2026} you can send again once you're back online".into())
+            }
+            ConnectionStatus::Offline => {
+                Some("You're offline. Messages can't be sent right now".into())
+            }
             ConnectionStatus::Connected | ConnectionStatus::Connecting => None,
         }
     }
@@ -547,13 +654,19 @@ impl AppState {
     /// The composer's field for the open channel (drafts are kept per channel).
     pub fn composer_mut(&mut self) -> &mut TextEdit {
         match self.current_channel() {
-            Some(c) => self.ui.composers.entry(c).or_insert_with(|| TextEdit::new("")),
+            Some(c) => self
+                .ui
+                .composers
+                .entry(c)
+                .or_insert_with(|| TextEdit::new("")),
             None => &mut self.ui.idle_composer,
         }
     }
 
     pub fn composer(&self) -> &TextEdit {
-        self.current_channel().and_then(|c| self.ui.composers.get(&c)).unwrap_or(&self.ui.idle_composer)
+        self.current_channel()
+            .and_then(|c| self.ui.composers.get(&c))
+            .unwrap_or(&self.ui.idle_composer)
     }
 
     // ---- settings ----------------------------------------------------------------------------
@@ -657,7 +770,9 @@ impl AppState {
         if ids.is_empty() {
             return;
         }
-        let at = self.current_channel().and_then(|c| ids.iter().position(|&i| i == c));
+        let at = self
+            .current_channel()
+            .and_then(|c| ids.iter().position(|&i| i == c));
         let next = match at {
             Some(i) => (i as i32 + delta).clamp(0, ids.len() as i32 - 1) as usize,
             None => 0,
@@ -671,24 +786,41 @@ impl AppState {
         self.ui.at_bottom = true;
         self.ui.unseen_below = 0;
         self.ui.marker = Marker::None;
-        let Some(channel) = self.current_channel() else { return };
+        let Some(channel) = self.current_channel() else {
+            return;
+        };
         let unread = self.ui.unread.remove(&channel).filter(|u| u.count > 0);
         let log = self.data.logs.entry(channel).or_default();
         if let Some(u) = unread {
             self.ui.marker = if log.loaded {
                 let at = log.messages.len().checked_sub(u.count as usize + 1);
-                Marker::After { channel, id: at.map(|i| log.messages[i].id) }
+                Marker::After {
+                    channel,
+                    id: at.map(|i| log.messages[i].id),
+                }
             } else {
-                Marker::Pending { channel, unread: u.count }
+                Marker::Pending {
+                    channel,
+                    unread: u.count,
+                }
             };
         }
         if !log.loaded && log.fetch == Fetch::Idle {
-            log.fetch = Fetch::Initial { since: None, shown: false };
-            self.outbox.push(Command::LoadMessages { channel, before: None });
+            log.fetch = Fetch::Initial {
+                since: None,
+                shown: false,
+            };
+            self.outbox.push(Command::LoadMessages {
+                channel,
+                before: None,
+            });
         } else if log.loaded && log.stale {
             // Keeps what is shown; the newest page merges in when it lands.
             log.stale = false;
-            self.outbox.push(Command::LoadMessages { channel, before: None });
+            self.outbox.push(Command::LoadMessages {
+                channel,
+                before: None,
+            });
         }
     }
 
@@ -702,25 +834,41 @@ impl AppState {
             log.stale = log.loaded && Some(id) != current;
         }
         if let Some(channel) = current {
-            self.outbox.push(Command::LoadMessages { channel, before: None });
+            self.outbox.push(Command::LoadMessages {
+                channel,
+                before: None,
+            });
         }
     }
 
     /// Tries the open channel's first page again after a failed load.
     pub fn reload_current(&mut self) {
-        let Some(channel) = self.current_channel() else { return };
+        let Some(channel) = self.current_channel() else {
+            return;
+        };
         let log = self.data.logs.entry(channel).or_default();
         if !log.loaded && log.fetch == Fetch::Idle {
-            log.fetch = Fetch::Initial { since: None, shown: false };
-            self.outbox.push(Command::LoadMessages { channel, before: None });
+            log.fetch = Fetch::Initial {
+                since: None,
+                shown: false,
+            };
+            self.outbox.push(Command::LoadMessages {
+                channel,
+                before: None,
+            });
         }
     }
 
     /// The reply button: starts the draft with an @mention of the message's author.
     pub fn reply_to(&mut self, chat_id: &str) {
-        let Some(channel) = self.current_channel() else { return };
+        let Some(channel) = self.current_channel() else {
+            return;
+        };
         let me = self.my_id();
-        let author = self.log(channel).and_then(|l| l.messages.iter().find(|m| chat_id_of(m, me) == chat_id)).map(|m| m.author_id);
+        let author = self
+            .log(channel)
+            .and_then(|l| l.messages.iter().find(|m| chat_id_of(m, me) == chat_id))
+            .map(|m| m.author_id);
         if let Some(author) = author {
             let name = self.user_name(author);
             let edit = self.composer_mut();
@@ -732,21 +880,37 @@ impl AppState {
 
     /// The copy button: the message text goes to the clipboard on the next poll.
     pub fn copy_message(&mut self, chat_id: &str) {
-        let Some(channel) = self.current_channel() else { return };
+        let Some(channel) = self.current_channel() else {
+            return;
+        };
         let me = self.my_id();
-        let found = self.log(channel).and_then(|l| l.messages.iter().find(|m| chat_id_of(m, me) == chat_id)).map(|m| m.content.clone());
-        let found = found.or_else(|| self.data.outgoing.iter().find(|o| format!("n:{}", o.nonce) == chat_id).map(|o| o.content.clone()));
+        let found = self
+            .log(channel)
+            .and_then(|l| l.messages.iter().find(|m| chat_id_of(m, me) == chat_id))
+            .map(|m| m.content.clone());
+        let found = found.or_else(|| {
+            self.data
+                .outgoing
+                .iter()
+                .find(|o| format!("n:{}", o.nonce) == chat_id)
+                .map(|o| o.content.clone())
+        });
         self.ui.copy_request = found;
     }
 
     /// Asks for the page older than what's loaded, once.
     pub fn load_older(&mut self, channel: u64) {
-        let Some(log) = self.data.logs.get_mut(&channel) else { return };
+        let Some(log) = self.data.logs.get_mut(&channel) else {
+            return;
+        };
         if !log.loaded || !log.has_more || log.fetch != Fetch::Idle {
             return;
         }
         log.fetch = Fetch::Older;
-        self.outbox.push(Command::LoadMessages { channel, before: log.oldest_id });
+        self.outbox.push(Command::LoadMessages {
+            channel,
+            before: log.oldest_id,
+        });
     }
 
     // ---- sending -----------------------------------------------------------------------------
@@ -755,21 +919,42 @@ impl AppState {
     /// there is no channel or the text is over the limit.
     pub fn send(&mut self, text: &str) -> bool {
         let content = text.trim();
-        let Some(channel) = self.current_channel() else { return false };
+        let Some(channel) = self.current_channel() else {
+            return false;
+        };
         if content.is_empty() || content.chars().count() > MAX_MESSAGE_CHARS {
             return false;
         }
         self.nonce += 1;
         let nonce = format!("{}-{}", self.my_id(), self.nonce);
-        self.data.outgoing.push(Outgoing { nonce: nonce.clone(), channel, content: content.to_owned(), at: (self.now)(), state: Delivery::Pending });
-        self.outbox.push(Command::Send { channel, content: content.to_owned(), nonce });
+        self.data.outgoing.push(Outgoing {
+            nonce: nonce.clone(),
+            channel,
+            content: content.to_owned(),
+            at: (self.now)(),
+            state: Delivery::Pending,
+        });
+        self.outbox.push(Command::Send {
+            channel,
+            content: content.to_owned(),
+            nonce,
+        });
         true
     }
 
     pub fn retry(&mut self, nonce: &str) {
-        if let Some(o) = self.data.outgoing.iter_mut().find(|o| o.nonce == nonce && o.state == Delivery::Failed) {
+        if let Some(o) = self
+            .data
+            .outgoing
+            .iter_mut()
+            .find(|o| o.nonce == nonce && o.state == Delivery::Failed)
+        {
             o.state = Delivery::Pending;
-            self.outbox.push(Command::Send { channel: o.channel, content: o.content.clone(), nonce: o.nonce.clone() });
+            self.outbox.push(Command::Send {
+                channel: o.channel,
+                content: o.content.clone(),
+                nonce: o.nonce.clone(),
+            });
         }
     }
 
@@ -796,7 +981,10 @@ impl AppState {
             None
         };
         if let Some((field, message)) = invalid {
-            self.auth.error = Some(AuthError { field, message: message.into() });
+            self.auth.error = Some(AuthError {
+                field,
+                message: message.into(),
+            });
             return;
         }
         self.auth.error = None;
@@ -819,9 +1007,14 @@ impl AppState {
         self.ui.menu = Menu::None;
         let (text, channel) = match kind {
             DialogKind::CreateChannel { .. } => (String::new(), Some(ChannelForm::new(None))),
-            DialogKind::RenameSection { guild, section } => {
-                (self.data.layouts.get(&guild).and_then(|l| l.sections.iter().find(|s| s.id == section)).map_or_else(String::new, |s| s.name.clone()), None)
-            }
+            DialogKind::RenameSection { guild, section } => (
+                self.data
+                    .layouts
+                    .get(&guild)
+                    .and_then(|l| l.sections.iter().find(|s| s.id == section))
+                    .map_or_else(String::new, |s| s.name.clone()),
+                None,
+            ),
             DialogKind::ChannelSettings { guild, channel } => match self.channel(guild, channel) {
                 Some(c) => (c.name.clone(), Some(ChannelForm::of(c))),
                 None => return,
@@ -830,7 +1023,14 @@ impl AppState {
         };
         let mut input = TextEdit::new(&text);
         input.focused = true;
-        self.ui.dialog = Some(DialogState { kind, input, channel, error: None, phase: Phase::Idle, pick: Default::default() });
+        self.ui.dialog = Some(DialogState {
+            kind,
+            input,
+            channel,
+            error: None,
+            phase: Phase::Idle,
+            pick: Default::default(),
+        });
     }
 
     /// "Create channel here": the create dialog with the section already chosen.
@@ -882,19 +1082,32 @@ impl AppState {
                     Err(e) => return fail(d, e),
                 }
             }
-            DialogKind::CreateSection { guild } => match check_name(&value, 1, 32, "Give the section a name") {
-                Ok(()) => Command::CreateSection { guild, name: value },
-                Err(e) => return fail(d, e),
-            },
-            DialogKind::RenameSection { guild, section } => match check_name(&value, 1, 32, "Give the section a name") {
-                Ok(()) => Command::RenameSection { guild, section, name: value },
-                Err(e) => return fail(d, e),
-            },
-            DialogKind::DeleteSection { guild, section } => Command::DeleteSection { guild, section },
+            DialogKind::CreateSection { guild } => {
+                match check_name(&value, 1, 32, "Give the section a name") {
+                    Ok(()) => Command::CreateSection { guild, name: value },
+                    Err(e) => return fail(d, e),
+                }
+            }
+            DialogKind::RenameSection { guild, section } => {
+                match check_name(&value, 1, 32, "Give the section a name") {
+                    Ok(()) => Command::RenameSection {
+                        guild,
+                        section,
+                        name: value,
+                    },
+                    Err(e) => return fail(d, e),
+                }
+            }
+            DialogKind::DeleteSection { guild, section } => {
+                Command::DeleteSection { guild, section }
+            }
             DialogKind::DeleteRole { guild, role } => Command::DeleteRole { guild, role },
             DialogKind::DeleteEmoji { guild, emoji } => Command::DeleteEmoji { guild, emoji },
             DialogKind::Profile => match d.pick.draft.as_ref() {
-                Some(draft) => Command::UploadAvatar { bytes: draft.bytes.clone(), content_type: draft.content_type.clone() },
+                Some(draft) => Command::UploadAvatar {
+                    bytes: draft.bytes.clone(),
+                    content_type: draft.content_type.clone(),
+                },
                 None => {
                     self.ui.dialog = None;
                     return;
@@ -916,10 +1129,20 @@ impl AppState {
                     channel,
                     name: (old.map(|c| c.name.as_str()) != Some(name.as_str())).then_some(name),
                     icon: (old.map(|c| &c.icon_ref) != Some(&f.icon_ref())).then(|| f.icon_ref()),
-                    color: (old.map(|c| c.color.as_key()) != Some(f.color)).then(|| PaletteColor::from_key(f.color)),
+                    color: (old.map(|c| c.color.as_key()) != Some(f.color))
+                        .then(|| PaletteColor::from_key(f.color)),
                     topic: (old.map(|c| c.topic.as_str()) != Some(topic.as_str())).then_some(topic),
                 };
-                if matches!(&cmd, Command::UpdateChannel { name: None, icon: None, color: None, topic: None, .. }) {
+                if matches!(
+                    &cmd,
+                    Command::UpdateChannel {
+                        name: None,
+                        icon: None,
+                        color: None,
+                        topic: None,
+                        ..
+                    }
+                ) {
                     self.ui.dialog = None;
                     return;
                 }
@@ -931,7 +1154,12 @@ impl AppState {
                     return fail(d, "Enter a username".into());
                 }
                 let me = self.session.as_ref().map_or(0, |s| s.me.id);
-                match self.data.users.values().find(|u| u.id != me && u.username.to_lowercase() == wanted) {
+                match self
+                    .data
+                    .users
+                    .values()
+                    .find(|u| u.id != me && u.username.to_lowercase() == wanted)
+                {
                     Some(u) => Command::OpenDm { user_id: u.id },
                     None => return fail(d, format!("No one called \"{wanted}\" in your servers")),
                 }
@@ -946,7 +1174,12 @@ impl AppState {
 
     pub fn toast(&mut self, kind: ToastKind, message: impl Into<String>) {
         self.ui.toast_seq += 1;
-        self.ui.toasts.push_back(ToastEntry { id: self.ui.toast_seq, kind, message: message.into(), until: None });
+        self.ui.toasts.push_back(ToastEntry {
+            id: self.ui.toast_seq,
+            kind,
+            message: message.into(),
+            until: None,
+        });
         while self.ui.toasts.len() > TOAST_QUEUE {
             self.ui.toasts.pop_front();
         }
@@ -980,7 +1213,9 @@ impl AppState {
             soon(front.until.unwrap_or(clock));
             break;
         }
-        if let Some(log) = self.current_channel().and_then(|c| self.data.logs.get_mut(&c))
+        if let Some(log) = self
+            .current_channel()
+            .and_then(|c| self.data.logs.get_mut(&c))
             && let Fetch::Initial { since, shown } = &mut log.fetch
             && !*shown
         {
@@ -1016,7 +1251,9 @@ pub fn mentions(content: &str, username: &str) -> bool {
     use thehideout_design::components::chat::body::{Block, Inline, parse};
     let want = format!("@{}", username.to_lowercase());
     parse(content).iter().any(|b| match b {
-        Block::Text { text, marks } => marks.iter().any(|&(a, z, k)| k == Inline::Mention && text[a..z].to_lowercase() == want),
+        Block::Text { text, marks } => marks
+            .iter()
+            .any(|&(a, z, k)| k == Inline::Mention && text[a..z].to_lowercase() == want),
         Block::Code { .. } => false,
     })
 }
@@ -1024,7 +1261,11 @@ pub fn mentions(content: &str, username: &str) -> bool {
 /// The stable element id of a message row: a sent message keeps the id of its pending self (its
 /// nonce) so the row doesn't remount when the server confirms it.
 pub fn chat_id_of(m: &Message, me: u64) -> String {
-    if m.author_id == me && !m.nonce.is_empty() { format!("n:{}", m.nonce) } else { format!("m:{}", m.id) }
+    if m.author_id == me && !m.nonce.is_empty() {
+        format!("n:{}", m.nonce)
+    } else {
+        format!("m:{}", m.id)
+    }
 }
 
 #[cfg(test)]
@@ -1042,20 +1283,27 @@ mod tests {
     static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn clock() -> SystemTime {
-        std::time::UNIX_EPOCH + std::time::Duration::from_secs(CLOCK.load(std::sync::atomic::Ordering::SeqCst))
+        std::time::UNIX_EPOCH
+            + std::time::Duration::from_secs(CLOCK.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     #[test]
     fn today_follows_the_wall_clock_across_local_midnight() {
         use crate::format::utc;
         // 23:59:50 on the 19th in UTC+1 is 22:59:50 UTC.
-        CLOCK.store(utc(2026, 11, 19, 22, 59) as u64 + 50, std::sync::atomic::Ordering::SeqCst);
+        CLOCK.store(
+            utc(2026, 11, 19, 22, 59) as u64 + 50,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         let mut s = AppState::new(clock, Tz::Fixed(3600));
         let before = s.today;
         let (changed, wake) = s.tick(100.0);
         assert!(!changed);
         assert_eq!(wake, Some(110.0), "woken at the turn of the day");
-        CLOCK.store(utc(2026, 11, 19, 23, 0) as u64, std::sync::atomic::Ordering::SeqCst);
+        CLOCK.store(
+            utc(2026, 11, 19, 23, 0) as u64,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         let (changed, _) = s.tick(110.0);
         assert!(changed);
         assert_eq!(s.today, before + 1);

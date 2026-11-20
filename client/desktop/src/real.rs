@@ -27,13 +27,21 @@ const PAGE: u32 = 50;
 
 /// The server to talk to when the auth form's field is empty: the environment, else the default.
 pub fn default_server() -> String {
-    std::env::var(SERVER_ENV).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| DEFAULT_SERVER.to_owned())
+    std::env::var(SERVER_ENV)
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_SERVER.to_owned())
 }
 
 /// `http://host:port` without a trailing slash; a bare `host:port` gets `http://`.
 fn normalize(url: &str) -> String {
     let url = url.trim().trim_end_matches('/');
-    if url.contains("://") { url.to_owned() } else { format!("http://{url}") }
+    if url.contains("://") {
+        url.to_owned()
+    } else {
+        format!("http://{url}")
+    }
 }
 
 /// The app's one `Prefs`, shared with the look's saver thread: two stores on one file would each
@@ -54,7 +62,10 @@ impl Store {
 
     fn load(&self) -> Option<(String, String)> {
         let saved: HashMap<String, String> = self.with(|p| p.get("session"))?;
-        Some((saved.get("server_url")?.clone(), saved.get("token")?.clone()))
+        Some((
+            saved.get("server_url")?.clone(),
+            saved.get("token")?.clone(),
+        ))
     }
 
     fn save(&self, server_url: &str, token: &str) {
@@ -118,7 +129,10 @@ impl Shared {
     fn ensure_gateway(self: &Arc<Self>) {
         let generation = self.generation();
         let mut slot = self.gateway.lock().unwrap();
-        if slot.as_ref().is_some_and(|(g, h)| *g == generation && !h.is_stopped()) {
+        if slot
+            .as_ref()
+            .is_some_and(|(g, h)| *g == generation && !h.is_stopped())
+        {
             return;
         }
         let shared = Arc::clone(self);
@@ -216,7 +230,11 @@ impl RealBackend {
         self.runtime().spawn(async move {
             let url = normalize(&shared.server.lock().unwrap());
             let client = Client::new(url.clone());
-            let result = if sign_up { client.sign_up(&username, &password).await } else { client.login(&username, &password).await };
+            let result = if sign_up {
+                client.sign_up(&username, &password).await
+            } else {
+                client.login(&username, &password).await
+            };
             let reply = result.map(|(token, me)| {
                 shared.new_generation();
                 *shared.client.lock().unwrap() = client;
@@ -290,7 +308,13 @@ async fn fetch_initial(client: &Client) -> Result<Initial, ApiError> {
         by_guild[i] = channels;
         layouts.insert(guilds[i].id, layout);
     }
-    Ok(Initial { me, guilds, channels: by_guild.into_iter().flatten().collect(), layouts, dms })
+    Ok(Initial {
+        me,
+        guilds,
+        channels: by_guild.into_iter().flatten().collect(),
+        layouts,
+        dms,
+    })
 }
 
 impl Backend for RealBackend {
@@ -303,125 +327,432 @@ impl Backend for RealBackend {
             Command::Resume => self.resume(),
             Command::LoadInitial => self.load_initial(),
             Command::Refresh => {
-                self.call(async move { fetch_initial(&client).await }, Reply::Refreshed);
+                self.call(
+                    async move { fetch_initial(&client).await },
+                    Reply::Refreshed,
+                );
             }
             Command::LoadChannels { guild } => {
-                self.call(async move { client.list_channels_with_layout(guild).await }, move |result| Reply::Channels { guild, result });
+                self.call(
+                    async move { client.list_channels_with_layout(guild).await },
+                    move |result| Reply::Channels { guild, result },
+                );
             }
             Command::LoadMessages { channel, before } => {
-                self.call(async move { client.list_messages(channel, before, PAGE).await }, move |result| Reply::Messages { channel, before, result });
+                self.call(
+                    async move { client.list_messages(channel, before, PAGE).await },
+                    move |result| Reply::Messages {
+                        channel,
+                        before,
+                        result,
+                    },
+                );
             }
-            Command::Send { channel, content, nonce } => {
+            Command::Send {
+                channel,
+                content,
+                nonce,
+            } => {
                 let n = nonce.clone();
-                self.call(async move { client.send_message(channel, &content, Some(&n)).await }, move |result| Reply::Sent { channel, nonce, result });
+                self.call(
+                    async move { client.send_message(channel, &content, Some(&n)).await },
+                    move |result| Reply::Sent {
+                        channel,
+                        nonce,
+                        result,
+                    },
+                );
             }
             Command::CreateGuild { name } => {
-                self.call(async move { client.create_guild(&name).await }, Reply::GuildCreated);
+                self.call(
+                    async move { client.create_guild(&name).await },
+                    Reply::GuildCreated,
+                );
             }
             Command::JoinGuild { code } => {
-                self.call(async move { client.join_guild(&code).await }, Reply::GuildJoined);
+                self.call(
+                    async move { client.join_guild(&code).await },
+                    Reply::GuildJoined,
+                );
             }
-            Command::CreateChannel { guild, name, section, icon, color } => {
-                self.call(async move { client.create_channel_with_ref(guild, &name, section, &icon, color).await }, Reply::ChannelCreated);
+            Command::CreateChannel {
+                guild,
+                name,
+                section,
+                icon,
+                color,
+            } => {
+                self.call(
+                    async move {
+                        client
+                            .create_channel_with_ref(guild, &name, section, &icon, color)
+                            .await
+                    },
+                    Reply::ChannelCreated,
+                );
             }
             Command::LoadAccess { guild } => {
                 self.call(
                     async move {
-                        let (roles, members) = tokio::join!(client.list_roles(guild), client.list_members(guild));
-                        let member_roles = members?.into_iter().map(|m| (m.user.id, m.role_ids)).collect();
+                        let (roles, members) =
+                            tokio::join!(client.list_roles(guild), client.list_members(guild));
+                        let member_roles = members?
+                            .into_iter()
+                            .map(|m| (m.user.id, m.role_ids))
+                            .collect();
                         let list = roles?;
-                        Ok(GuildAccess { roles: list.roles, version: list.version, member_roles })
+                        Ok(GuildAccess {
+                            roles: list.roles,
+                            version: list.version,
+                            member_roles,
+                        })
                     },
                     move |result| Reply::Access { guild, result },
                 );
             }
             Command::CreateSection { guild, name } => {
-                self.call(async move { client.create_section(guild, &name).await }, move |result| Reply::SectionSaved { guild, result });
+                self.call(
+                    async move { client.create_section(guild, &name).await },
+                    move |result| Reply::SectionSaved { guild, result },
+                );
             }
-            Command::RenameSection { guild, section, name } => {
-                self.call(async move { client.update_section(guild, section, &name).await }, move |result| Reply::SectionSaved { guild, result });
+            Command::RenameSection {
+                guild,
+                section,
+                name,
+            } => {
+                self.call(
+                    async move { client.update_section(guild, section, &name).await },
+                    move |result| Reply::SectionSaved { guild, result },
+                );
             }
             Command::DeleteSection { guild, section } => {
-                self.call(async move { client.delete_section(guild, section).await }, move |result| Reply::SectionDeleted { guild, result });
+                self.call(
+                    async move { client.delete_section(guild, section).await },
+                    move |result| Reply::SectionDeleted { guild, result },
+                );
             }
             Command::UpdateLayout { guild, layout } => {
-                self.call(async move { client.update_layout(guild, &layout).await }, move |result| Reply::LayoutSaved { guild, result });
-            }
-            Command::UpdateChannel { guild, channel, name, icon, color, topic } => {
                 self.call(
-                    async move { client.update_channel_ref(guild, channel, name.as_deref(), icon.as_ref(), color, topic.as_deref()).await },
+                    async move { client.update_layout(guild, &layout).await },
+                    move |result| Reply::LayoutSaved { guild, result },
+                );
+            }
+            Command::UpdateChannel {
+                guild,
+                channel,
+                name,
+                icon,
+                color,
+                topic,
+            } => {
+                self.call(
+                    async move {
+                        client
+                            .update_channel_ref(
+                                guild,
+                                channel,
+                                name.as_deref(),
+                                icon.as_ref(),
+                                color,
+                                topic.as_deref(),
+                            )
+                            .await
+                    },
                     move |result| Reply::ChannelSaved { guild, result },
                 );
             }
             Command::LoadMembers { guild } => {
-                self.call(async move { client.list_guild_members(guild).await }, move |result| Reply::Members { guild, result });
+                self.call(
+                    async move { client.list_guild_members(guild).await },
+                    move |result| Reply::Members { guild, result },
+                );
             }
             Command::OpenDm { user_id } => {
-                self.call(async move { client.open_dm(user_id).await }, Reply::DmOpened);
+                self.call(
+                    async move { client.open_dm(user_id).await },
+                    Reply::DmOpened,
+                );
             }
             Command::FetchMedia { key } => {
                 let fetched = key.clone();
-                self.call(async move { client.fetch_media(&fetched).await }, move |result| Reply::Media { key, result });
+                self.call(
+                    async move { client.fetch_media(&fetched).await },
+                    move |result| Reply::Media { key, result },
+                );
             }
             Command::ReadImage { path, purpose } => {
                 // The file is read on a blocking thread of the runtime, never where frames are drawn.
                 self.call(
-                    async move { tokio::task::spawn_blocking(move || crate::media::read_image(&path)).await.map_err(|e| ApiError::Other(e.to_string()))? },
+                    async move {
+                        tokio::task::spawn_blocking(move || crate::media::read_image(&path))
+                            .await
+                            .map_err(|e| ApiError::Other(e.to_string()))?
+                    },
                     move |result| Reply::ImageRead { purpose, result },
                 );
             }
-            Command::UploadAvatar { bytes, content_type } => {
-                self.call(async move { client.upload_avatar(bytes, &content_type).await }, Reply::AvatarSaved);
+            Command::UploadAvatar {
+                bytes,
+                content_type,
+            } => {
+                self.call(
+                    async move { client.upload_avatar(bytes, &content_type).await },
+                    Reply::AvatarSaved,
+                );
             }
             Command::RemoveAvatar => {
-                self.call(async move { client.remove_avatar().await }, Reply::AvatarSaved);
+                self.call(
+                    async move { client.remove_avatar().await },
+                    Reply::AvatarSaved,
+                );
             }
-            Command::UploadGuildIcon { guild, bytes, content_type } => {
-                self.call(async move { client.upload_guild_icon(guild, bytes, &content_type).await }, move |result| Reply::GuildSaved { guild, result });
+            Command::UploadGuildIcon {
+                guild,
+                bytes,
+                content_type,
+            } => {
+                self.call(
+                    async move { client.upload_guild_icon(guild, bytes, &content_type).await },
+                    move |result| Reply::GuildSaved { guild, result },
+                );
             }
             Command::RemoveGuildIcon { guild } => {
-                self.call(async move { client.remove_guild_icon(guild).await }, move |result| Reply::GuildSaved { guild, result });
+                self.call(
+                    async move { client.remove_guild_icon(guild).await },
+                    move |result| Reply::GuildSaved { guild, result },
+                );
             }
             Command::RenameGuild { guild, name } => {
-                self.call(async move { client.update_guild(guild, Some(&name)).await }, move |result| Reply::GuildSaved { guild, result });
-            }
-            Command::CreateRole { guild, name, color, permissions } => {
-                self.call(async move { client.create_role(guild, &name, color, permissions).await }, move |result| Reply::RoleCreated { guild, result });
-            }
-            Command::UpdateRole { guild, role, name, color, permissions } => {
                 self.call(
-                    async move { client.update_role(guild, role, name.as_deref(), color, permissions).await },
+                    async move { client.update_guild(guild, Some(&name)).await },
+                    move |result| Reply::GuildSaved { guild, result },
+                );
+            }
+            Command::CreateRole {
+                guild,
+                name,
+                color,
+                permissions,
+            } => {
+                self.call(
+                    async move { client.create_role(guild, &name, color, permissions).await },
+                    move |result| Reply::RoleCreated { guild, result },
+                );
+            }
+            Command::UpdateRole {
+                guild,
+                role,
+                name,
+                color,
+                permissions,
+            } => {
+                self.call(
+                    async move {
+                        client
+                            .update_role(guild, role, name.as_deref(), color, permissions)
+                            .await
+                    },
                     move |result| Reply::RoleUpdated { guild, result },
                 );
             }
             Command::DeleteRole { guild, role } => {
-                self.call(async move { client.delete_role(guild, role).await }, move |result| Reply::RoleDeleted { guild, role, result });
+                self.call(
+                    async move { client.delete_role(guild, role).await },
+                    move |result| Reply::RoleDeleted {
+                        guild,
+                        role,
+                        result,
+                    },
+                );
             }
-            Command::ReorderRoles { guild, expected_version, role_ids } => {
-                self.call(async move { client.reorder_roles(guild, expected_version, &role_ids).await }, move |result| Reply::RolesReordered { guild, result });
+            Command::ReorderRoles {
+                guild,
+                expected_version,
+                role_ids,
+            } => {
+                self.call(
+                    async move {
+                        client
+                            .reorder_roles(guild, expected_version, &role_ids)
+                            .await
+                    },
+                    move |result| Reply::RolesReordered { guild, result },
+                );
             }
-            Command::SetMemberRoles { guild, user, role_ids } => {
-                self.call(async move { client.set_member_roles(guild, user, &role_ids).await }, move |result| Reply::MemberRolesSet { guild, user, result });
+            Command::SetMemberRoles {
+                guild,
+                user,
+                role_ids,
+            } => {
+                self.call(
+                    async move { client.set_member_roles(guild, user, &role_ids).await },
+                    move |result| Reply::MemberRolesSet {
+                        guild,
+                        user,
+                        result,
+                    },
+                );
             }
             Command::LoadEmojis { guild } => {
-                self.call(async move { client.list_emojis(guild).await }, move |result| Reply::Emojis { guild, result });
+                self.call(
+                    async move { client.list_emojis(guild).await },
+                    move |result| Reply::Emojis { guild, result },
+                );
             }
-            Command::CreateEmoji { guild, name, bytes, content_type } => {
-                self.call(async move { client.create_emoji(guild, &name, bytes, &content_type).await }, move |result| Reply::EmojiSaved { guild, result });
+            Command::CreateEmoji {
+                guild,
+                name,
+                bytes,
+                content_type,
+            } => {
+                self.call(
+                    async move {
+                        client
+                            .create_emoji(guild, &name, bytes, &content_type)
+                            .await
+                    },
+                    move |result| Reply::EmojiSaved { guild, result },
+                );
             }
             Command::RenameEmoji { guild, emoji, name } => {
-                self.call(async move { client.rename_emoji(guild, emoji, &name).await }, move |result| Reply::EmojiSaved { guild, result });
+                self.call(
+                    async move { client.rename_emoji(guild, emoji, &name).await },
+                    move |result| Reply::EmojiSaved { guild, result },
+                );
             }
             Command::DeleteEmoji { guild, emoji } => {
-                self.call(async move { client.delete_emoji(guild, emoji).await }, move |result| Reply::EmojiDeleted { guild, emoji, result });
+                self.call(
+                    async move { client.delete_emoji(guild, emoji).await },
+                    move |result| Reply::EmojiDeleted {
+                        guild,
+                        emoji,
+                        result,
+                    },
+                );
             }
-            Command::AddReaction { channel, message, emoji } => {
+            Command::AddReaction {
+                channel,
+                message,
+                emoji,
+            } => {
                 let sent = emoji.clone();
-                self.call(async move { client.add_reaction(channel, message, &sent).await }, move |result| Reply::ReactionSaved { channel, message, emoji, add: true, result });
+                self.call(
+                    async move { client.add_reaction(channel, message, &sent).await },
+                    move |result| Reply::ReactionSaved {
+                        channel,
+                        message,
+                        emoji,
+                        add: true,
+                        result,
+                    },
+                );
             }
-            Command::RemoveReaction { channel, message, emoji } => {
+            Command::RemoveReaction {
+                channel,
+                message,
+                emoji,
+            } => {
                 let sent = emoji.clone();
-                self.call(async move { client.remove_reaction(channel, message, &sent).await }, move |result| Reply::ReactionSaved { channel, message, emoji, add: false, result });
+                self.call(
+                    async move { client.remove_reaction(channel, message, &sent).await },
+                    move |result| Reply::ReactionSaved {
+                        channel,
+                        message,
+                        emoji,
+                        add: false,
+                        result,
+                    },
+                );
+            }
+            Command::AdminOverview => {
+                self.call(
+                    async move { client.admin_overview().await },
+                    Reply::AdminOverview,
+                );
+            }
+            Command::AdminActivity { days } => {
+                self.call(
+                    async move { client.admin_activity(days).await },
+                    move |result| Reply::AdminActivity { days, result },
+                );
+            }
+            Command::AdminGuilds {
+                epoch,
+                query,
+                page_token,
+                limit,
+            } => {
+                self.call(
+                    async move {
+                        client
+                            .admin_list_guilds(&query, page_token.as_deref(), limit)
+                            .await
+                    },
+                    move |result| Reply::AdminGuilds { epoch, result },
+                );
+            }
+            Command::AdminUsers {
+                epoch,
+                query,
+                page_token,
+                limit,
+            } => {
+                self.call(
+                    async move {
+                        client
+                            .admin_list_users(&query, page_token.as_deref(), limit)
+                            .await
+                    },
+                    move |result| Reply::AdminUsers { epoch, result },
+                );
+            }
+            Command::AdminFiles {
+                epoch,
+                guild,
+                kind,
+                page_token,
+                limit,
+            } => {
+                self.call(
+                    async move {
+                        client
+                            .admin_list_files(guild, kind, page_token.as_deref(), limit)
+                            .await
+                    },
+                    move |result| Reply::AdminFiles { epoch, result },
+                );
+            }
+            Command::AdminAudit {
+                epoch,
+                page_token,
+                limit,
+            } => {
+                self.call(
+                    async move {
+                        client
+                            .admin_list_audit_log(page_token.as_deref(), limit)
+                            .await
+                    },
+                    move |result| Reply::AdminAudit { epoch, result },
+                );
+            }
+            Command::AdminSetAdmin { user, is_admin } => {
+                self.call(
+                    async move { client.admin_set_admin(user, is_admin).await },
+                    move |result| Reply::AdminAdminSet {
+                        user,
+                        is_admin,
+                        result,
+                    },
+                );
+            }
+            Command::AdminDeleteFile { key, reason } => {
+                let sent = key.clone();
+                self.call(
+                    async move { client.admin_delete_file(&sent, &reason).await },
+                    move |result| Reply::AdminFileDeleted { key, result },
+                );
             }
             Command::SignOut => {
                 self.shared.new_generation();
@@ -446,7 +777,11 @@ impl Backend for RealBackend {
 
     fn set_server(&mut self, url: &str) {
         let url = url.trim();
-        *self.shared.server.lock().unwrap() = if url.is_empty() { default_server() } else { url.to_owned() };
+        *self.shared.server.lock().unwrap() = if url.is_empty() {
+            default_server()
+        } else {
+            url.to_owned()
+        };
     }
 
     fn sent(&self) -> Vec<Command> {

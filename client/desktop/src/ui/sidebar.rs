@@ -2,11 +2,11 @@
 //! strip. Switching server crossfades the body (`motion-control`); the selection highlight
 //! travels between rows of one list (`motion-reflow`, from the components).
 
-use rune::{col, icon, row, text, El, ScrollSpec, SpringPair, Transition};
+use rune::{El, ScrollSpec, SpringPair, Transition, col, icon, row, text};
 use rune_kit::{Kit, Menu, MenuItem};
 use thehideout_design::components::{
-    Avatar, ConnectionPill, ConnectionStatus, IconButton, NavRow, Presence, SidebarSection,
-    FOOTER_H, HEADER_H,
+    Avatar, ConnectionPill, ConnectionStatus, FOOTER_H, HEADER_H, IconButton, NavRow, Presence,
+    SidebarSection,
 };
 use thehideout_design::icons::{CHEVRON_DOWN, FOLDER_PLUS, GEAR, PLUS, SIGN_OUT, USER_PLUS};
 use thehideout_design::{icon as size, motion, theme_of, type_};
@@ -38,15 +38,17 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
                 .w_full()
                 .h_full()
                 .transition(fade)
-                .child(a.state.ui.edges.sidebar.wrap(
-                    k,
-                    col()
-                        .key(format!("sidebar-scroll-{place}"))
-                        .scroll(ScrollSpec {
-                            stick_bottom: false,
-                        })
-                        .child(content),
-                )),
+                .child(
+                    a.state.ui.edges.sidebar.wrap(
+                        k,
+                        col()
+                            .key(format!("sidebar-scroll-{place}"))
+                            .scroll(ScrollSpec {
+                                stick_bottom: false,
+                            })
+                            .child(content),
+                    ),
+                ),
         );
     col()
         .key("sidebar")
@@ -219,7 +221,7 @@ fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
         })
         .build(k)
         .key("user-menu-button");
-    let menu = Menu::new("user-menu")
+    let mut menu = Menu::new("user-menu")
         .trigger(gear)
         .item(
             MenuItem::new("Profile\u{2026}")
@@ -230,7 +232,20 @@ fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
             MenuItem::new("Settings\u{2026}")
                 .icon(&GEAR)
                 .on_select(|a: &mut App| a.act(|s| s.open_settings())),
-        )
+        );
+    if a.state.is_admin() {
+        menu = menu.item(
+            MenuItem::new("Admin\u{2026}")
+                .icon(&thehideout_design::icons::SHIELD)
+                .shortcut(if cfg!(target_os = "macos") {
+                    "\u{21e7}\u{2318}A"
+                } else {
+                    "Ctrl+Shift+A"
+                })
+                .on_select(|a: &mut App| a.act(|s| s.open_admin())),
+        );
+    }
+    let menu = menu
         .item(
             MenuItem::new("Sign out")
                 .icon(&SIGN_OUT)
@@ -241,14 +256,24 @@ fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
         .min_width(160.0)
         .on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
         .build(k, layer);
-    let mut who = col().key("who").grow(1.0).shrink().min_w(0.0).gap(2.0).child(
-        text(name.clone())
-            .font(type_::CONTROL_STRONG)
-            .color(t.text.color())
-            .max_lines(1),
-    );
+    let mut who = col()
+        .key("who")
+        .grow(1.0)
+        .shrink()
+        .min_w(0.0)
+        .gap(2.0)
+        .child(
+            text(name.clone())
+                .font(type_::CONTROL_STRONG)
+                .color(t.text.color())
+                .max_lines(1),
+        );
     if status != ConnectionStatus::Connected {
-        who = who.child(row().key("connection").child(ConnectionPill::new(status).build(k)));
+        who = who.child(
+            row()
+                .key("connection")
+                .child(ConnectionPill::new(status).build(k)),
+        );
     }
     row()
         .key("user-strip")
