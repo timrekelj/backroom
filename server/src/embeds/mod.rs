@@ -79,6 +79,10 @@ pub struct EmbedSettings {
     /// Lets the fetcher reach IPv4 loopback on any port. For tests only: it is
     /// deliberately not configurable from the environment.
     pub allow_loopback_for_tests: bool,
+    /// Prefix of the keys in the per-URL cache (`embed_cache`). Empty in
+    /// production; tests sharing one keyspace give each app its own so their
+    /// cached results never mix.
+    pub cache_namespace: String,
     pub connect_timeout: Duration,
     /// Deadline of one fetch (all redirects and the body).
     pub total_timeout: Duration,
@@ -113,6 +117,7 @@ impl Default for EmbedSettings {
         Self {
             enabled: true,
             allow_loopback_for_tests: false,
+            cache_namespace: String::new(),
             connect_timeout: Duration::from_secs(2),
             total_timeout: Duration::from_secs(5),
             max_redirects: 3,
@@ -277,10 +282,10 @@ async fn undo(state: &AppState, keys: Vec<String>) {
 
 /// Records the accounting rows of `objects`; on failure undoes them (and the
 /// objects) and returns `false`.
-async fn account(state: &AppState, owner: Owner<'_>, objects: &[(String, u64)]) -> bool {
+async fn account(state: &AppState, owner: Owner<'_>, meta: media::Meta<'_>, objects: &[(String, u64)]) -> bool {
     let mut recorded: Vec<&str> = Vec::new();
     for (key, size) in objects {
-        if media::record(state, key, owner, *size).await.is_err() {
+        if media::record_with(state, key, owner, *size, meta).await.is_err() {
             for key in &recorded {
                 media::delete_record(state, key).await;
             }
@@ -300,6 +305,12 @@ async fn store(state: &AppState, job: &Job, unfurled: Vec<Ready>) -> Result<(), 
     } else {
         Owner { kind: "user", id: job.author_id, guild_id: None, label: "embed" }
     };
+    let meta = media::Meta {
+        channel_id: Some(job.channel_id),
+        message_id: Some(job.message_id),
+        user_id: Some(job.author_id),
+        ..Default::default()
+    };
     // Every key stored and accounted so far (undone on failure).
     let mut stored_keys: Vec<String> = Vec::new();
     // (embed, thumbnail key)
@@ -317,7 +328,7 @@ async fn store(state: &AppState, job: &Job, unfurled: Vec<Ready>) -> Result<(), 
             }
         }
         // An embed whose only content was media that could not be stored has nothing left.
-        if !item.worth_storing(key.is_some()) || !account(state, owner, &item.objects).await {
+        if !item.worth_storing(key.is_some()) || !account(state, owner, meta, &item.objects).await {
             discard(state, keys_of(&item.objects)).await;
             continue;
         }
@@ -537,7 +548,7 @@ async fn cache_get(state: &AppState, url: &str) -> Option<Option<Unfurled>> {
         .execute_unpaged(
             "SELECT found, title, description, site_name, author, media, author_url, author_icon, published_at \
              FROM embed_cache WHERE url = ?",
-            (url,),
+            (format!("{}{url}", state.embeds.cache_namespace),),
         )
         .await
         .ok()?
@@ -574,7 +585,7 @@ async fn cache_put(state: &AppState, url: &str, found: Option<&Unfurled>) {
         .execute_unpaged(
             "INSERT INTO embed_cache (url, found, title, description, site_name, author, media, author_url, author_icon, \
              published_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TTL ?",
-            (url, found.is_some(), &f.title, &f.description, &f.site_name, &f.author, media, &f.author_url, &f.author_icon, f.published_at, ttl),
+            (format!("{}{url}", state.embeds.cache_namespace), found.is_some(), &f.title, &f.description, &f.site_name, &f.author, media, &f.author_url, &f.author_icon, f.published_at, ttl),
         )
         .await;
     if let Err(e) = result {

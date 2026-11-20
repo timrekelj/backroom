@@ -357,7 +357,9 @@ async fn list_messages_includes_reactions_across_buckets() {
     let now_bucket = bucket_of(app.state.snowflake.next_id());
     assert!(now_bucket >= 10, "test assumes the clock is well past the epoch");
     let base = now_bucket as u64 - 8;
-    let in_bucket = |bucket: u64, offset_ms: u64| make_id(bucket * BUCKET_MS + offset_ms, 1, 0);
+    // Random worker and sequence: the shared keyspace keeps the data of earlier runs.
+    let (worker, sequence) = (rand::random::<u16>() & 0x3ff, rand::random::<u16>() & 0xfff);
+    let in_bucket = |bucket: u64, offset_ms: u64| make_id(bucket * BUCKET_MS + offset_ms, worker, sequence);
     let channel_id = in_bucket(base, 0);
     let session = &app.state.session;
     session

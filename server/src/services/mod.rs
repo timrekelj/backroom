@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod auth;
 pub mod dm;
 pub mod emoji;
@@ -6,7 +7,6 @@ pub mod guild;
 pub mod media;
 pub mod message;
 pub mod role;
-pub mod unimplemented;
 
 pub use auth::AuthSvc;
 pub use dm::DmSvc;
@@ -16,4 +16,4 @@ pub use guild::GuildSvc;
 pub use media::MediaSvc;
 pub use message::MessageSvc;
 pub use role::RoleSvc;
-pub use unimplemented::AdminSvc;
+pub use admin::AdminSvc;

@@ -22,6 +22,8 @@ pub struct Config {
     pub embed_mirrors: crate::embeds::providers::Mirrors,
     /// Largest video stored in an embed (`THEHIDEOUT_EMBED_MAX_VIDEO_BYTES`).
     pub embed_max_video_bytes: usize,
+    /// Usernames promoted to site admin at startup and sign-up (`THEHIDEOUT_ADMINS`).
+    pub admins: Vec<String>,
 }
 
 /// Connection settings of the S3-compatible object store holding media.
@@ -110,6 +112,7 @@ impl Config {
             embeds_contact: env::var("THEHIDEOUT_EMBEDS_CONTACT").ok().filter(|s| !s.trim().is_empty()),
             embed_mirrors,
             embed_max_video_bytes,
+            admins: crate::admin::parse_admins(&var("THEHIDEOUT_ADMINS", "")),
         })
     }
 }

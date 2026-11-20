@@ -128,6 +128,7 @@ impl MessageService for MessageSvc {
             }
         }
 
+        crate::stats::message_sent(&self.state, guild_id, user_id).await;
         let mut message = row_to_message(
             req.channel_id,
             (
@@ -431,10 +432,18 @@ impl MessageSvc {
         };
         let result = async {
             for p in &claimed.pendings {
-                media::record(&self.state, &p.key, owner, p.size).await?;
+                let meta = media::Meta {
+                    filename: Some(&p.filename),
+                    content_type: Some(&p.content_type),
+                    channel_id: Some(channel_id),
+                    message_id: Some(message_id),
+                    user_id: Some(user_id),
+                };
+                media::record_with(&self.state, &p.key, owner, p.size, meta).await?;
                 claimed.accounted.push(p.key.clone());
                 if let Some(thumbnail) = &p.thumbnail {
-                    media::record(&self.state, thumbnail, owner, p.thumbnail_bytes).await?;
+                    let meta = media::Meta { content_type: Some("image/webp"), ..meta };
+                    media::record_with(&self.state, thumbnail, owner, p.thumbnail_bytes, meta).await?;
                     claimed.accounted.push(thumbnail.clone());
                 }
             }

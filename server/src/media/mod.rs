@@ -2,7 +2,7 @@
 //! `GET /media/{key}` route. Avatars and guild icons use [`MediaKind`]'s
 //! square-WebP rules; emojis fit within 128x128 and may stay animated (GIF).
 
-mod accounting;
+pub mod accounting;
 pub mod attachments;
 mod http;
 pub mod pending;
@@ -11,13 +11,14 @@ pub mod sniff;
 
 use sha2::{Digest, Sha256};
 
-pub use accounting::{Owner, delete_record, record, totals};
+pub use accounting::{Meta, Owner, delete_record, record, record_with, totals};
 pub use http::media_route;
 pub use pipeline::{
     ATTACHMENT_IMAGE_MAX_BYTES, ImageInfo, MAX_INPUT_BYTES, MediaError, Processed, acquire_decode_slot,
     inspect_attachment_image, process, EmbedThumbnail, embed_image, embed_thumbnail,
 };
-pub use accounting::{KindTotals, totals_by_kind};
+pub use accounting::{KINDS, KindTotals, MAX_SIZE_BUCKET, index_scopes, label_of_row, size_bucket, totals_by_kind};
+pub mod files;
 
 /// What an image is used for; decides its processing rules and key prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

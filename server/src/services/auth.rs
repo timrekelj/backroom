@@ -125,12 +125,19 @@ impl AuthService for AuthSvc {
             return Err(ConnectError::failed_precondition("could not create the account"));
         }
 
+        let is_admin = self.state.admins.contains(&username);
+        if is_admin {
+            crate::admin::set_flag(&self.state, id, true).await?;
+        }
         let token = create_session(&self.state, db_id).await?;
+        crate::stats::user_signed_up(&self.state).await;
 
         tracing::info!(user_id = id, "user signed up");
+        let mut user = user_to_proto(id, &username, created_at, None);
+        user.is_admin = is_admin;
         Response::ok(SignUpResponse {
             token,
-            user: user_to_proto(id, &username, created_at, None).into(),
+            user: user.into(),
             ..Default::default()
         })
     }
@@ -156,7 +163,7 @@ impl AuthService for AuthSvc {
         }
         let found = self.find_user_by_username(&username).await?;
 
-        let Some((db_id, hash, created_at, avatar)) = found else {
+        let Some((db_id, hash, created_at, avatar, is_admin)) = found else {
             // Burn the same CPU time as a real verification.
             verify_password(req.password.to_owned(), DUMMY_PASSWORD_HASH.to_owned()).await?;
             return Err(invalid_credentials());
@@ -168,9 +175,11 @@ impl AuthService for AuthSvc {
         let token = create_session(&self.state, db_id).await?;
         let id = id_from_db(db_id);
         tracing::info!(user_id = id, "user logged in");
+        let mut user = user_to_proto(id, &username, created_at, avatar);
+        user.is_admin = is_admin;
         Response::ok(LoginResponse {
             token,
-            user: user_to_proto(id, &username, created_at, avatar).into(),
+            user: user.into(),
             ..Default::default()
         })
     }
@@ -181,19 +190,11 @@ impl AuthService for AuthSvc {
         _req: ServiceRequest<'_, GetMeRequest>,
     ) -> ServiceResult<GetMeResponse> {
         let id = authenticate(&self.state, &ctx).await?;
-        let (username, created_at, avatar) = self
-            .state
-            .session
-            .execute_unpaged("SELECT username, created_at, avatar FROM users WHERE id = ?", (id_to_db(id),))
-            .await
-            .map_err(internal)?
-            .into_rows_result()
-            .map_err(internal)?
-            .maybe_first_row::<(String, DateTime<Utc>, Option<String>)>()
-            .map_err(internal)?
+        let user = crate::admin::load_user(&self.state, id)
+            .await?
             .ok_or_else(|| ConnectError::unauthenticated("user no longer exists"))?;
         Response::ok(GetMeResponse {
-            user: user_to_proto(id, &username, created_at, avatar).into(),
+            user: user.into(),
             ..Default::default()
         })
     }
@@ -204,7 +205,7 @@ impl AuthSvc {
     async fn find_user_by_username(
         &self,
         username: &str,
-    ) -> Result<Option<(i64, String, DateTime<Utc>, Option<String>)>, ConnectError> {
+    ) -> Result<Option<(i64, String, DateTime<Utc>, Option<String>, bool)>, ConnectError> {
         let Some((db_id,)) = self
             .state
             .session
@@ -221,13 +222,13 @@ impl AuthSvc {
         let row = self
             .state
             .session
-            .execute_unpaged("SELECT password_hash, created_at, avatar FROM users WHERE id = ?", (db_id,))
+            .execute_unpaged("SELECT password_hash, created_at, avatar, is_admin FROM users WHERE id = ?", (db_id,))
             .await
             .map_err(internal)?
             .into_rows_result()
             .map_err(internal)?
-            .maybe_first_row::<(String, DateTime<Utc>, Option<String>)>()
+            .maybe_first_row::<(String, DateTime<Utc>, Option<String>, Option<bool>)>()
             .map_err(internal)?;
-        Ok(row.map(|(hash, created_at, avatar)| (db_id, hash, created_at, avatar)))
+        Ok(row.map(|(hash, created_at, avatar, is_admin)| (db_id, hash, created_at, avatar, is_admin.unwrap_or(false))))
     }
 }

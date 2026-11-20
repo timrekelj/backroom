@@ -147,7 +147,7 @@ fn assert_code<T: std::fmt::Debug>(result: Result<T, ConnectError>, code: ErrorC
 
 #[tokio::test]
 async fn static_and_animated_emojis_are_stored_and_served() {
-    let app = TestApp::start_with_storage().await;
+    let app = TestApp::builder().storage().isolated().start().await;
     let alice = user(&app, "alice").await;
     let guild = guild(&app, &alice).await;
 
@@ -254,7 +254,7 @@ async fn names_are_validated_unique_and_renameable() {
 
 #[tokio::test]
 async fn bad_images_are_invalid_argument() {
-    let app = TestApp::start_with_storage().await;
+    let app = TestApp::builder().storage().isolated().start().await;
     let alice = user(&app, "alice").await;
     let guild = guild(&app, &alice).await;
     let invalid = ErrorCode::InvalidArgument;

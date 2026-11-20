@@ -60,6 +60,7 @@ async fn main() -> Result<()> {
         config.keyspace.clone(),
         config.heartbeat_interval,
     )
+    .with_admins(config.admins.clone())
     .with_storage(storage)
     .with_attachment_settings(AttachmentSettings {
         max_upload_bytes: config.max_upload_bytes,
@@ -73,6 +74,9 @@ async fn main() -> Result<()> {
         embeds.max_video_bytes = config.embed_max_video_bytes;
         embeds
     });
+    thehideout_server::admin::startup(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!("startup jobs failed: {}", e.message.as_deref().unwrap_or("?")))?;
     media::pending::spawn_sweeper(state.clone());
     let app = build_app(state);
 

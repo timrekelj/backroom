@@ -339,6 +339,7 @@ impl Harness {
             .unwrap()
             .map(|r| r.unwrap())
             .map(|(k, kind, b)| (k, kind.unwrap_or_default(), b.unwrap_or(0)))
+            .filter(|(k, _, _)| k.starts_with(&format!("embeds/{}/", self.channel)))
             .collect()
     }
 }

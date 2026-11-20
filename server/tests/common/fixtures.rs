@@ -20,20 +20,39 @@ pub struct Account {
     pub id: u64,
 }
 
+/// Signs `username` up. A transient server error (the database timing out
+/// under load) is retried until a generous deadline: the failed attempt may
+/// have claimed the name, so the retry then signs in instead.
 pub async fn user(app: &TestApp, username: &str) -> Account {
-    let resp = app
-        .client(AuthServiceClient::new, None)
-        .sign_up(SignUpRequest {
-            username: username.into(),
-            password: PASSWORD.into(),
-            ..Default::default()
-        })
-        .await
-        .expect("sign up")
-        .into_owned();
-    Account {
-        token: resp.token,
-        id: resp.user.as_option().expect("user").id,
+    let name = app.name(username);
+    let client = app.client(AuthServiceClient::new, None);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let signed_up = client
+            .sign_up(SignUpRequest { username: name.clone(), password: PASSWORD.into(), ..Default::default() })
+            .await;
+        let (token, user) = match signed_up {
+            Ok(resp) => {
+                let resp = resp.into_owned();
+                (resp.token, resp.user)
+            }
+            Err(e) if std::time::Instant::now() < deadline => {
+                eprintln!("sign up of {name} failed ({e}); retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                // The name may have been claimed by the attempt that failed.
+                if let Ok(resp) = client
+                    .login(LoginRequest { username: name.clone(), password: PASSWORD.into(), ..Default::default() })
+                    .await
+                {
+                    let resp = resp.into_owned();
+                    (resp.token, resp.user)
+                } else {
+                    continue;
+                }
+            }
+            Err(e) => panic!("sign up: {e}"),
+        };
+        return Account { token, id: user.as_option().expect("user").id };
     }
 }
 

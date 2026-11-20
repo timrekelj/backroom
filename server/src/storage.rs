@@ -136,6 +136,28 @@ impl Storage {
         }
     }
 
+    /// A view of the same store where every key lives under `prefix/`, so
+    /// parallel tests sharing one bucket never see each other's objects.
+    pub fn with_prefix(self, prefix: &str) -> Self {
+        Self {
+            store: Arc::new(object_store::prefix::PrefixStore::new(self.store, Path::from(prefix))),
+        }
+    }
+
+    /// Deletes every object of the store (of the prefix, for a prefixed
+    /// view). Used by tests to clean up after themselves.
+    pub async fn delete_all(&self) -> Result<()> {
+        use futures::TryStreamExt;
+        let metas: Vec<_> = self.store.list(None).try_collect().await.context("listing objects")?;
+        for meta in metas {
+            match self.store.delete(&meta.location).await {
+                Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
+                Err(e) => return Err(e).with_context(|| format!("deleting {}", meta.location)),
+            }
+        }
+        Ok(())
+    }
+
     /// Verifies the store is reachable and the bucket exists.
     pub async fn check(&self) -> Result<()> {
         self.head(".healthcheck").await.map(|_| ()).context("probing object storage")

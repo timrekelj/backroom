@@ -19,7 +19,7 @@ const WAIT: Duration = Duration::from_secs(5);
 async fn sign_up(app: &TestApp, username: &str) -> String {
     app.client(AuthServiceClient::new, None)
         .sign_up(SignUpRequest {
-            username: username.into(),
+            username: app.name(username),
             password: PASSWORD.into(),
             ..Default::default()
         })

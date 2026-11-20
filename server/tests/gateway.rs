@@ -23,7 +23,7 @@ async fn start() -> TestApp {
 async fn sign_up(app: &TestApp, username: &str) -> String {
     app.client(AuthServiceClient::new, None)
         .sign_up(SignUpRequest {
-            username: username.into(),
+            username: app.name(username),
             password: PASSWORD.into(),
             ..Default::default()
         })
@@ -214,7 +214,7 @@ async fn member_join_is_broadcast() {
         panic!("expected GuildMemberJoined, got {event:?}");
     };
     assert_eq!(joined.guild_id, guild.id);
-    assert_eq!(joined.user.as_option().expect("user").username, "carol");
+    assert_eq!(joined.user.as_option().expect("user").username, app.name("carol"));
 
     // Joining again is not a new join.
     join(&app, &c, &guild.invite_code).await;

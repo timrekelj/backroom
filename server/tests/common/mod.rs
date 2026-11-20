@@ -1,85 +1,160 @@
 #![allow(dead_code)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
+use connectrpc::client::{ClientConfig, HttpClient};
+use rand::Rng;
+use scylla::client::caching_session::CachingSession;
+use scylla::client::execution_profile::ExecutionProfile;
+use scylla::client::session::Session;
+use scylla::client::session_builder::SessionBuilder;
+use sha2::{Digest, Sha256};
 use thehideout_server::config::S3Config;
 use thehideout_server::embeds::EmbedSettings;
 use thehideout_server::media::attachments::AttachmentSettings;
 use thehideout_server::snowflake::Snowflake;
 use thehideout_server::storage::Storage;
 use thehideout_server::{AppState, build_app, migrations};
-use connectrpc::client::{ClientConfig, HttpClient};
-use rand::Rng;
-use scylla::client::caching_session::CachingSession;
-use scylla::client::execution_profile::ExecutionProfile;
-use scylla::client::session_builder::SessionBuilder;
-use tokio::sync::Semaphore;
+use tokio::sync::{OnceCell, Semaphore};
 
-/// Test apps that may create their keyspace at the same time. Scylla DDL is
-/// slow (every CREATE KEYSPACE / TABLE is a schema change the node has to
-/// agree on), and the default test threads start dozens of apps at once; past
-/// a handful the DDL queues up and migrations time out. Only the schema setup
-/// is serialised: tests themselves still run in parallel.
+/// Fresh (isolated) keyspaces that may be created at the same time. Scylla DDL
+/// is slow (every CREATE KEYSPACE / TABLE is a schema change the node has to
+/// agree on); past a handful the DDL queues up and migrations time out.
 const CONCURRENT_STARTUPS: usize = 3;
 static STARTUPS: Semaphore = Semaphore::const_new(CONCURRENT_STARTUPS);
 /// Attempts at creating a keyspace and running the migrations.
 const MIGRATION_ATTEMPTS: usize = 4;
 
-/// A running app backed by a throwaway keyspace.
+/// The migrated keyspace shared by every test of the process (and, being
+/// named after the migrations' hash, by every later run until a migration
+/// changes). Creating a keyspace takes ~10 s, so tests share it and isolate
+/// themselves with unique (Snowflake / random) ids instead.
+static SHARED_KEYSPACE: OnceCell<String> = OnceCell::const_new();
+
+/// Worker ids handed out to apps, so two apps writing to the shared keyspace
+/// in the same millisecond never generate the same Snowflake.
+static NEXT_WORKER: AtomicU16 = AtomicU16::new(0);
+
+fn next_worker_id() -> u16 {
+    NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % (thehideout_server::snowflake::MAX_WORKER_ID + 1)
+}
+
+/// Prefix of the shared keyspace's name.
+const SHARED_PREFIX: &str = "test_shared_";
+
+/// A running app backed by a Scylla keyspace: the shared one by default, or a
+/// throwaway one for tests that assert on global state (site-wide counters,
+/// the pending-upload sweeper, ...); see [`Builder::isolated`].
 pub struct TestApp {
     pub base_url: String,
     pub state: AppState,
+    /// Whether `state.keyspace` is this app's own throwaway keyspace.
+    isolated: bool,
+    /// Random suffix that makes this app's usernames unique in the shared keyspace.
+    tag: String,
+}
+
+/// Options of a [`TestApp`]; `TestApp::builder().storage().start().await`.
+pub struct Builder {
+    heartbeat: Duration,
+    storage: bool,
+    attachments: AttachmentSettings,
+    embeds: EmbedSettings,
+    isolated: bool,
+    admins: Vec<String>,
+}
+
+impl Builder {
+    /// Usernames (as passed to `TestApp::name`) promoted to site admin at
+    /// startup and sign-up, like `THEHIDEOUT_ADMINS`.
+    pub fn admins(mut self, names: &[&str]) -> Self {
+        self.admins = names.iter().map(|n| n.to_string()).collect();
+        self
+    }
+
+    /// Gateway heartbeat interval.
+    pub fn heartbeat(mut self, interval: Duration) -> Self {
+        self.heartbeat = interval;
+        self
+    }
+
+    /// Media storage on the real S3-compatible service from `docker-compose.yml`
+    /// (127.0.0.1:8333, or the `THEHIDEOUT_S3_*` env vars), under a prefix
+    /// private to the app that [`TestApp::cleanup`] deletes.
+    pub fn storage(mut self) -> Self {
+        self.storage = true;
+        self
+    }
+
+    /// Custom attachment limits and timings (implies [`Builder::storage`]).
+    pub fn attachments(mut self, settings: AttachmentSettings) -> Self {
+        self.storage = true;
+        self.attachments = settings;
+        self
+    }
+
+    /// Custom embed settings (implies [`Builder::storage`]).
+    pub fn embeds(mut self, embeds: EmbedSettings) -> Self {
+        self.storage = true;
+        self.embeds = embeds;
+        self
+    }
+
+    /// Use a fresh keyspace nobody else writes to. Needed by tests that read
+    /// site-wide state: `media_totals` scopes `global*`, `pending_sweep`,
+    /// whole-table scans, overview counters.
+    pub fn isolated(mut self) -> Self {
+        self.isolated = true;
+        self
+    }
+
+    pub async fn start(self) -> TestApp {
+        TestApp::start_inner(self).await
+    }
 }
 
 impl TestApp {
-    /// Connects to Scylla at 127.0.0.1:9042, creates a fresh `test_<random>`
-    /// keyspace, runs migrations and serves the app on 127.0.0.1:0.
+    pub fn builder() -> Builder {
+        Builder {
+            heartbeat: Duration::from_secs(30),
+            storage: false,
+            attachments: AttachmentSettings::default(),
+            embeds: EmbedSettings::default(),
+            isolated: false,
+            admins: Vec::new(),
+        }
+    }
+
+    /// Connects to Scylla at 127.0.0.1:9042 and serves the app on 127.0.0.1:0
+    /// over the shared migrated keyspace.
     pub async fn start() -> Self {
-        Self::start_with_heartbeat(Duration::from_secs(30)).await
+        Self::builder().start().await
     }
 
     /// Like `start`, with a custom gateway heartbeat interval.
     pub async fn start_with_heartbeat(heartbeat_interval: Duration) -> Self {
-        Self::start_inner(heartbeat_interval, None, AttachmentSettings::default(), EmbedSettings::default()).await
+        Self::builder().heartbeat(heartbeat_interval).start().await
     }
 
-    /// Like `start`, with media storage on the real S3-compatible service from
-    /// `docker-compose.yml` (127.0.0.1:8333, or the `THEHIDEOUT_S3_*` env vars).
+    /// Like `start`, with media storage (see [`Builder::storage`]).
     pub async fn start_with_storage() -> Self {
-        Self::start_with_attachments(AttachmentSettings::default()).await
+        Self::builder().storage().start().await
     }
 
     /// Like `start_with_storage`, with custom attachment limits and timings.
     pub async fn start_with_attachments(settings: AttachmentSettings) -> Self {
-        let config = S3Config::from_env().expect("S3 config");
-        let storage = Storage::s3(&config).expect("configure S3 storage");
-        storage.check().await.unwrap_or_else(|e| {
-            panic!(
-                "object storage at {} is not reachable ({e:#}); run `docker compose up -d` and wait for the bucket to be created",
-                config.endpoint
-            )
-        });
-        Self::start_inner(Duration::from_secs(30), Some(storage), settings, EmbedSettings::default()).await
+        Self::builder().attachments(settings).start().await
     }
 
     /// Like `start_with_storage`, with custom embed settings (loopback allowed
-    /// for the in-test sites, short timeouts, …).
+    /// for the in-test sites, short timeouts, ...).
     pub async fn start_with_embeds(embeds: EmbedSettings) -> Self {
-        let config = S3Config::from_env().expect("S3 config");
-        let storage = Storage::s3(&config).expect("configure S3 storage");
-        storage.check().await.unwrap_or_else(|e| {
-            panic!("object storage at {} is not reachable ({e:#}); run `docker compose up -d`", config.endpoint)
-        });
-        Self::start_inner(Duration::from_secs(30), Some(storage), AttachmentSettings::default(), embeds).await
+        Self::builder().embeds(embeds).start().await
     }
 
-    async fn start_inner(
-        heartbeat_interval: Duration,
-        storage: Option<Storage>,
-        settings: AttachmentSettings,
-        embeds: EmbedSettings,
-    ) -> Self {
+    async fn start_inner(options: Builder) -> Self {
         // DDL can take far longer than the driver's 30 s default request
         // timeout when many keyspaces are being created.
         let profile = ExecutionProfile::builder().request_timeout(Some(Duration::from_secs(180))).build();
@@ -90,13 +165,40 @@ impl TestApp {
             .build()
             .await
             .expect("connect to ScyllaDB at 127.0.0.1:9042 (is `docker compose up -d` running?)");
-        let keyspace = Self::create_keyspace(&session).await;
+        let keyspace = if options.isolated {
+            Self::create_keyspace(&session).await
+        } else {
+            let keyspace = SHARED_KEYSPACE.get_or_init(|| Self::prepare_shared_keyspace(&session)).await.clone();
+            session.use_keyspace(&keyspace, false).await.expect("select the shared test keyspace");
+            keyspace
+        };
 
+        let storage = options.storage.then(|| {
+            let config = S3Config::from_env().expect("S3 config");
+            let storage = Storage::s3(&config).expect("configure S3 storage");
+            (config, storage.with_prefix(&format!("t{:016x}", rand::rng().random::<u64>())))
+        });
+        let storage = match storage {
+            Some((config, storage)) => {
+                storage.check().await.unwrap_or_else(|e| {
+                    panic!(
+                        "object storage at {} is not reachable ({e:#}); run `docker compose up -d` and wait for the bucket to be created",
+                        config.endpoint
+                    )
+                });
+                Some(storage)
+            }
+            None => None,
+        };
+
+        let tag = format!("{:06x}", rand::rng().random::<u32>() & 0xff_ffff);
         let session = Arc::new(CachingSession::from(session, 64));
-        let mut state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, heartbeat_interval);
+        let mut state = AppState::new(session, Arc::new(Snowflake::new(next_worker_id())), keyspace, options.heartbeat);
         state.storage = storage;
-        state.attachments = settings;
-        state.embeds = embeds;
+        state.attachments = options.attachments;
+        state.embeds = options.embeds;
+        state.embeds.cache_namespace = format!("{tag}:");
+        state.admins = Arc::new(options.admins.iter().map(|n| format!("{}_{tag}", thehideout_server::admin::normalize_username(n))).collect());
         let app = build_app(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -113,6 +215,51 @@ impl TestApp {
         Self {
             base_url: format!("http://{addr}"),
             state,
+            isolated: options.isolated,
+            tag,
+        }
+    }
+
+    /// A username unique to this app (`alice` -> `alice_1a2b3c`): the shared
+    /// keyspace is used by many tests at once and usernames are global.
+    pub fn name(&self, base: &str) -> String {
+        format!("{base}_{}", self.tag)
+    }
+
+    /// Creates (once per migration set, ever) and migrates the shared keyspace
+    /// and drops the shared keyspaces of older migration sets.
+    async fn prepare_shared_keyspace(session: &Session) -> String {
+        let digest = Sha256::digest(migrations::MIGRATIONS.iter().map(|(_, _, cql)| *cql).collect::<String>());
+        let hash: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+        let keyspace = format!("{SHARED_PREFIX}{hash}");
+        let mut last_error = None;
+        for attempt in 0..MIGRATION_ATTEMPTS {
+            let _permit = STARTUPS.acquire().await.expect("startup semaphore is never closed");
+            match migrations::run(session, &keyspace).await {
+                Ok(()) => {
+                    Self::drop_stale_shared_keyspaces(session, &keyspace).await;
+                    return keyspace;
+                }
+                Err(e) => {
+                    eprintln!("shared test keyspace {keyspace}: migrations failed (attempt {}): {e:#}", attempt + 1);
+                    last_error = Some(e);
+                    tokio::time::sleep(Duration::from_millis(500 << attempt)).await;
+                }
+            }
+        }
+        panic!("run migrations: {:#}", last_error.expect("at least one attempt"));
+    }
+
+    async fn drop_stale_shared_keyspaces(session: &Session, current: &str) {
+        let Ok(result) = session.query_unpaged("SELECT keyspace_name FROM system_schema.keyspaces", ()).await else {
+            return;
+        };
+        let Ok(rows) = result.into_rows_result() else { return };
+        let Ok(rows) = rows.rows::<(String,)>() else { return };
+        for (name,) in rows.flatten() {
+            if name.starts_with(SHARED_PREFIX) && name != current {
+                let _ = session.query_unpaged(format!("DROP KEYSPACE IF EXISTS {name}"), ()).await;
+            }
         }
     }
 
@@ -120,7 +267,7 @@ impl TestApp {
     /// Startups are limited to [`CONCURRENT_STARTUPS`] at a time and a failed
     /// attempt (a timeout under load leaves the keyspace half-built) is
     /// dropped and retried under a new name with a growing pause.
-    async fn create_keyspace(session: &scylla::client::session::Session) -> String {
+    async fn create_keyspace(session: &Session) -> String {
         let _permit = STARTUPS.acquire().await.expect("startup semaphore is never closed");
         let mut last_error = None;
         for attempt in 0..MIGRATION_ATTEMPTS {
@@ -152,29 +299,20 @@ impl TestApp {
         new(HttpClient::plaintext(), self.client_config(token))
     }
 
-    /// Deletes the media objects the test stored (accounted ones and
-    /// still-registered pending uploads), then drops the test keyspace.
+    /// Deletes the media objects the test stored (its private storage
+    /// prefix) and, for an isolated app, drops its keyspace.
     pub async fn cleanup(self) {
         if let Some(storage) = &self.state.storage {
-            for query in ["SELECT key FROM media_objects", "SELECT key FROM pending_sweep", "SELECT thumbnail FROM pending_sweep"] {
-                if let Ok(result) = self.state.session.execute_unpaged(query, ()).await
-                    && let Ok(rows) = result.into_rows_result()
-                    && let Ok(rows) = rows.rows::<(Option<String>,)>()
-                {
-                    for (key,) in rows.flatten() {
-                        if let Some(key) = key {
-                            let _ = storage.delete(&key).await;
-                        }
-                    }
-                }
-            }
+            let _ = storage.delete_all().await;
         }
-        let _ = self
-            .state
-            .session
-            .get_session()
-            .query_unpaged(format!("DROP KEYSPACE IF EXISTS {}", self.state.keyspace), ())
-            .await;
+        if self.isolated {
+            let _ = self
+                .state
+                .session
+                .get_session()
+                .query_unpaged(format!("DROP KEYSPACE IF EXISTS {}", self.state.keyspace), ())
+                .await;
+        }
     }
 }
 

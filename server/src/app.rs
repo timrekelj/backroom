@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +35,13 @@ pub struct AppState {
     pub attachments: AttachmentSettings,
     /// Link embed pipeline (SSRF-safe unfurling of URLs in messages).
     pub embeds: EmbedSettings,
+    /// Usernames promoted to site admin at startup and at sign-up
+    /// (`THEHIDEOUT_ADMINS`, normalised).
+    pub admins: Arc<HashSet<String>>,
+    /// Open gateway streams and "active today" bookkeeping.
+    pub live: Arc<crate::stats::Live>,
+    /// Serialises SetAdmin so two concurrent revocations cannot remove the last admin.
+    pub admin_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -53,7 +61,16 @@ impl AppState {
             storage: None,
             attachments: AttachmentSettings::default(),
             embeds: EmbedSettings::default(),
+            admins: Arc::default(),
+            live: Arc::default(),
+            admin_lock: Arc::default(),
         }
+    }
+
+    /// Sets the usernames promoted to site admin (`THEHIDEOUT_ADMINS`).
+    pub fn with_admins(mut self, admins: impl IntoIterator<Item = String>) -> Self {
+        self.admins = Arc::new(admins.into_iter().collect());
+        self
     }
 
     /// Overrides the attachment limits (`THEHIDEOUT_MAX_UPLOAD_BYTES`, tests).

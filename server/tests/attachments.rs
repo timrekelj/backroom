@@ -154,7 +154,16 @@ struct Setup {
 }
 
 async fn setup_with(settings: AttachmentSettings) -> Setup {
-    let app = TestApp::start_with_attachments(settings).await;
+    setup_on(TestApp::start_with_attachments(settings).await).await
+}
+
+/// Like `setup`, on a keyspace of its own: for tests that read site-wide state
+/// (`global*` byte totals, the pending-upload sweeper).
+async fn setup_isolated() -> Setup {
+    setup_on(TestApp::builder().attachments(AttachmentSettings::default()).isolated().start().await).await
+}
+
+async fn setup_on(app: TestApp) -> Setup {
     let (alice, bob) = (user(&app, "alice").await, user(&app, "bob").await);
     let guild = guild(&app, &alice).await;
     join(&app, &bob, &guild).await;
@@ -325,7 +334,7 @@ async fn size_limits_are_enforced_before_reading_the_body() {
 
 #[tokio::test]
 async fn disconnecting_mid_upload_cleans_up() {
-    let Setup { app, alice, channel, .. } = setup().await;
+    let Setup { app, alice, channel, .. } = setup_isolated().await;
     let addr = app.base_url.trim_start_matches("http://").to_owned();
     let mut stream = tokio::net::TcpStream::connect(&addr).await.unwrap();
     let head = format!(
@@ -438,7 +447,7 @@ async fn attachments_are_listed_and_served_with_safe_headers() {
 
 #[tokio::test]
 async fn pending_uploads_can_only_be_used_once_by_their_owner_for_their_channel() {
-    let Setup { app, alice, bob, guild, channel } = setup().await;
+    let Setup { app, alice, bob, guild, channel } = setup_isolated().await;
     let other_channel = channel_in(&app, &alice, guild.id).await;
     let pending = upload(&app, &alice, channel, "a.txt", "text/plain", b"a").await;
     let id = pending_id(&pending);
@@ -500,7 +509,7 @@ async fn expired_uploads_are_swept_and_used_ones_kept() {
         sweep_grace: Duration::ZERO,
         ..Default::default()
     };
-    let Setup { app, alice, channel, .. } = setup_with(settings).await;
+    let Setup { app, alice, channel, .. } = setup_on(TestApp::builder().attachments(settings).isolated().start().await).await;
     let png_pending = upload(&app, &alice, channel, "p.png", "image/png", &png(20, 20)).await;
     let unused = upload(&app, &alice, channel, "unused.txt", "text/plain", b"never sent").await;
     let used = upload(&app, &alice, channel, "used.txt", "text/plain", b"sent").await;
@@ -533,7 +542,7 @@ async fn expired_uploads_are_swept_and_used_ones_kept() {
 
 #[tokio::test]
 async fn bytes_are_counted_when_sent_not_when_uploaded() {
-    let Setup { app, alice, guild, channel, .. } = setup().await;
+    let Setup { app, alice, guild, channel, .. } = setup_isolated().await;
     let scope = format!("guild:{}:attachment", guild.id);
     let guild_all = format!("guild:{}", guild.id);
     let total = |scope: String| {
@@ -565,7 +574,7 @@ async fn bytes_are_counted_when_sent_not_when_uploaded() {
 
 #[tokio::test]
 async fn direct_message_attachments_work_and_count_globally() {
-    let Setup { app, alice, bob, guild, .. } = setup().await;
+    let Setup { app, alice, bob, guild, .. } = setup_isolated().await;
     let dm = app
         .client(DmServiceClient::new, Some(&alice.token))
         .open_dm(OpenDmRequest { user_id: bob.id, ..Default::default() })

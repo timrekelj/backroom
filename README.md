@@ -17,6 +17,12 @@ Run the server (applies schema migrations on startup, listens on `0.0.0.0:8080`)
 cd server && cargo run
 ```
 
+The dev Scylla runs with 2 cores and 2 GB (`--smp 2 --memory 2G` in
+`docker-compose.yml`); the integration tests are DDL- and write-heavy and slow
+down a lot on one core. After changing these flags run `docker compose up -d scylla`
+(the data volume is kept). The tests share one migrated keyspace
+(`test_shared_<hash>`), so run only one `cargo test` against the same Scylla at a time.
+
 Run the tests (unit tests plus integration tests against the Scylla and S3
 containers, so `docker compose up -d` must be running; the media tests fail
 with a clear message if the object store is unreachable):

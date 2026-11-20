@@ -50,6 +50,11 @@ pub const MIGRATIONS: &[(i32, &str, &str)] = &[
         "embed_media",
         include_str!("../migrations/0009_embed_media.cql"),
     ),
+    (
+        10,
+        "admin",
+        include_str!("../migrations/0010_admin.cql"),
+    ),
 ];
 
 /// Creates the keyspace if needed, selects it on the session, and applies any

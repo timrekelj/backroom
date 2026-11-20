@@ -177,7 +177,7 @@ async fn conditional_get_returns_304() {
 
 #[tokio::test]
 async fn bad_uploads_are_invalid_argument() {
-    let app = TestApp::start_with_storage().await;
+    let app = TestApp::builder().storage().isolated().start().await;
     let alice = user(&app, "alice").await;
     let invalid = ErrorCode::InvalidArgument;
     assert_code(upload_avatar(&app, &alice, b"definitely not an image".to_vec(), "image/png").await, invalid);
@@ -200,7 +200,7 @@ async fn bad_uploads_are_invalid_argument() {
 
 #[tokio::test]
 async fn far_oversized_body_is_refused_cleanly() {
-    let app = TestApp::start_with_storage().await;
+    let app = TestApp::builder().storage().isolated().start().await;
     let alice = user(&app, "alice").await;
     // Over the media RPCs' transport limit (8 MiB plus base64 and field overhead): refused before
     // any processing. (Bodies far beyond it get the connection reset by the server instead.)
@@ -235,7 +235,7 @@ async fn other_rpcs_keep_a_small_body_limit() {
 
 #[tokio::test]
 async fn replacing_and_removing_an_avatar_deletes_objects_and_updates_counters() {
-    let app = TestApp::start_with_storage().await;
+    let app = TestApp::builder().storage().isolated().start().await;
     let storage = app.state.storage.clone().unwrap();
     let alice = user(&app, "alice").await;
 
@@ -279,7 +279,7 @@ async fn replacing_and_removing_an_avatar_deletes_objects_and_updates_counters()
 
 #[tokio::test]
 async fn guild_icon_needs_manage_server_and_is_counted_per_guild() {
-    let app = TestApp::start_with_storage().await;
+    let app = TestApp::builder().storage().isolated().start().await;
     let owner = user(&app, "owner").await;
     let member = user(&app, "member").await;
     let outsider = user(&app, "outsider").await;

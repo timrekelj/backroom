@@ -45,6 +45,8 @@ impl GatewayService for GatewaySvc {
     ) -> ServiceResult<ServiceStream<SubscribeResponse>> {
         let user_id = authenticate(&self.state, &ctx).await?;
         let token_hash = hash_token(bearer_token(&ctx).expect("authenticate succeeded"));
+        // Before the heartbeat clock starts, so the bookkeeping does not eat into the first interval.
+        crate::stats::touch_user(&self.state, user_id).await;
         let bus = &self.state.events;
 
         // Subscribe to the control channel before reading memberships/DMs so a guild joined
@@ -92,6 +94,7 @@ impl GatewayService for GatewaySvc {
         );
         heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+        self.state.live.connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let session = EventStream {
             state: self.state.clone(),
             control: Some(control),
@@ -199,6 +202,7 @@ impl Drop for EventStream {
         self.dms.clear();
         self.control = None;
         self.state.events.prune();
+        self.state.live.connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

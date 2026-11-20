@@ -62,7 +62,7 @@ fn normalize_channel_name(raw: &str) -> Option<String> {
     valid.then_some(name)
 }
 
-fn guild_to_proto(
+pub(crate) fn guild_to_proto(
     id: i64,
     name: String,
     owner_id: i64,
@@ -129,6 +129,7 @@ impl GuildService for GuildSvc {
             )
             .await
             .map_err(internal)?;
+        crate::stats::guild_created(&self.state).await;
         self.add_member(id, user_id).await?;
         let channel = self.insert_channel(id, DEFAULT_CHANNEL, None, 0, None, "").await?;
         self.state.events.publish_to_guild(id, EventPayload::ChannelCreated(channel));
@@ -734,6 +735,7 @@ impl GuildSvc {
             )
             .await
             .map_err(internal)?;
+        crate::stats::member_added(&self.state, id_from_db(guild_id)).await;
         Ok(())
     }
 
@@ -769,6 +771,7 @@ impl GuildSvc {
             )
             .await
             .map_err(internal)?;
+        crate::stats::channel_created(&self.state, guild_id).await;
         Ok(Channel {
             id,
             guild_id,

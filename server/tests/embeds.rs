@@ -332,7 +332,6 @@ async fn embed_arrives_via_message_updated_and_list_with_a_served_thumbnail() {
     // Accounting: one object of kind `embed`, counted for the guild and globally.
     let bytes = body.len() as i64;
     assert_eq!(media::totals(&h.app.state, &format!("guild:{}:embed", h.guild.id)).await.unwrap(), (bytes, 1));
-    assert_eq!(media::totals(&h.app.state, "global:embed").await.unwrap(), (bytes, 1));
     assert_eq!(media::totals(&h.app.state, &format!("guild:{}", h.guild.id)).await.unwrap(), (bytes, 1));
     let by_kind = media::totals_by_kind(&h.app.state, Some(h.guild.id)).await.unwrap();
     assert_eq!(by_kind.iter().find(|k| k.kind == "embed").unwrap().bytes, bytes);
@@ -359,7 +358,7 @@ async fn title_and_description_fallbacks_and_host_as_site_name() {
     assert_eq!((embed.title.as_str(), embed.description.as_str()), ("Only a title", "Meta <description>"));
     assert_eq!(embed.site_name, "127.0.0.1");
     assert_eq!((embed.thumbnail.clone(), embed.thumbnail_width, embed.thumbnail_height), (None, None, None));
-    assert_eq!(media::totals(&h.app.state, "global:embed").await.unwrap(), (0, 0));
+    assert_eq!(media::totals(&h.app.state, &format!("guild:{}:embed", h.guild.id)).await.unwrap(), (0, 0));
     // A page with an empty head yields nothing.
     h.expect_no_embed(&h.site.url("/empty")).await;
     h.app.cleanup().await;
@@ -493,7 +492,7 @@ async fn unsafe_preview_images_are_dropped_but_the_text_stays() {
         assert_eq!((embed.thumbnail.as_deref(), embed.thumbnail_width, embed.thumbnail_height), (None, None, None), "{path}");
     }
     assert_eq!(h.site.v6_hits.load(Ordering::SeqCst), 0);
-    assert_eq!(media::totals(&h.app.state, "global:embed").await.unwrap(), (0, 0));
+    assert_eq!(media::totals(&h.app.state, &format!("guild:{}:embed", h.guild.id)).await.unwrap(), (0, 0));
     h.app.cleanup().await;
 }
 
@@ -547,11 +546,10 @@ async fn cached_metadata_is_reused_but_every_embed_owns_its_thumbnail() {
     assert_eq!((first.title.as_str(), first.site_name.as_str()), (second.title.as_str(), second.site_name.as_str()));
     let (k1, k2) = (first.thumbnail.unwrap(), second.thumbnail.unwrap());
     assert_ne!(k1, k2);
-    assert_eq!(media::totals(&h.app.state, "global:embed").await.unwrap().1, 2);
     assert_eq!(media::totals(&h.app.state, &format!("guild:{}:embed", h.guild.id)).await.unwrap().1, 2);
     // Deleting one record only uncounts that object.
     media::delete_record(&h.app.state, &k1).await;
-    assert_eq!(media::totals(&h.app.state, "global:embed").await.unwrap().1, 1);
+    assert_eq!(media::totals(&h.app.state, &format!("guild:{}:embed", h.guild.id)).await.unwrap().1, 1);
     h.app.cleanup().await;
 }
 
@@ -585,7 +583,18 @@ async fn direct_messages_count_embeds_globally_only() {
     assert_eq!(listed[0].embeds, updated.embeds);
     let key = updated.embeds[0].thumbnail.clone().unwrap();
     assert!(key.starts_with(&format!("embeds/{}/", dm.id)));
-    assert_eq!(media::totals(&h.app.state, "global:embed").await.unwrap().1, 1);
+    let (owner_kind, guild_id): (String, Option<i64>) = h
+        .app
+        .state
+        .session
+        .execute_unpaged("SELECT owner_kind, guild_id FROM media_objects WHERE key = ?", (&key,))
+        .await
+        .unwrap()
+        .into_rows_result()
+        .unwrap()
+        .first_row()
+        .unwrap();
+    assert_eq!((owner_kind.as_str(), guild_id), ("user", None));
     assert_eq!(media::totals(&h.app.state, &format!("guild:{}:embed", h.guild.id)).await.unwrap(), (0, 0));
     h.app.cleanup().await;
 }

@@ -340,7 +340,8 @@ impl EmojiService for EmojiSvc {
             guild_id: Some(guild_id),
             label: kind.label(),
         };
-        if let Err(e) = media::record(&self.state, &key, owner, size).await {
+        let meta = media::Meta { user_id: Some(user_id), ..Default::default() };
+        if let Err(e) = media::record_with(&self.state, &key, owner, size, meta).await {
             self.roll_back(guild_id, id, req.name, Some(&key), true).await;
             return Err(e);
         }
@@ -413,23 +414,33 @@ impl EmojiService for EmojiSvc {
         let emoji = find_emoji(&self.state, guild_id, req.emoji_id)
             .await?
             .ok_or_else(|| ConnectError::not_found("emoji not found"))?;
+        self.remove_emoji(guild_id, &emoji).await?;
+        Response::ok(DeleteEmojiResponse::default())
+    }
+}
+
+impl EmojiSvc {
+    /// Deletes an emoji, its image and name claim, resets channel icons using
+    /// it and publishes `emojis_updated`. Shared by DeleteEmoji and the admin
+    /// file deletion.
+    pub(crate) async fn remove_emoji(&self, guild_id: u64, emoji: &Emoji) -> Result<(), ConnectError> {
         self.state
             .session
             .execute_unpaged(
                 "DELETE FROM emojis WHERE guild_id = ? AND id = ?",
-                (id_to_db(guild_id), id_to_db(req.emoji_id)),
+                (id_to_db(guild_id), id_to_db(emoji.id)),
             )
             .await
             .map_err(internal)?;
-        release_name(&self.state, guild_id, &emoji.name, req.emoji_id).await;
+        release_name(&self.state, guild_id, &emoji.name, emoji.id).await;
         if !emoji.image.is_empty() {
             self.discard(&emoji.image).await;
         }
         // Channels using the emoji as their icon fall back to the default
         // icon (and clients are told); reactions and message tokens keep the
         // id and render as text, as documented for DeleteEmoji.
-        self.reset_channel_icons(guild_id, req.emoji_id).await?;
+        self.reset_channel_icons(guild_id, emoji.id).await?;
         publish_list(&self.state, guild_id).await?;
-        Response::ok(DeleteEmojiResponse::default())
+        Ok(())
     }
 }

@@ -37,14 +37,14 @@ async fn sign_up_then_get_me() {
     let client = app.client(AuthServiceClient::new, None);
 
     let resp = client
-        .sign_up(sign_up_req("  Alice  ", PASSWORD))
+        .sign_up(sign_up_req(&format!("  {}  ", app.name("Alice")), PASSWORD))
         .await
         .expect("sign up")
         .into_owned();
     let user = resp.user.unwrap();
     assert!(!resp.token.is_empty());
     assert_ne!(user.id, 0);
-    assert_eq!(user.username, "alice");
+    assert_eq!(user.username, app.name("alice"));
     assert!(user.created_at.is_set());
 
     let me = get_me(&app, Some(&resp.token)).await.expect("get me");
@@ -58,10 +58,10 @@ async fn duplicate_username_is_rejected_case_insensitively() {
     let app = TestApp::start().await;
     let client = app.client(AuthServiceClient::new, None);
 
-    client.sign_up(sign_up_req("alice", PASSWORD)).await.expect("first sign up");
-    for name in ["alice", "Alice", "ALICE "] {
+    client.sign_up(sign_up_req(&app.name("alice"), PASSWORD)).await.expect("first sign up");
+    for name in [app.name("alice"), app.name("Alice"), format!("{} ", app.name("ALICE"))] {
         let err = client
-            .sign_up(sign_up_req(name, PASSWORD))
+            .sign_up(sign_up_req(&name, PASSWORD))
             .await
             .expect_err("duplicate must fail");
         // Generic error: a distinct "username taken" code would be an account-existence oracle.
@@ -74,7 +74,7 @@ async fn duplicate_username_is_rejected_case_insensitively() {
 
 #[tokio::test]
 async fn sign_up_validates_input() {
-    let app = TestApp::start().await;
+    let app = TestApp::builder().isolated().start().await;
     let client = app.client(AuthServiceClient::new, None);
 
     let too_long = "a".repeat(33);
@@ -119,12 +119,12 @@ async fn login_returns_new_working_token() {
     let client = app.client(AuthServiceClient::new, None);
 
     let signed_up = client
-        .sign_up(sign_up_req("bob", PASSWORD))
+        .sign_up(sign_up_req(&app.name("bob"), PASSWORD))
         .await
         .expect("sign up")
         .into_owned();
     let login = client
-        .login(login_req("Bob", PASSWORD))
+        .login(login_req(&app.name("Bob"), PASSWORD))
         .await
         .expect("login")
         .into_owned();
@@ -133,7 +133,7 @@ async fn login_returns_new_working_token() {
     assert_eq!(login.user.unwrap(), signed_up.user.unwrap());
 
     let me = get_me(&app, Some(&login.token)).await.expect("get me");
-    assert_eq!(me.username, "bob");
+    assert_eq!(me.username, app.name("bob"));
 
     app.cleanup().await;
 }
@@ -142,10 +142,10 @@ async fn login_returns_new_working_token() {
 async fn bad_credentials_are_unauthenticated() {
     let app = TestApp::start().await;
     let client = app.client(AuthServiceClient::new, None);
-    client.sign_up(sign_up_req("carol", PASSWORD)).await.expect("sign up");
+    client.sign_up(sign_up_req(&app.name("carol"), PASSWORD)).await.expect("sign up");
 
     let wrong_password = client
-        .login(login_req("carol", "not the password"))
+        .login(login_req(&app.name("carol"), "not the password"))
         .await
         .expect_err("wrong password");
     let unknown_user = client

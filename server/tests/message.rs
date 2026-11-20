@@ -16,7 +16,7 @@ async fn sign_up(app: &TestApp, username: &str) -> String {
     let client = app.client(AuthServiceClient::new, None);
     client
         .sign_up(SignUpRequest {
-            username: username.into(),
+            username: app.name(username),
             password: PASSWORD.into(),
             ..Default::default()
         })

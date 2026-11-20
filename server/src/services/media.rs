@@ -10,7 +10,6 @@ use crate::auth::{authenticate, internal};
 use crate::convert::{id_from_db, id_to_db};
 use crate::events::EventPayload;
 use crate::media::{self, MAX_INPUT_BYTES, MediaError, MediaKind, Owner};
-use crate::access::find_user;
 use crate::permissions::{MANAGE_SERVER, require_permission};
 use crate::proto::thehideout::v1::*;
 use crate::services::guild::load_guild;
@@ -75,7 +74,7 @@ impl MediaSvc {
         media::delete_record(&self.state, key).await;
     }
 
-    async fn set_avatar(&self, user_id: u64, new: Option<(String, u64)>) -> Result<User, ConnectError> {
+    pub(crate) async fn set_avatar(&self, user_id: u64, new: Option<(String, u64)>) -> Result<User, ConnectError> {
         let db_id = id_to_db(user_id);
         let old = self.current_media("SELECT avatar FROM users WHERE id = ?", db_id).await?;
         let new_key = new.as_ref().map(|(k, _)| k.as_str());
@@ -83,7 +82,7 @@ impl MediaSvc {
             && old.as_deref() != Some(key)
         {
             let owner = Owner { kind: MediaKind::Avatar.owner_kind(), id: user_id, guild_id: None, label: MediaKind::Avatar.label() };
-            media::record(&self.state, key, owner, *size).await?;
+            media::record_with(&self.state, key, owner, *size, media::Meta { user_id: Some(user_id), ..Default::default() }).await?;
         }
         self.state
             .session
@@ -95,14 +94,14 @@ impl MediaSvc {
         {
             self.discard(&old).await;
         }
-        let user = find_user(&self.state, db_id)
+        let user = crate::admin::load_user(&self.state, user_id)
             .await?
             .ok_or_else(|| ConnectError::unauthenticated("user no longer exists"))?;
         self.publish_user_updated(user_id, &user).await;
         Ok(user)
     }
 
-    async fn set_icon(&self, guild_id: u64, new: Option<(String, u64)>) -> Result<Guild, ConnectError> {
+    pub(crate) async fn set_icon(&self, guild_id: u64, new: Option<(String, u64)>) -> Result<Guild, ConnectError> {
         let db_id = id_to_db(guild_id);
         let old = self.current_media("SELECT icon FROM guilds WHERE id = ?", db_id).await?;
         let new_key = new.as_ref().map(|(k, _)| k.as_str());
@@ -147,12 +146,16 @@ impl MediaSvc {
             .filter(|k| !k.is_empty()))
     }
 
-    /// Sends `user_updated` to the user and everyone sharing a guild or DM with them.
-    async fn publish_user_updated(&self, user_id: u64, user: &User) {
+    /// Sends `user_updated` to the user and everyone sharing a guild or DM with
+    /// them. Only the user themself gets `is_admin`.
+    pub(crate) async fn publish_user_updated(&self, user_id: u64, user: &User) {
+        let mut public = user.clone();
+        public.is_admin = false;
         match self.audience(user_id).await {
             Ok(ids) => {
                 for id in ids {
-                    self.state.events.notify_user_profile_updated(id, user.clone());
+                    let shown = if id == user_id { user } else { &public };
+                    self.state.events.notify_user_profile_updated(id, shown.clone());
                 }
             }
             Err(e) => tracing::warn!(user_id, error = %e.message.as_deref().unwrap_or("?"), "user_updated audience lookup failed"),

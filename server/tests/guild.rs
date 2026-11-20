@@ -16,7 +16,7 @@ async fn sign_up(app: &TestApp, username: &str) -> String {
     let client = app.client(AuthServiceClient::new, None);
     client
         .sign_up(SignUpRequest {
-            username: username.into(),
+            username: app.name(username),
             password: PASSWORD.into(),
             ..Default::default()
         })
@@ -146,7 +146,7 @@ async fn join_via_invite_and_list_members() {
 
     for token in [&alice, &bob] {
         let names = member_names(&app, token, guild.id).await.expect("members");
-        assert_eq!(names, ["alice", "bob"]);
+        assert_eq!(names, [app.name("alice"), app.name("bob")]);
     }
 
     let bobs = guilds(&app, &bob)
@@ -175,7 +175,7 @@ async fn joining_twice_is_idempotent() {
     // The creator re-joining their own guild is a no-op as well.
     assert_eq!(join(&app, &alice, &guild.invite_code).await.unwrap(), guild);
 
-    assert_eq!(member_names(&app, &alice, guild.id).await.unwrap(), ["alice", "bob"]);
+    assert_eq!(member_names(&app, &alice, guild.id).await.unwrap(), [app.name("alice"), app.name("bob")]);
 
     app.cleanup().await;
 }
