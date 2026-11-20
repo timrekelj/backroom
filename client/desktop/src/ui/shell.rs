@@ -1,0 +1,155 @@
+//! The main screen: rail, sidebar and the inset panel holding the header, transcript, composer
+//! and the member panel. Works from 800x600 up; the transcript takes whatever width is left.
+
+use rune::{col, el, row, text, El};
+use rune_kit::Kit;
+use thehideout_design::components::{Avatar, ChannelHeader, IconButton, HEADER_H};
+use thehideout_design::icons::USERS;
+use thehideout_design::{radius, theme_of, type_};
+
+use super::{composer, members, rail, settings, sidebar, transcript};
+use crate::app::App;
+use crate::state::Place;
+
+/// What the window's width allows: the sidebar is 240 from 1100pt up and 208 below, and the member
+/// panel is only offered from 1000pt (below that the transcript would be too narrow).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layout {
+    pub sidebar: f32,
+    pub members: bool,
+}
+
+impl Layout {
+    pub fn of(width: f32) -> Layout {
+        Layout {
+            sidebar: if width >= 1100.0 { 240.0 } else { 208.0 },
+            members: width >= 1000.0,
+        }
+    }
+}
+
+impl Default for Layout {
+    /// Before the first layout is known: the roomy one.
+    fn default() -> Layout {
+        Layout::of(f32::MAX)
+    }
+}
+
+/// Space between the window edge and the panel; the rail, sidebar and panel all start below the
+/// top one, so their headers and footers share y.
+const INSET: f32 = 8.0;
+
+/// Height of the strip the window's controls sit in (macOS traffic lights, Windows caption
+/// buttons). `bar` below is what the platform actually reserves of it: 0 where the native frame
+/// stays.
+pub const TITLEBAR: f32 = 40.0;
+
+/// `bar`: the titlebar's height (`Cx::chrome_insets().height`). The shell starts below it, so the
+/// rail's Home button and the sidebar header never sit under the traffic lights; `app::view`
+/// lays the drag strip over that band.
+pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32, lay: Layout) -> El {
+    if let Some(section) = a.state.ui.settings {
+        return settings::build(a, k, section, bar);
+    }
+    let t = theme_of(k);
+    let panel = row()
+        .key("main-panel")
+        .grow(1.0)
+        .min_h(0.0)
+        .w_full()
+        .fill(t.surface.color())
+        .border(1.0, t.border.color())
+        .radius(radius::LG)
+        .clip_rounded(radius::LG)
+        .child(
+            col()
+                .key("chat")
+                .grow(1.0)
+                .shrink()
+                .min_w(0.0)
+                .h_full()
+                .child(header(a, k, lay))
+                .child(transcript::build(a, k))
+                .child(composer::build(a, k)),
+        )
+        .child(members::build(a, k, lay.members));
+    let body = row()
+        .key("shell-body")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .pt(INSET)
+        .pb(INSET)
+        .child(rail::build(a, k, layer))
+        .child(sidebar::build(a, k, layer, lay.sidebar))
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .h_full()
+                .pr(INSET)
+                .child(panel),
+        );
+    col()
+        .key("shell")
+        .w_full()
+        .h_full()
+        .fill(t.bg.color())
+        .pt(bar)
+        .child(body)
+}
+
+fn header(a: &App, k: &Kit, lay: Layout) -> El {
+    let t = theme_of(k);
+    let s = &a.state;
+    let open = s.ui.members_open && lay.members;
+    let toggle = IconButton::new(&USERS, if open { "Hide members" } else { "Show members" })
+        .selected(open)
+        .size(thehideout_design::components::Size::Md)
+        .on_press(|a: &mut App| a.state.ui.members_open = !a.state.ui.members_open)
+        .build(k)
+        .key("members-toggle");
+    let name = s.current_channel_name();
+    match (s.ui.place, name) {
+        (Place::Guild(_), Some(name)) => {
+            let h = ChannelHeader::new(name);
+            (if lay.members { h.action(toggle) } else { h }).build(k)
+        }
+        (Place::Home, Some(name)) => {
+            let id = s
+                .current_channel()
+                .and_then(|c| s.dm(c))
+                .and_then(|d| s.dm_peer(d))
+                .map_or(0, |u| u.id);
+            row()
+                .role("banner")
+                .label(name.clone())
+                .w_full()
+                .h(HEADER_H)
+                .px(16.0)
+                .gap(10.0)
+                .center_y()
+                .border_sides([0.0, 0.0, 1.0, 0.0], t.border.color())
+                .child(
+                    Avatar::new(id.to_string(), name.clone())
+                        .size(24)
+                        .backdrop(t.surface.color())
+                        .build(k),
+                )
+                .child(
+                    text(name)
+                        .font(type_::TITLE)
+                        .color(t.text.color())
+                        .grow(1.0),
+                )
+        }
+        // Home with nothing chosen: the empty state below says it all; a bar over it is clutter.
+        (Place::Home, None) => el().key("header-none").h(0.0),
+        _ => row()
+            .role("banner")
+            .label("No channel")
+            .w_full()
+            .h(HEADER_H)
+            .border_sides([0.0, 0.0, 1.0, 0.0], t.border.color()),
+    }
+}

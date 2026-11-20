@@ -1,0 +1,15 @@
+[package]
+name = "thehideout-design"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "thehideout's design language: tokens, kit mapping and basic controls, on Rune."
+
+# Platform-neutral: no fs, no windowing. Shared by the desktop, web and mobile apps.
+[dependencies]
+rune = { workspace = true }
+rune-kit = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

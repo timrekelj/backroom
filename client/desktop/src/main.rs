@@ -1,0 +1,43 @@
+//! thehideout desktop client, drawn with Rune. Every screen is built from `thehideout-design`
+//! and driven through the `Backend` trait: `real.rs` talks to the server, `fake.rs` is the
+//! deterministic stand-in (`--fake`, and every headless `--scene`/`--snap` run).
+//!
+//! Headless review: `./render.sh` writes the scenes in `scenes.rs` to `snapshots/`.
+
+#![forbid(unsafe_code)]
+
+mod app;
+mod apply;
+mod backend;
+mod fake;
+mod fake_lines;
+mod forms;
+mod format;
+mod look;
+mod real;
+mod scenes;
+mod state;
+#[cfg(test)]
+mod tests;
+mod ui;
+
+use rune::{AppSpec, Titlebar};
+use thehideout_design::{FAMILIES, FONTS};
+
+fn main() {
+    rune::prewarm_gpu();
+    // The titlebar is drawn by the view (a drag band at the top, see `ui::shell`); macOS keeps its
+    // traffic lights centred in it, Windows gets caption buttons, Linux keeps its native frame.
+    rune::App::new(AppSpec::<app::App> {
+        fonts: FONTS,
+        families: FAMILIES,
+        min_size: Some((800.0, 600.0)),
+        scenes: scenes::SCENES,
+        setup: Some(app::setup),
+        poll: Some(app::poll),
+        on_key: Some(app::on_key),
+        ..AppSpec::new("thehideout", (1280.0, 800.0), app::init, app::view)
+    })
+    .titlebar(Titlebar::new(ui::shell::TITLEBAR))
+    .run();
+}

@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["design", "gallery", "desktop", "api"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "beffc254ef86adc59c090018ebb958dfc7990789", default-features = true }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "beffc254ef86adc59c090018ebb958dfc7990789", default-features = true }
+thehideout-design = { path = "design" }
+thehideout-api = { path = "api" }
+
+# Rune's vendored crates, as its workspace patches them (a dependency's `[patch]` doesn't
+# apply to the workspace that depends on it, so apps that build Rune repeat these).
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "beffc254ef86adc59c090018ebb958dfc7990789" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "beffc254ef86adc59c090018ebb958dfc7990789" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "beffc254ef86adc59c090018ebb958dfc7990789" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "beffc254ef86adc59c090018ebb958dfc7990789" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "beffc254ef86adc59c090018ebb958dfc7990789" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "beffc254ef86adc59c090018ebb958dfc7990789" }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

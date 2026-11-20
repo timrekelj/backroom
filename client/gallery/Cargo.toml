@@ -1,0 +1,10 @@
+[package]
+name = "thehideout-gallery"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+rune = { workspace = true, features = ["tooling"] }
+rune-kit = { workspace = true }
+thehideout-design = { workspace = true }

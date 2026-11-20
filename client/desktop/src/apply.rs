@@ -1,0 +1,622 @@
+//! Replies and gateway events become state here. `apply` is the only way data enters
+//! `AppState`: pure transitions plus the few `Tx` hints (which commits animate), so the dedupe
+//! and pagination rules are unit-tested without a window.
+
+use std::time::Duration;
+
+use rune::Tx;
+use thehideout_api::{ApiError, Channel, DmChannel, Event, GatewayUpdate, Guild, Message, Page};
+use thehideout_design::components::{ConnectionStatus, ToastKind};
+
+use crate::backend::{Command, Initial, Reply, Session};
+use crate::state::{AppState, chat_id_of, Delivery, DialogKind, Fetch, Marker, Phase, Place, Screen, Stream, auth_error, sentence};
+
+pub fn apply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
+    match reply {
+        Reply::Auth(Ok(session)) => signed_in(s, session),
+        Reply::Auth(Err(e)) => auth_failed(s, &e),
+        Reply::Initial(Ok(init)) => {
+            initial(s, init);
+            // Auth fades into the shell; everything inside it rides that one entrance.
+            tx.animated();
+        }
+        // A resumed session that is refused leaves the form without a complaint: the user typed
+        // nothing wrong. (An interactive sign-in has the form busy.)
+        Reply::Initial(Err(ApiError::Unauthenticated)) if s.auth.phase != Phase::Busy => s.reset(None),
+        Reply::Initial(Err(e)) => auth_failed(s, &e),
+        Reply::Resume(Ok(None)) | Reply::Resume(Err(ApiError::Unauthenticated)) => s.reset(None),
+        Reply::Resume(Ok(Some((server, session)))) => {
+            s.auth.server.replace_text(&server);
+            signed_in(s, session);
+        }
+        Reply::Resume(Err(e)) => auth_failed(s, &e),
+        Reply::Refreshed(Ok(init)) => refreshed(s, init),
+        // Quiet: the lists stay as they were and the next gap tries again.
+        Reply::Refreshed(Err(_)) => {}
+        Reply::Channels { guild, result } => match result {
+            Ok(list) => set_channels(s, guild, list),
+            Err(e) => s.toast(ToastKind::Danger, format!("Couldn't load channels. {}", sentence(&e.to_string()))),
+        },
+        Reply::Messages { channel, before, result } => messages(s, channel, before, result, tx),
+        Reply::Sent { channel, nonce, result } => sent(s, channel, &nonce, result),
+        Reply::GuildCreated(r) => guild_done(s, r, DialogKind::CreateGuild, "Server created"),
+        Reply::GuildJoined(r) => guild_done(s, r, DialogKind::JoinGuild, "Joined the server"),
+        Reply::ChannelCreated(r) => match r {
+            Ok(c) => {
+                let guild = c.guild_id;
+                let name = c.name.clone();
+                add_channel(s, c.clone());
+                s.close_dialog();
+                if s.ui.place == Place::Guild(guild) {
+                    s.select_channel(c.id);
+                }
+                s.toast(ToastKind::Success, format!("Created #{name}"));
+            }
+            Err(e) => dialog_failed(s, &e),
+        },
+        Reply::Members { guild, result } => match result {
+            Ok(users) => {
+                let ids = users.iter().map(|u| u.id).collect();
+                for u in users {
+                    s.data.users.insert(u.id, u);
+                }
+                s.data.members.insert(guild, ids);
+            }
+            // Asked again the next time the guild is opened or a stranger speaks.
+            Err(_) => {
+                s.data.members_asked.remove(&guild);
+            }
+        },
+        Reply::DmOpened(r) => match r {
+            Ok(dm) => {
+                let id = dm.id;
+                let peer = s.dm_peer(&dm).map(|u| u.username.clone()).unwrap_or_default();
+                add_dm(s, dm);
+                s.close_dialog();
+                s.go_home();
+                s.select_channel(id);
+                s.toast(ToastKind::Success, format!("Opened a conversation with {peer}"));
+            }
+            Err(e) => dialog_failed(s, &e),
+        },
+        Reply::SignedOut => {}
+        Reply::Gateway(update) => gateway(s, update, tx),
+    }
+}
+
+fn signed_in(s: &mut AppState, session: Session) {
+    s.data.users.insert(session.me.id, session.me.clone());
+    s.session = Some(session);
+    // Stay on the form (busy) until the shell has its data, so it never shows empty.
+    s.outbox.push(Command::LoadInitial);
+}
+
+fn auth_failed(s: &mut AppState, e: &ApiError) {
+    s.reset(Some(auth_error(e)));
+}
+
+fn initial(s: &mut AppState, init: Initial) {
+    let Initial { me, guilds, channels, dms } = init;
+    if let Some(session) = &mut s.session {
+        session.me = me.clone();
+    }
+    s.data.users.insert(me.id, me);
+    s.data.guilds = guilds;
+    s.data.channels.clear();
+    for g in &s.data.guilds {
+        s.data.channels.insert(g.id, Vec::new());
+    }
+    for c in channels {
+        s.data.channels.entry(c.guild_id).or_default().push(c);
+    }
+    for dm in &dms {
+        for u in &dm.participants {
+            s.data.users.insert(u.id, u.clone());
+        }
+    }
+    s.data.dms = dms;
+    s.screen = Screen::Main;
+    s.auth.phase = Phase::Idle;
+    s.auth.password.clear();
+    s.ui.place = Place::Home;
+    match s.data.guilds.first().map(|g| g.id) {
+        Some(g) => s.go_guild(g),
+        None => s.go_home(),
+    }
+}
+
+/// The lists again after a gateway gap. Unlike `initial`, the place, the selection and the
+/// loaded history stay as they are.
+fn refreshed(s: &mut AppState, init: Initial) {
+    if s.screen != Screen::Main {
+        return;
+    }
+    let Initial { me, guilds, channels, dms } = init;
+    s.data.users.insert(me.id, me);
+    for dm in &dms {
+        for u in &dm.participants {
+            s.data.users.insert(u.id, u.clone());
+        }
+    }
+    s.data.channels.clear();
+    for g in &guilds {
+        s.data.channels.insert(g.id, Vec::new());
+    }
+    for c in channels {
+        s.data.channels.entry(c.guild_id).or_default().push(c);
+    }
+    s.data.guilds = guilds;
+    s.data.dms = dms;
+    // Members who joined while away: the open server asks now, the others when visited.
+    let open = match s.ui.place {
+        Place::Guild(g) => Some(g),
+        Place::Home => None,
+    };
+    s.data.members.retain(|g, _| Some(*g) == open);
+    s.data.members_asked.retain(|g| Some(*g) == open);
+    match open {
+        Some(g) if s.guild(g).is_none() => s.go_home(),
+        Some(g) => {
+            if s.current_channel().is_none()
+                && let Some(first) = s.channels_of(g).first().map(|c| c.id)
+            {
+                s.select_channel(first);
+            }
+            s.outbox.push(Command::LoadMembers { guild: g });
+            s.data.members_asked.insert(g);
+        }
+        None => {}
+    }
+}
+
+fn set_channels(s: &mut AppState, guild: u64, list: Vec<Channel>) {
+    s.data.channels.insert(guild, list);
+    if s.ui.place == Place::Guild(guild)
+        && s.current_channel().is_none()
+        && let Some(first) = s.channels_of(guild).first().map(|c| c.id)
+    {
+        s.select_channel(first);
+    }
+}
+
+fn add_channel(s: &mut AppState, c: Channel) {
+    let list = s.data.channels.entry(c.guild_id).or_default();
+    if !list.iter().any(|x| x.id == c.id) {
+        list.push(c);
+    }
+}
+
+fn add_dm(s: &mut AppState, dm: DmChannel) {
+    for u in &dm.participants {
+        s.data.users.insert(u.id, u.clone());
+    }
+    if !s.data.dms.iter().any(|d| d.id == dm.id) {
+        s.data.dms.push(dm);
+    }
+}
+
+fn add_guild(s: &mut AppState, g: Guild) {
+    if !s.data.guilds.iter().any(|x| x.id == g.id) {
+        s.data.guilds.push(g);
+    }
+}
+
+fn guild_done(s: &mut AppState, r: Result<Guild, ApiError>, kind: DialogKind, message: &str) {
+    match r {
+        Ok(g) => {
+            let id = g.id;
+            add_guild(s, g);
+            if matches!(s.ui.dialog.as_ref().map(|d| d.kind), Some(k) if k == kind) {
+                s.close_dialog();
+            }
+            s.go_guild(id);
+            s.toast(ToastKind::Success, message);
+        }
+        Err(e) => dialog_failed(s, &e),
+    }
+}
+
+fn dialog_failed(s: &mut AppState, e: &ApiError) {
+    let message = match e {
+        ApiError::NotFound => "That invite code doesn't match any server.".to_owned(),
+        ApiError::AlreadyExists => "You're already in that server.".to_owned(),
+        ApiError::PermissionDenied => "Only the owner can do that.".to_owned(),
+        ApiError::InvalidArgument(m) => sentence(m),
+        ApiError::Network(_) => "Can't reach the server.".to_owned(),
+        other => sentence(&other.to_string()),
+    };
+    match &mut s.ui.dialog {
+        Some(d) => {
+            d.phase = Phase::Idle;
+            d.error = Some(message);
+        }
+        None => s.toast(ToastKind::Danger, message),
+    }
+}
+
+fn messages(s: &mut AppState, channel: u64, before: Option<u64>, result: Result<Page<Message>, ApiError>, tx: &mut Tx) {
+    let me = s.my_id();
+    let Some(log) = s.data.logs.get_mut(&channel) else { return };
+    let page = match result {
+        Ok(p) => p,
+        Err(e) => {
+            // A failed refresh of what is shown is tried again on the next visit.
+            log.stale = before.is_none() && log.loaded;
+            if before.is_some() || log.fetch != Fetch::Older {
+                log.fetch = Fetch::Idle;
+            }
+            s.toast(ToastKind::Danger, format!("Couldn't load messages. {}", sentence(&e.to_string())));
+            return;
+        }
+    };
+    // Lands at once: a page arriving is data, not a reaction to the reader.
+    tx.instant();
+    // A refresh of the newest page doesn't end an older page's fetch that is still out.
+    if before.is_some() || log.fetch != Fetch::Older {
+        log.fetch = Fetch::Idle;
+    }
+    match before {
+        Some(_) => {
+            let first = log.messages.first().cloned();
+            if let Some(f) = &first {
+                log.breaks.push(f.id);
+            }
+            log.insert_page(page.items);
+            log.has_more = page.has_more;
+            if let Some(first_msg) = &first {
+                // Hold the row the reader was looking at while rows are added above it.
+                tx.keep_on_screen(format!("msg-{}", chat_id_of(first_msg, me)));
+            }
+        }
+        None => {
+            let newest_page_oldest = page.items.iter().map(|m| m.id).min();
+            let gap = log.loaded && matches!((newest_page_oldest, log.newest_id()), (Some(o), Some(n)) if o > n);
+            if !log.loaded || gap {
+                log.messages.clear();
+                log.has_more = page.has_more;
+            }
+            log.insert_page(page.items);
+            log.loaded = true;
+            log.stale = false;
+        }
+    }
+    log.oldest_id = log.messages.first().map(|m| m.id);
+    let strangers: Vec<Message> = log.messages.iter().filter(|m| !s.data.users.contains_key(&m.author_id)).cloned().collect();
+    for m in &strangers {
+        s.want_author(m);
+    }
+    resolve_marker(s, channel);
+}
+
+/// A "New" divider that was waiting for its history gets its place.
+fn resolve_marker(s: &mut AppState, channel: u64) {
+    let Marker::Pending { channel: c, unread } = s.ui.marker else { return };
+    if c != channel {
+        return;
+    }
+    if let Some(log) = s.data.logs.get(&channel) {
+        let at = log.messages.len().checked_sub(unread as usize + 1);
+        s.ui.marker = Marker::After { channel, id: at.map(|i| log.messages[i].id) };
+    }
+}
+
+fn sent(s: &mut AppState, channel: u64, nonce: &str, result: Result<Message, ApiError>) {
+    match result {
+        Ok(m) => {
+            s.data.outgoing.retain(|o| o.nonce != nonce);
+            if let Some(log) = s.data.logs.get_mut(&channel).filter(|l| l.loaded) {
+                log.insert(m);
+            }
+        }
+        Err(e) => {
+            if let Some(o) = s.data.outgoing.iter_mut().find(|o| o.nonce == nonce) {
+                o.state = Delivery::Failed;
+            }
+            if !e.is_transient() {
+                s.toast(ToastKind::Danger, format!("Message not sent. {}", sentence(&e.to_string())));
+            }
+        }
+    }
+}
+
+fn gateway(s: &mut AppState, update: GatewayUpdate, tx: &mut Tx) {
+    match update {
+        GatewayUpdate::Connecting => {
+            if s.ui.connection != ConnectionStatus::Connected {
+                s.ui.connection = ConnectionStatus::Connecting;
+            }
+        }
+        GatewayUpdate::Connected => {
+            s.ui.connection = ConnectionStatus::Connected;
+            // Events missed while disconnected aren't replayed: fetch them again.
+            if std::mem::replace(&mut s.ui.stream, Stream::Live) == Stream::Interrupted {
+                s.resync();
+            }
+        }
+        GatewayUpdate::Disconnected { retry_in, .. } => {
+            s.ui.stream = Stream::Interrupted;
+            s.ui.connection = ConnectionStatus::Reconnecting(retry_in.max(Duration::from_secs(1)).as_secs() as u32);
+        }
+        GatewayUpdate::AuthExpired => s.reset(Some(auth_error(&ApiError::Unauthenticated))),
+        GatewayUpdate::Event(e) => event(s, e, tx),
+    }
+}
+
+fn event(s: &mut AppState, e: Event, tx: &mut Tx) {
+    match e {
+        Event::Heartbeat => {}
+        Event::GuildUpdated(g) => {
+            if let Some(slot) = s.data.guilds.iter_mut().find(|x| x.id == g.id) {
+                *slot = g;
+            }
+        }
+        Event::ChannelUpdated(c) => {
+            if let Some(slot) = s.data.channels.get_mut(&c.guild_id).and_then(|l| l.iter_mut().find(|x| x.id == c.id)) {
+                *slot = c;
+            }
+        }
+        Event::UserUpdated(u) => {
+            s.data.users.insert(u.id, u);
+        }
+        // handled in the sections/roles task
+        Event::LayoutUpdated { .. } | Event::RolesUpdated { .. } | Event::MemberUpdated { .. } => {}
+        Event::ChannelCreated(c) => add_channel(s, c),
+        Event::DmOpened(dm) => add_dm(s, dm),
+        Event::GuildMemberJoined { guild_id, user } => {
+            // Before the list is loaded the join is part of it; a list of one would pass for it.
+            if let Some(list) = s.data.members.get_mut(&guild_id)
+                && !list.contains(&user.id)
+            {
+                list.push(user.id);
+            }
+            s.data.users.insert(user.id, user);
+        }
+        Event::MessageCreated(m) => {
+            if message_created(s, m) {
+                // A live arrival in the open channel enters like a sent one, and a new mention
+                // badge pops.
+                tx.animated();
+            }
+        }
+    }
+}
+
+/// Files an incoming message. Returns whether its commit should animate: it landed in the
+/// channel being read, or it raised a mention badge.
+pub fn message_created(s: &mut AppState, m: Message) -> bool {
+    let channel = m.channel_id;
+    if !m.nonce.is_empty() {
+        s.data.outgoing.retain(|o| o.nonce != m.nonce);
+    }
+    s.want_author(&m);
+    let visible = s.screen == Screen::Main && s.current_channel() == Some(channel);
+    let mine = m.author_id == s.my_id();
+    let mention = !mine && (s.dm(channel).is_some() || s.mentions_me(&m.content));
+    if let Some(log) = s.data.logs.get_mut(&channel).filter(|l| l.loaded) {
+        log.insert(m);
+    }
+    let mut animate = visible;
+    if visible {
+        if !s.ui.at_bottom && !mine {
+            s.ui.unseen_below += 1;
+        }
+    } else if !mine {
+        let u = s.ui.unread.entry(channel).or_default();
+        u.count += 1;
+        u.mentions += u32::from(mention);
+        animate = mention;
+    }
+    animate
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use thehideout_api::User;
+
+    use super::*;
+    use crate::format::Tz;
+    use crate::state::Unread;
+
+    fn user(id: u64, name: &str) -> User {
+        User { id, username: name.into(), created_at: UNIX_EPOCH, avatar: None, is_admin: false }
+    }
+
+    fn msg(id: u64, channel: u64, author: u64, content: &str, nonce: &str) -> Message {
+        Message { id, channel_id: channel, guild_id: Some(1), author_id: author, content: content.into(), created_at: UNIX_EPOCH + Duration::from_secs(id), edited_at: None, nonce: nonce.into() }
+    }
+
+    fn state() -> AppState {
+        let mut s = AppState::new(|| UNIX_EPOCH, Tz::Fixed(0));
+        let me = user(1, "tim");
+        s.session = Some(Session { token: "t".into(), me: me.clone() });
+        s.data.users.insert(1, me);
+        s.data.users.insert(2, user(2, "ana"));
+        s.data.guilds.push(Guild { id: 1, name: "G".into(), owner_id: 1, invite_code: "abc".into(), created_at: UNIX_EPOCH, icon: None });
+        let channel = |id: u64, name: &str, position: i32| Channel {
+            id,
+            guild_id: 1,
+            name: name.into(),
+            created_at: UNIX_EPOCH,
+            section_id: None,
+            position,
+            icon: Default::default(),
+            color: Default::default(),
+            topic: String::new(),
+        };
+        s.data.channels.insert(1, vec![channel(10, "general", 0), channel(11, "dev", 1)]);
+        s.screen = Screen::Main;
+        s.ui.place = Place::Guild(1);
+        s.ui.guild_channel.insert(1, 10);
+        s
+    }
+
+    fn loaded(s: &mut AppState, channel: u64, ids: &[u64]) {
+        let log = s.data.logs.entry(channel).or_default();
+        log.insert_page(ids.iter().map(|&i| msg(i, channel, 2, "x", "")).collect());
+        log.loaded = true;
+    }
+
+    #[test]
+    fn the_reply_and_the_gateway_echo_make_one_message() {
+        let mut s = state();
+        loaded(&mut s, 10, &[1, 2]);
+        assert!(s.send("hello"));
+        let nonce = s.data.outgoing[0].nonce.clone();
+        // Echo first, then the RPC reply.
+        message_created(&mut s, msg(3, 10, 1, "hello", &nonce));
+        assert!(s.data.outgoing.is_empty(), "the echo settles the pending message");
+        sent(&mut s, 10, &nonce, Ok(msg(3, 10, 1, "hello", &nonce)));
+        assert_eq!(s.log(10).unwrap().messages.iter().filter(|m| m.id == 3).count(), 1);
+        // Reply first, then the echo.
+        assert!(s.send("again"));
+        let nonce = s.data.outgoing[0].nonce.clone();
+        sent(&mut s, 10, &nonce, Ok(msg(4, 10, 1, "again", &nonce)));
+        message_created(&mut s, msg(4, 10, 1, "again", &nonce));
+        assert_eq!(s.log(10).unwrap().messages.len(), 4);
+        assert!(s.data.outgoing.is_empty());
+    }
+
+    #[test]
+    fn a_failed_send_waits_for_retry() {
+        let mut s = state();
+        loaded(&mut s, 10, &[1]);
+        s.send("hi");
+        let nonce = s.data.outgoing[0].nonce.clone();
+        s.outbox.clear();
+        sent(&mut s, 10, &nonce, Err(ApiError::Network("down".into())));
+        assert_eq!(s.data.outgoing[0].state, Delivery::Failed);
+        s.retry(&nonce);
+        assert_eq!(s.data.outgoing[0].state, Delivery::Pending);
+        assert_eq!(s.outbox, vec![Command::Send { channel: 10, content: "hi".into(), nonce }]);
+    }
+
+    #[test]
+    fn unread_counts_only_hidden_channels_and_visiting_clears_them() {
+        let mut s = state();
+        loaded(&mut s, 10, &[1]);
+        loaded(&mut s, 11, &[1, 2, 3]);
+        message_created(&mut s, msg(5, 11, 2, "plain", ""));
+        message_created(&mut s, msg(6, 11, 2, "hey @tim", ""));
+        message_created(&mut s, msg(7, 10, 2, "visible", ""));
+        assert_eq!(s.unread_of(11), Unread { count: 2, mentions: 1 });
+        assert_eq!(s.unread_of(10), Unread::default());
+        assert_eq!(s.guild_unread(1).mentions, 1);
+        s.select_channel(11);
+        assert_eq!(s.unread_of(11), Unread::default());
+        // The divider sits after the last message that was already read.
+        assert_eq!(s.ui.marker, Marker::After { channel: 11, id: Some(3) });
+        s.select_channel(10);
+        assert_eq!(s.ui.marker, Marker::None);
+    }
+
+    #[test]
+    fn older_pages_prepend_and_stop_at_the_end() {
+        let mut s = state();
+        loaded(&mut s, 10, &[10, 11, 12]);
+        {
+            let log = s.data.logs.get_mut(&10).unwrap();
+            log.has_more = true;
+        }
+        s.outbox.clear();
+        s.load_older(10);
+        s.load_older(10);
+        assert_eq!(s.outbox, vec![Command::LoadMessages { channel: 10, before: Some(10) }], "asked once while one is in flight");
+        let log = s.data.logs.get_mut(&10).unwrap();
+        log.insert_page(vec![msg(9, 10, 2, "a", ""), msg(8, 10, 2, "b", "")]);
+        log.fetch = Fetch::Idle;
+        log.has_more = false;
+        assert_eq!(log.oldest_id, Some(8));
+        assert_eq!(log.messages.iter().map(|m| m.id).collect::<Vec<_>>(), vec![8, 9, 10, 11, 12]);
+        s.outbox.clear();
+        s.load_older(10);
+        assert!(s.outbox.is_empty(), "no more pages");
+    }
+
+    #[test]
+    fn entering_an_unloaded_channel_fetches_it_once() {
+        let mut s = state();
+        s.select_channel(11);
+        s.select_channel(10);
+        s.select_channel(11);
+        let loads = s.outbox.iter().filter(|c| matches!(c, Command::LoadMessages { .. })).count();
+        assert_eq!(loads, 2, "one per channel, not one per visit");
+    }
+
+    #[test]
+    fn drafts_belong_to_their_channel() {
+        let mut s = state();
+        s.composer_mut().replace_text("draft in general");
+        s.select_channel(11);
+        assert_eq!(s.composer().text, "");
+        s.select_channel(10);
+        assert_eq!(s.composer().text, "draft in general");
+    }
+
+    #[test]
+    fn over_long_and_blank_messages_are_refused() {
+        let mut s = state();
+        assert!(!s.send("   "));
+        assert!(!s.send(&"x".repeat(thehideout_api::MAX_MESSAGE_CHARS + 1)));
+        assert!(s.send(&"x".repeat(thehideout_api::MAX_MESSAGE_CHARS)));
+    }
+
+    #[test]
+    fn a_stranger_asks_for_the_guild_members_once() {
+        let mut s = state();
+        s.outbox.clear();
+        message_created(&mut s, msg(5, 10, 9, "hi", ""));
+        message_created(&mut s, msg(6, 10, 9, "again", ""));
+        assert_eq!(s.outbox, vec![Command::LoadMembers { guild: 1 }]);
+        // A refused answer allows another try; a known author never asks.
+        apply(&mut s, Reply::Members { guild: 1, result: Err(ApiError::Network("x".into())) }, &mut Tx::default());
+        message_created(&mut s, msg(7, 10, 9, "hm", ""));
+        assert_eq!(s.outbox.len(), 2);
+        apply(&mut s, Reply::Members { guild: 1, result: Ok(vec![user(9, "zed")]) }, &mut Tx::default());
+        message_created(&mut s, msg(8, 10, 9, "ok", ""));
+        assert_eq!(s.outbox.len(), 2);
+        assert_eq!(s.user_name(9), "zed");
+    }
+
+    #[test]
+    fn resuming_signs_in_or_shows_the_form() {
+        let mut tx = Tx::default();
+        let mut s = AppState::new(|| UNIX_EPOCH, Tz::Fixed(0));
+        s.screen = Screen::Loading;
+        let session = Session { token: "t".into(), me: user(1, "tim") };
+        apply(&mut s, Reply::Resume(Ok(Some(("http://example:1".into(), session)))), &mut tx);
+        assert_eq!((s.screen, s.server_url().as_str()), (Screen::Loading, "http://example:1"));
+        assert_eq!(s.outbox, vec![Command::LoadInitial]);
+        // The token is refused when the data is fetched: back to the form, no complaint.
+        apply(&mut s, Reply::Initial(Err(ApiError::Unauthenticated)), &mut tx);
+        assert_eq!((s.screen, s.auth.error.clone()), (Screen::Auth, None));
+        s.screen = Screen::Loading;
+        apply(&mut s, Reply::Resume(Ok(None)), &mut tx);
+        assert_eq!(s.screen, Screen::Auth);
+        s.screen = Screen::Loading;
+        apply(&mut s, Reply::Resume(Err(ApiError::Network("down".into()))), &mut tx);
+        assert_eq!((s.screen, s.auth.error.is_some()), (Screen::Auth, true));
+    }
+
+    #[test]
+    fn signing_out_still_tells_the_backend() {
+        let mut s = state();
+        s.outbox.clear();
+        s.sign_out();
+        assert_eq!((s.screen, s.outbox.clone()), (Screen::Auth, vec![Command::SignOut]));
+    }
+
+    #[test]
+    fn dialog_validation_sends_nothing() {
+        let mut s = state();
+        s.open_dialog(DialogKind::CreateGuild);
+        s.submit_dialog();
+        assert!(s.outbox.is_empty());
+        assert!(s.ui.dialog.as_ref().unwrap().error.is_some());
+        s.open_dialog(DialogKind::NewDm);
+        s.ui.dialog.as_mut().unwrap().input.replace_text("@Ana");
+        s.submit_dialog();
+        assert_eq!(s.outbox, vec![Command::OpenDm { user_id: 2 }]);
+    }
+}

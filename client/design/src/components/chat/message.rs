@@ -1,0 +1,348 @@
+//! MessageGroup: an avatar, the author and time, and one or more bodies. Consecutive messages
+//! by one author within [`GROUP_WINDOW_SECS`] share a group (see [`MessageGroup::runs`]);
+//! follow-ups show their time in the gutter on hover.
+//!
+//! Delivery: `Pending` is dimmed (no spinner), `Sent` is plain, `Failed` adds a danger line with
+//! a Retry link. A message that mentions the current user takes a faint accent wash and a 2pt
+//! accent bar on its left edge. Hovering a message shows a floating bar (reply, copy, more).
+//!
+//! Motion: a newly mounted message row fades in and rises 6pt on `motion::CONTROL`; pending to
+//! sent only animates opacity; existing rows only move to make room. Keep a message's `id`
+//! stable across pending -> sent (use a client nonce) or the row remounts and replays the entrance.
+
+use std::rc::Rc;
+
+use rune::{El, SpringPair, Transition, col, el, row, text};
+use rune_kit::Kit;
+
+use super::body;
+use crate::components::{Avatar, IconButton, Size};
+use crate::icons::{COPY, DOTS_THREE, REPLY};
+use crate::theme_of;
+use crate::tokens::{motion, radius, type_};
+
+/// Messages by one author this close together (seconds) collapse into one group.
+pub const GROUP_WINDOW_SECS: i64 = 5 * 60;
+/// Opacity of a message awaiting its ack.
+const PENDING_OPACITY: f32 = 0.55;
+const GUTTER: f32 = 32.0;
+/// Space above a group: 12 here plus 4 of row padding is ~16 between groups, while rows inside a
+/// group sit 2pt apart, so a run reads as one block.
+const GROUP_GAP: f32 = 12.0;
+/// The hover bar: a 24pt IconButton, 2pt padding and a 1pt border around it.
+const ACTION_BAR_H: f32 = 24.0 + 2.0 * 2.0 + 2.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DeliveryState {
+    #[default]
+    Sent,
+    /// Sent, awaiting the server's ack.
+    Pending,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChatMessage {
+    pub id: String,
+    pub author_id: String,
+    pub author_name: String,
+    /// Unix seconds, for grouping.
+    pub at: i64,
+    /// Display time ("14:03"), shown in the header and the follow-up gutter.
+    pub time_label: String,
+    pub body: String,
+    pub delivery: DeliveryState,
+    pub mentions_me: bool,
+}
+
+/// Whether `next` joins the group `prev` ends: same author, at most five minutes later.
+pub fn collapses_into(prev: &ChatMessage, next: &ChatMessage) -> bool {
+    prev.author_id == next.author_id && (0..=GROUP_WINDOW_SECS).contains(&(next.at - prev.at))
+}
+
+type Hook = Box<dyn Fn(El, &str) -> El>;
+
+pub struct MessageGroup {
+    messages: Vec<ChatMessage>,
+    show_actions: Option<String>,
+    reply: Option<Hook>,
+    copy: Option<Hook>,
+    more: Option<Hook>,
+    retry: Option<Hook>,
+}
+
+fn hook<S: 'static>(f: impl Fn(&mut S, &str) + 'static) -> Hook {
+    let f = Rc::new(f);
+    Box::new(move |e, id| {
+        let (f, id) = (f.clone(), id.to_owned());
+        e.on_press(move |s: &mut S| f(s, &id))
+    })
+}
+
+impl MessageGroup {
+    /// `messages` must be one run (see [`MessageGroup::runs`]); the first sets the header.
+    pub fn new(messages: &[ChatMessage]) -> MessageGroup {
+        MessageGroup {
+            messages: messages.to_vec(),
+            show_actions: None,
+            reply: None,
+            copy: None,
+            more: None,
+            retry: None,
+        }
+    }
+
+    /// Splits a transcript into runs that each become one group.
+    pub fn runs(messages: &[ChatMessage]) -> Vec<&[ChatMessage]> {
+        let mut out = Vec::new();
+        let mut start = 0;
+        for i in 1..=messages.len() {
+            if i == messages.len() || !collapses_into(&messages[i - 1], &messages[i]) {
+                out.push(&messages[start..i]);
+                start = i;
+            }
+        }
+        out.retain(|r| !r.is_empty());
+        out
+    }
+
+    /// Forces the hover state (highlight, action bar, gutter time) on message `id`.
+    pub fn force_hover(mut self, id: impl Into<String>) -> Self {
+        self.show_actions = Some(id.into());
+        self
+    }
+    pub fn on_reply<S: 'static>(mut self, f: impl Fn(&mut S, &str) + 'static) -> Self {
+        self.reply = Some(hook(f));
+        self
+    }
+    pub fn on_copy<S: 'static>(mut self, f: impl Fn(&mut S, &str) + 'static) -> Self {
+        self.copy = Some(hook(f));
+        self
+    }
+    pub fn on_more<S: 'static>(mut self, f: impl Fn(&mut S, &str) + 'static) -> Self {
+        self.more = Some(hook(f));
+        self
+    }
+    pub fn on_retry<S: 'static>(mut self, f: impl Fn(&mut S, &str) + 'static) -> Self {
+        self.retry = Some(hook(f));
+        self
+    }
+
+    pub fn build(self, k: &Kit) -> El {
+        let Some(first) = self.messages.first() else {
+            return col();
+        };
+        let mut g = col()
+            .key(format!("group-{}", first.id))
+            .w_full()
+            .mt(GROUP_GAP)
+            .transition(Transition::none());
+        for (i, m) in self.messages.iter().enumerate() {
+            g = g.child(self.row(k, m, i == 0));
+        }
+        g
+    }
+
+    fn row(&self, k: &Kit, m: &ChatMessage, head: bool) -> El {
+        let t = theme_of(k);
+        let forced = self.show_actions.as_deref() == Some(m.id.as_str());
+        let gutter = if head {
+            Avatar::new(m.author_id.clone(), m.author_name.clone())
+                .size(32)
+                .build(k)
+        } else {
+            let stamp = text(m.time_label.clone())
+                .font(type_::CAPTION)
+                .color(t.text_muted.color());
+            let stamp = if forced {
+                stamp
+            } else {
+                stamp.group_opacity(0.0, 1.0)
+            };
+            row()
+                .w(GUTTER)
+                .h(type_::BODY.line_px())
+                .center()
+                .child(stamp)
+        };
+
+        let mut content = col().grow(1.0).shrink().min_w(0.0).gap(2.0);
+        if head {
+            content = content.child(
+                row()
+                    .gap(8.0)
+                    .center_y()
+                    .child(
+                        text(m.author_name.clone())
+                            .font(type_::BODY_STRONG)
+                            .color(t.text.color()),
+                    )
+                    .child(
+                        text(m.time_label.clone())
+                            .font(type_::CAPTION)
+                            .color(t.text_muted.color()),
+                    ),
+            );
+        }
+        let dim = if m.delivery == DeliveryState::Pending {
+            PENDING_OPACITY
+        } else {
+            1.0
+        };
+        content = content.child(
+            body::render(k, &m.body)
+                .key("body")
+                .opacity(dim)
+                .opacity_motion(motion::CONTROL),
+        );
+        if m.delivery == DeliveryState::Failed {
+            let mut retry = text("Retry")
+                .font(type_::CONTROL_STRONG)
+                .color(t.danger.color())
+                .role("button")
+                .label("Retry sending")
+                .focusable(true)
+                .hover(t.hover.color());
+            if let Some(h) = &self.retry {
+                retry = h(retry, &m.id);
+            }
+            content = content.child(
+                row()
+                    .key("failed")
+                    .gap(4.0)
+                    .center_y()
+                    .child(
+                        text("Failed to send \u{00b7}")
+                            .font(type_::CONTROL)
+                            .color(t.danger.color()),
+                    )
+                    .child(retry),
+            );
+        }
+
+        let enter = Transition::offset(0.0, 6.0)
+            .combined(Transition::opacity())
+            .springs(SpringPair::new(motion::CONTROL, motion::CONTROL));
+        let mut r = row()
+            .key(format!("msg-{}", m.id))
+            .w_full()
+            .px(16.0)
+            .pt(if head { 3.0 } else { 1.0 })
+            .pb(1.0)
+            .gap(12.0)
+            .items_start()
+            .hover_group()
+            .transition(Transition::asymmetric(enter, Transition::none()))
+            .token_motion(motion::CONTROL);
+        if m.mentions_me {
+            r = r.fill(t.accent_wash.color()).child(
+                el().key("mention-bar")
+                    .absolute(0.0, 0.0)
+                    .w(2.0)
+                    .h_full()
+                    .fill(t.accent.color())
+                    .a11y_hidden(),
+            );
+        }
+        r = if forced {
+            r.fill(crate::components::util::over(
+                t.hover.color(),
+                if m.mentions_me {
+                    t.accent_wash.color()
+                } else {
+                    rune::Color::TRANSPARENT
+                },
+            ))
+        } else {
+            r.hover(t.hover.color())
+        };
+        r = r.child(gutter).child(content);
+        r.child(self.actions(k, &m.id, forced))
+    }
+
+    fn actions(&self, k: &Kit, id: &str, forced: bool) -> El {
+        let t = theme_of(k);
+        let btn = |g: &'static rune::Icon, label: &str, h: &Option<Hook>| {
+            let b = IconButton::new(g, label.to_owned()).size(Size::Sm);
+            let b = b.build(k);
+            match h {
+                Some(h) => h(b, id),
+                None => b,
+            }
+        };
+        let mut bar = row()
+            .key("actions")
+            .padding(2.0)
+            .gap(2.0)
+            .radius(radius::MD)
+            .fill(t.surface_overlay.color())
+            .border(1.0, t.border.color())
+            .child(btn(&REPLY, "Reply", &self.reply))
+            .child(btn(&COPY, "Copy text", &self.copy))
+            .child(btn(&DOTS_THREE, "More", &self.more));
+        bar = k.elevate(bar, &k.elevation.floating);
+        if !forced {
+            bar = bar.group_opacity(0.0, 1.0);
+        }
+        // Its bottom edge sits 3pt inside the row's top: over the row above's padding (as Discord's
+        // bar does) and clear of this row's own text.
+        row()
+            .absolute(0.0, -ACTION_BAR_H + 3.0)
+            .w_full()
+            .pr(16.0)
+            .justify_end()
+            .child(bar)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(id: &str, who: &str, at: i64) -> ChatMessage {
+        ChatMessage {
+            id: id.into(),
+            author_id: who.into(),
+            author_name: who.into(),
+            at,
+            time_label: String::new(),
+            body: String::new(),
+            delivery: DeliveryState::Sent,
+            mentions_me: false,
+        }
+    }
+
+    #[test]
+    fn same_author_within_five_minutes_collapses() {
+        assert!(collapses_into(
+            &m("1", "a", 0),
+            &m("2", "a", GROUP_WINDOW_SECS)
+        ));
+        assert!(!collapses_into(
+            &m("1", "a", 0),
+            &m("2", "a", GROUP_WINDOW_SECS + 1)
+        ));
+        assert!(!collapses_into(&m("1", "a", 0), &m("2", "b", 10)));
+        assert!(
+            !collapses_into(&m("1", "a", 10), &m("2", "a", 0)),
+            "out of order never joins"
+        );
+    }
+
+    #[test]
+    fn runs_split_on_author_and_on_gaps() {
+        let msgs = [
+            m("1", "a", 0),
+            m("2", "a", 60),
+            m("3", "b", 90),
+            m("4", "a", 100),
+            m("5", "a", 1000),
+        ];
+        let runs: Vec<Vec<&str>> = MessageGroup::runs(&msgs)
+            .iter()
+            .map(|r| r.iter().map(|m| m.id.as_str()).collect())
+            .collect();
+        assert_eq!(runs, vec![vec!["1", "2"], vec!["3"], vec!["4"], vec!["5"]]);
+        assert!(MessageGroup::runs(&[]).is_empty());
+    }
+}
