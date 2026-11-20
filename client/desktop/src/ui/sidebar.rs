@@ -5,10 +5,10 @@
 use rune::{col, icon, row, text, El, ScrollSpec, SpringPair, Transition};
 use rune_kit::{Kit, Menu, MenuItem};
 use thehideout_design::components::{
-    Avatar, ChannelRow, ConnectionPill, ConnectionStatus, IconButton, NavRow, Presence, SidebarSection,
+    Avatar, ConnectionPill, ConnectionStatus, IconButton, NavRow, Presence, SidebarSection,
     FOOTER_H, HEADER_H,
 };
-use thehideout_design::icons::{CHEVRON_DOWN, GEAR, PLUS, SIGN_OUT, USER_PLUS};
+use thehideout_design::icons::{CHEVRON_DOWN, FOLDER_PLUS, GEAR, PLUS, SIGN_OUT, USER_PLUS};
 use thehideout_design::{icon as size, motion, theme_of, type_};
 
 use crate::app::App;
@@ -24,7 +24,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
     let fade = Transition::opacity().springs(SpringPair::new(motion::CONTROL, motion::CONTROL));
     let content = match a.state.ui.place {
         Place::Home => home_rows(a, k),
-        Place::Guild(g) => channel_rows(a, k, g),
+        Place::Guild(g) => super::channels::build(a, k, layer, g),
     };
     let body = col()
         .key("sidebar-body")
@@ -71,7 +71,7 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
                 ),
         );
     };
-    let (id, owner) = (g.id, g.owner_id == a.state.my_id());
+    let (id, manage) = (g.id, a.state.can_manage_channels(g.id));
     let trigger = row()
         .key("guild-header")
         .role("button")
@@ -117,9 +117,17 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
         .item(
             MenuItem::new("Create channel")
                 .icon(&PLUS)
-                .disabled(!owner)
+                .disabled(!manage)
                 .on_select(move |a: &mut App| {
                     a.act(|s| s.open_dialog(DialogKind::CreateChannel { guild: id }))
+                }),
+        )
+        .item(
+            MenuItem::new("Create section")
+                .icon(&FOLDER_PLUS)
+                .disabled(!manage)
+                .on_select(move |a: &mut App| {
+                    a.act(|s| s.open_dialog(DialogKind::CreateSection { guild: id }))
                 }),
         )
         .open(a.state.ui.menu == MenuState::Guild)
@@ -127,38 +135,6 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
         .on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
         .build(k, layer);
     line(row().w_full().child(menu))
-}
-
-fn channel_rows(a: &App, k: &Kit, guild: u64) -> El {
-    let s = &a.state;
-    let owner = s.guild(guild).is_some_and(|g| g.owner_id == s.my_id());
-    let group = format!("channels-{guild}");
-    let mut list = SidebarSection::new("Text channels", s.ui.channels_open)
-        .on_toggle(|a: &mut App| a.state.ui.channels_open = !a.state.ui.channels_open);
-    if owner {
-        list = list.add_label("Create channel").on_add(move |a: &mut App| {
-            a.act(|s| s.open_dialog(DialogKind::CreateChannel { guild }))
-        });
-    }
-    for c in s.channels_of(guild) {
-        let u = s.unread_of(c.id);
-        let id = c.id;
-        list = list.child(
-            ChannelRow::new(c.name.clone())
-                .highlight_group(group.clone())
-                .selected(s.current_channel() == Some(id))
-                .unread(u.count > 0)
-                .mentions(u.mentions)
-                .on_press(move |a: &mut App| a.act(|s| s.select_channel(id)))
-                .build(k),
-        );
-    }
-    col()
-        .key("channel-list")
-        .w_full()
-        .padding(8.0)
-        .gap(8.0)
-        .child(list.build(k))
 }
 
 fn home_rows(a: &App, k: &Kit) -> El {

@@ -4,12 +4,12 @@
 use rune::{col, el, row, text, El};
 use rune_kit::Kit;
 use thehideout_design::components::{Avatar, ChannelHeader, IconButton, HEADER_H};
-use thehideout_design::icons::USERS;
-use thehideout_design::{radius, theme_of, type_};
+use thehideout_design::icons::{catalog, GEAR, HASH, USERS};
+use thehideout_design::{palette_color, radius, theme_of, type_};
 
 use super::{composer, members, rail, settings, sidebar, transcript};
 use crate::app::App;
-use crate::state::Place;
+use crate::state::{DialogKind, Place};
 
 /// What the window's width allows: the sidebar is 240 from 1100pt up and 208 below, and the member
 /// panel is only offered from 1000pt (below that the transcript would be too narrow).
@@ -111,8 +111,25 @@ fn header(a: &App, k: &Kit, lay: Layout) -> El {
         .key("members-toggle");
     let name = s.current_channel_name();
     match (s.ui.place, name) {
-        (Place::Guild(_), Some(name)) => {
-            let h = ChannelHeader::new(name);
+        (Place::Guild(g), Some(name)) => {
+            let mut h = ChannelHeader::new(name);
+            if let Some(c) = s.current_guild_channel() {
+                let glyph = catalog::by_name(c.icon.as_str()).unwrap_or(&HASH);
+                h = h.glyph(glyph, palette_color(c.color.as_key(), t));
+                if !c.topic.is_empty() {
+                    h = h.topic(c.topic.clone());
+                }
+                if s.can_manage_channels(g) {
+                    let id = c.id;
+                    h = h.action(
+                        IconButton::new(&GEAR, "Channel settings")
+                            .size(thehideout_design::components::Size::Md)
+                            .on_press(move |a: &mut App| a.act(|s| s.open_dialog(DialogKind::ChannelSettings { guild: g, channel: id })))
+                            .build(k)
+                            .key("channel-settings-button"),
+                    );
+                }
+            }
             (if lay.members { h.action(toggle) } else { h }).build(k)
         }
         (Place::Home, Some(name)) => {

@@ -45,6 +45,11 @@ pub static PLUS: Icon = Icon {
     view: 256.0,
     body: r##"<path d="M208,32H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32ZM184,136H136v48a8,8,0,0,1-16,0V136H72a8,8,0,0,1,0-16h48V72a8,8,0,0,1,16,0v48h48a8,8,0,0,1,0,16Z"/>"##,
 };
+pub static FOLDER_PLUS: Icon = Icon {
+    name: "folder-plus",
+    view: 256.0,
+    body: r##"<path d="M216,72H131.31L104,44.69A15.88,15.88,0,0,0,92.69,40H40A16,16,0,0,0,24,56V200.62A15.41,15.41,0,0,0,39.39,216h177.5A15.13,15.13,0,0,0,232,200.89V88A16,16,0,0,0,216,72ZM40,56H92.69l16,16H40Zm112,96H136v16a8,8,0,0,1-16,0V152H104a8,8,0,0,1,0-16h16V120a8,8,0,0,1,16,0v16h16a8,8,0,0,1,0,16Z"/>"##,
+};
 pub static X: Icon = Icon {
     name: "x",
     view: 256.0,
@@ -84,6 +89,16 @@ pub static ARROW_LEFT: Icon = Icon {
     name: "arrow-left",
     view: 256.0,
     body: r##"<path d="M224,128a8,8,0,0,1-8,8H120v64a8,8,0,0,1-13.66,5.66l-72-72a8,8,0,0,1,0-11.32l72-72A8,8,0,0,1,120,56v64h96A8,8,0,0,1,224,128Z"/>"##,
+};
+pub static ARROW_UP: Icon = Icon {
+    name: "arrow-up",
+    view: 256.0,
+    body: r##"<path d="M207.39,115.06A8,8,0,0,1,200,120H136v96a8,8,0,0,1-16,0V120H56a8,8,0,0,1-5.66-13.66l72-72a8,8,0,0,1,11.32,0l72,72A8,8,0,0,1,207.39,115.06Z"/>"##,
+};
+pub static ARROW_DOWN: Icon = Icon {
+    name: "arrow-down",
+    view: 256.0,
+    body: r##"<path d="M205.66,149.66l-72,72a8,8,0,0,1-11.32,0l-72-72A8,8,0,0,1,56,136h64V40a8,8,0,0,1,16,0v96h64a8,8,0,0,1,5.66,13.66Z"/>"##,
 };
 pub static BELL: Icon = Icon {
     name: "bell",
@@ -247,7 +262,7 @@ pub static INFO: Icon = Icon {
 };
 
 /// Every icon in this weight, in catalog order.
-pub static ALL: [&Icon; 48] = [
+pub static ALL: [&Icon; 51] = [
     &HASH,
     &AT,
     &CHAT,
@@ -256,6 +271,7 @@ pub static ALL: [&Icon; 48] = [
     &GEAR,
     &SEARCH,
     &PLUS,
+    &FOLDER_PLUS,
     &X,
     &CHECK,
     &CHEVRON_DOWN,
@@ -264,6 +280,8 @@ pub static ALL: [&Icon; 48] = [
     &CHEVRON_UP,
     &CHEVRON_UP_DOWN,
     &ARROW_LEFT,
+    &ARROW_UP,
+    &ARROW_DOWN,
     &BELL,
     &BELL_SLASH,
     &SMILEY,

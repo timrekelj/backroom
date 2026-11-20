@@ -3,6 +3,7 @@
 //! to the backend). Nothing here owns state.
 
 pub mod auth;
+pub mod channels;
 pub mod composer;
 pub mod dialogs;
 pub mod members;

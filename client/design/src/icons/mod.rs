@@ -6,6 +6,8 @@
 
 mod regular;
 
+pub mod catalog;
+
 pub mod fill;
 
 pub use regular::*;

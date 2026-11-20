@@ -39,6 +39,18 @@ pub fn page(k: &Kit) -> El {
                 )
                 .child(section(k, "Sizes", "icon::XS inside 24pt controls, SM the default, MD standalone.", sizes(k)).w(556.0)),
         )
+        .child(section(
+            k,
+            "Channel palette",
+            "The 12 palette keys as icon ink (palette_color, theme-aware, 3:1 on bg, surface and the selected row in every look), plus the picker's swatches.",
+            palette(k),
+        ))
+        .child(section(
+            k,
+            "Full Phosphor catalog",
+            "icons::catalog: every Phosphor regular icon with search tags (what channel icons are chosen from). The first 120 of them.",
+            full_catalog(k),
+        ))
         .child(section(k, "In context", "Real components: nav, channel list, composer, icon buttons.", context(k)))
 }
 
@@ -268,4 +280,41 @@ fn context(k: &Kit) -> El {
                 .child(col().gap(16.0).grow(1.0).child(buttons).child(el().h(1.0))),
         )
         .child(composer)
+}
+
+/// The 12 palette tones as icon ink on the page, each with a sample icon and its key, then the
+/// picker's swatches.
+fn palette(k: &Kit) -> El {
+    let t = theme_of(k);
+    let samples = ["hash", "code", "megaphone", "calendar-check", "dice-five", "music-notes", "game-controller", "paint-brush", "books", "smiley", "house", "rocket"];
+    let mut r = row().gap(4.0).flex_wrap();
+    for (key, name) in thehideout_design::PALETTE_KEYS.iter().zip(samples) {
+        let tone = thehideout_design::palette_color(key, t).unwrap_or(t.text_muted);
+        let glyph = icons::catalog::by_name(name).unwrap_or(&icons::HASH);
+        r = r.child(
+            col()
+                .w(88.0)
+                .gap(6.0)
+                .py(10.0)
+                .items_center()
+                .child(icon(glyph, size::MD).color(tone.color()))
+                .child(text((*key).to_owned()).font(CAPTION).color(t.text_muted.color())),
+        );
+    }
+    col()
+        .gap(12.0)
+        .child(r)
+        .child(thehideout_design::components::ColorSwatches::new("teal").build(k))
+}
+
+fn full_catalog(k: &Kit) -> El {
+    let t = theme_of(k);
+    let mut g = row().gap(2.0).flex_wrap();
+    for c in icons::catalog::all().take(120) {
+        g = g.child(el().size(36.0, 36.0).center().radius(radius::MD).child(icon(&c.icon, size::MD).color(t.text_muted.color())));
+    }
+    col()
+        .gap(8.0)
+        .child(text(format!("{} icons", icons::catalog::len())).font(CONTROL).color(t.text.color()))
+        .child(g)
 }

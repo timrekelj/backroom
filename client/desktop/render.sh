@@ -8,7 +8,7 @@ BIN=target/debug/thehideout-desktop
 OUT=desktop/snapshots
 mkdir -p "$OUT"
 for mode in "" "-light"; do
-  for scene in auth-login auth-signup-error main main-members home-dms home-empty toast empty-channel dialog-create-server reconnecting settings-appearance; do
+  for scene in auth-login auth-signup-error main main-members home-dms home-empty toast empty-channel dialog-create-server reconnecting settings-appearance sections channel-settings icon-picker-search reorder-menu; do
     $BIN --scene "$scene$mode" --size 1280x800 --snap "$OUT/$scene$mode.png" "$@"
   done
   $BIN --scene "main-small$mode" --size 800x600 --snap "$OUT/main-small$mode.png" "$@"

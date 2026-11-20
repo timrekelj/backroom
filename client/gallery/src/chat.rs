@@ -34,6 +34,7 @@ pub fn page(s: &G, k: &Kit, layer: &mut Vec<El>) -> El {
         .gap(20.0)
         .w(556.0)
         .child(section(k, "MessageGroup", "Hover shows the action bar and, on follow-ups, the time. A mention of you takes a faint wash and an accent bar.", transcript(k)))
+        .child(section(k, "Markdown", "Message markup: bold, italic, strike, underline, code, fences, quotes, lists, headings, spoilers (click to reveal), links and mentions. Links open in the browser.", markdown(k)))
         .child(section(k, "Dividers", "Date and new-messages.", dividers(k)))
         .child(section(k, "ConnectionPill", "One element, colours move between states.", pills(k)))
         .child(section(k, "Toast", "Slides up 8pt and fades. The caller dismisses.", toasts(k)))
@@ -319,9 +320,43 @@ fn transcript(k: &Kit) -> El {
         .radius(radius::MD)
         .fill(t.bg.color())
         .border(1.0, t.border_subtle.color())
-        .child(MessageGroup::new(&g1).force_hover("s3").build(k))
-        .child(MessageGroup::new(&[mention]).build(k))
-        .child(MessageGroup::new(&g3).build(k))
+        .child(MessageGroup::new(&g1).force_hover("s3").links::<G>().build(k))
+        .child(MessageGroup::new(&[mention]).links::<G>().build(k))
+        .child(MessageGroup::new(&g3).links::<G>().build(k))
+}
+
+/// Every construct of the message markup, as messages by one author.
+fn markdown(k: &Kit) -> El {
+    let t = theme_of(k);
+    const ANA: (&str, &str) = ("user-ana", "Ana Kovac");
+    const BRUNO: (&str, &str) = ("user-bruno", "Bruno");
+    let bodies = [
+        "**bold**, *italic*, _italic_, ***both***, ~~strike~~, __underline__, `inline code` and ||a hidden spoiler||. Escape with \\*stars\\*.",
+        "# Heading 1\n## Heading 2\n### Heading 3\nHeadings only at the start of a line.",
+        "> a block quote with **bold** and a mention for @Tim\n> that continues here",
+        "- first item\n- second with `code`\n  - nested item\n  - another\n1. numbered\n2. in order",
+        "```rust\nfn backoff(attempt: u32) -> u64 {\n    (5_000u64 << attempt).min(30_000)\n}\n```",
+        "Read [the docs](https://docs.rs/rune) or https://www.rust-lang.org/learn. Unsafe [links](javascript:alert(1)) stay text. Custom emoji <:blob:123456> render as text for now.",
+    ];
+    let mut msgs: Vec<ChatMessage> = bodies
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let who = if i == 2 { BRUNO } else { ANA };
+            sample(&format!("md{i}"), who, 10_000 + i as i64 * 20, "10:12", b)
+        })
+        .collect();
+    msgs[2].mentions_me = true;
+    let mut c = col()
+        .w_full()
+        .py(8.0)
+        .radius(radius::MD)
+        .fill(t.bg.color())
+        .border(1.0, t.border_subtle.color());
+    for run in MessageGroup::runs(&msgs) {
+        c = c.child(MessageGroup::new(run).links::<G>().build(k));
+    }
+    c
 }
 
 fn dividers(k: &Kit) -> El {

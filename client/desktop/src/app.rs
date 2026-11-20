@@ -40,6 +40,7 @@ impl App {
     /// frame, so the window never flashes the default theme; later changes are saved on a thread.
     pub fn start(backend: Box<dyn Backend>, mut state: AppState, prefs: SharedPrefs) -> App {
         state.ui.look = look::load(&prefs);
+        state.ui.collapsed = look::load_collapsed(&prefs);
         let mut app = App::new(backend, state);
         app.saver = Some(Saver::spawn(prefs));
         app
@@ -51,6 +52,11 @@ impl App {
             && let Some(saver) = &self.saver
         {
             saver.save(self.state.ui.look);
+        }
+        if std::mem::take(&mut self.state.ui.collapsed_dirty)
+            && let Some(saver) = &self.saver
+        {
+            saver.save_collapsed(&self.state.ui.collapsed);
         }
         for cmd in std::mem::take(&mut self.state.outbox) {
             if matches!(cmd, Command::Login { .. } | Command::SignUp { .. }) {

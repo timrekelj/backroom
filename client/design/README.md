@@ -179,14 +179,15 @@ Data in, callbacks out: no app state types, every one takes the `Kit` like the c
 | Component | For | States |
 |---|---|---|
 | `GuildBadge`, `RailTile` | The server icon, sizes 24/32/40, avatar radii, deterministic warm fill; `RailTile` is the same tile with an icon on a neutral face (Home, and the outlined "+"). A left rail holds the indicator. | rest, hover (short bar), selected (tall accent bar; `RailTile` adds an `accent_subtle` face), unread (4pt dot), mention count on the corner (overhangs the face 2pt; the rail gap is 12) |
-| `NavRow`, `ChannelRow` | Sidebar rows, 32pt (`ROW_H`), 2pt apart, 8pt padding, 16pt icon, `radius-md`. Nav rows take an icon + its fill twin (fill only when selected); `NavRow::person` shows the user's 20pt `Avatar` instead; channels keep the regular `#`. | selected (highlight + strong text), unread (brighter, heavier, dot), mentions (pill), muted (faint), hover |
-| `SidebarSection` | A collapsible group header (28pt) with a chevron and a hover "+". | open, closed, add shown |
-| `MessageGroup`, `ChatMessage` | Avatar, author, time, one or more bodies. `MessageGroup::runs` splits a transcript: same author, at most 5 minutes (`GROUP_WINDOW_SECS`) apart. Follow-ups show their time in the gutter on hover. Bodies: wrapping text, `inline code`, fenced blocks, `@mentions`. | `Sent`, `Pending` (body at 0.55, no spinner), `Failed` ("Failed to send · Retry"), mentions you (`accent_wash` + 2pt accent bar), hover (row highlight + floating reply/copy/more) |
+| `NavRow`, `ChannelRow` | Sidebar rows, 32pt (`ROW_H`), 2pt apart, 8pt padding, 16pt icon, `radius-md`. Nav rows take an icon + its fill twin (fill only when selected); `NavRow::person` shows the user's 20pt `Avatar` instead; channels show `#` or their own Phosphor icon (`.icon`, always regular), tinted by a palette colour (`.tint`; the selected highlight takes a 12% wash of it), and a `.trailing` "more" button that fades in on hover. | selected (highlight + strong text), unread (brighter, heavier, dot), mentions (pill), muted (faint), hover |
+| `SidebarSection` | A collapsible group header (28pt) with a chevron, a hover "+" and an optional hover "more" button (`.more`); `.decorate_header` lets the app add a context menu or a drag to the title. | open, closed, add shown |
+| `MessageGroup`, `ChatMessage` | Avatar, author, time, one or more bodies. `MessageGroup::runs` splits a transcript: same author, at most 5 minutes (`GROUP_WINDOW_SECS`) apart. Follow-ups show their time in the gutter on hover. Bodies are markup (see "Message markup"). `links::<S>()` makes links and spoilers pressable. | `Sent`, `Pending` (body at 0.55, no spinner), `Failed` ("Failed to send · Retry"), mentions you (`accent_wash` + 2pt accent bar), hover (row highlight + floating reply/copy/more) |
 | `DateDivider`, `NewMessagesDivider` | A hairline with the date; an accent line with a "New" tag. | static |
 | `Composer` | The message box: "+", a field that grows to 8 lines then scrolls, smiley, Send. `bind` wires the field and send; Enter sends, Shift+Enter breaks the line; whitespace never sends. | empty (Send ghost, disabled), text (Send primary), focused (focus ring), disabled with a reason |
 | `ChannelHeader` | `#` + name + topic + trailing IconButtons; `breadcrumb` gives "Guild / # channel". | static |
 | `MemberRow` | Avatar with presence, name, crown for the owner. | online, idle, offline (faint), hover |
 | `EmptyState` | Icon tile, title, body, optional action `Button`. | static |
+| `PickerTabs`, `IconGrid`, `ColorSwatches` | The channel look pickers: tabs (Icons, Emoji and Server emoji disabled with "Soon"), the Phosphor catalog as a virtualized 10-column grid (only rows near the viewport are built; a `highlight` for keyboard choice, the search field keeps focus), and the 12 palette swatches plus "none" (selected: ring and check). | rest, hover, selected, highlighted |
 | `Dialog` | Modal: scrim, panel (24 padding; title to body 16, label to field 6, field to field 16, body to footer 24), title, body, right-aligned footer. Rune's modal stack gives the focus trap, Esc, scrim click and focus restore. `preview()` draws the panel inline. | closed, open |
 | `Toast` | Bottom-centre notice, info / success / danger. `Toast::host` is its inert overlay layer; the caller dismisses. | kinds |
 | `ConnectionPill` | Connected, Connecting…, Reconnecting in Ns, Offline. | status |
@@ -195,6 +196,43 @@ Data in, callbacks out: no app state types, every one takes the `Kit` like the c
 The one new token for these is `accent_wash` (accent at 7% dark / 8% light) behind a message that mentions you;
 a test keeps `text`, `text_muted` and `accent_text` at 4.5:1 on it over `bg` and `surface`. Timestamps inside a washed
 message therefore use `text_muted`, not `text_faint`.
+
+### Message markup (`chat/markdown.rs`, drawn by `chat/body.rs`)
+
+A Discord-flavoured CommonMark subset, parsed by our own small parser rather than `rune_kit::Markdown`: that is plain
+CommonMark (no spoilers, mentions or emoji tokens, `__x__` means bold where Discord underlines), builds whole documents
+and cannot be composed with the mention chips, so bending it costs more than a small linear parser with no extra
+dependency. Everything is drawn as spans on one wrapping Rune text per paragraph. The composer sends the raw text
+unchanged (no live preview). Selecting message text copies it as drawn (markers stripped; a hidden spoiler is left out).
+
+| Write | Get |
+|---|---|
+| `**bold**`, `*italic*` or `_italic_`, `***both***`, `~~strike~~` | weight 600, italic, both, struck through |
+| `__underline__` | underline (Discord's meaning; `___x___` is underline + italic) |
+| `` `code` ``, ``` ``a ` b`` ``` | inline mono chip; nothing inside is parsed (no mentions, links or markup) |
+| ```` ```rust ```` fence ```` ``` ````, or ` ```one line``` ` | mono block, `radius-md`; syntax-coloured when Rune knows the language (`rune_kit::syntax`), plain otherwise; an unclosed fence runs to the end |
+| `> quote`, `>>> quote to the end` | 3pt `border_strong` bar, content indented; holds any block |
+| `- item`, `* item`, `1. item`; two-space indent nests | bullets (`•`, then `◦`) or numbers (the first number sets the start) |
+| `#`, `##`, `###` + space at line start | 16/15/14pt, semibold; `####` and a mid-line `#` stay text |
+| `\|\|spoiler\|\|` | a block in `border` the text colour hides; click reveals it (state per message, local to the UI, not app state); a link inside stays inert until revealed |
+| `[text](https://url)`, `https://url`, `<https://url>` | `accent_text`, underline on hover, hand cursor; click opens the default browser. A masked link shows its URL in a tooltip. Trailing punctuation, `*`, `_`, `~`, `\|` and an unbalanced `)` are not part of a bare URL |
+| `@name` | the mention chip (`accent_subtle`); the row's `accent_wash` still comes from `mentions_me`. Not parsed in code; works inside bold, quotes, lists and spoilers |
+| `<:name:id>`, `<a:name:id>` | tokenised as an emoji mark; drawn as `:name:` text until emoji render |
+| `\*`, `\@`, `\<`, any `\` + ASCII punctuation | the character itself |
+
+Markers pair only when they flank text (`2 * 3 * 4` is text; `snake__case__word` is text) and an unmatched marker
+stays literal. No HTML, no images, no tables, no setext headings.
+
+**Safety.** Only `http://`, `https://` and `mailto:` become links, matched case-insensitively. Anything else
+(`javascript:`, `file:`, `data:`, `//host`) is not a link and the whole `[label](url)` shows as typed, so a label can
+never hide a scheme. Destinations and bare URLs are at most 2048 bytes with no whitespace or control characters; Rune's
+`Tx::open_url` re-checks the same list before opening anything.
+
+**Limits.** Parsing is linear: block nesting (quotes, lists) stops at 4 levels (deeper lines are plain text), inline
+formatting at 16 open markers, at most 4096 marks per text, and only the first 64 KiB of a message is parsed (the rest
+is one plain paragraph). Tests drive 60,000-character pathological inputs.
+
+`body::parse` is the flat view the app uses to find mentions (`Block::Text` / `Block::Code`, mention and code marks only).
 
 ### Motion
 
@@ -253,7 +291,25 @@ the entrance again.
 
   It writes `src/icons/regular.rs` and `src/icons/fill.rs` (both weights for every entry, each with an `ALL` list).
   Names are kebab-case in `Icon::name` and `SCREAMING_SNAKE` as the const (`chevron-up-down` is `CHEVRON_UP_DOWN`).
-  The gallery's Icons page lists the catalog from `icons::ALL`.
+  The gallery's Icons page lists the catalog from `icons::ALL`. The same run also writes the full catalog
+  (`src/icons/catalog/part_N.rs`, tags read from the package's `dist/index.mjs` as data); run `rustfmt --edition 2024`
+  over `src/icons` afterwards.
+
+### Channel palette and the full catalog
+
+**Palette** (`tokens/palette.rs`): `palette_color(key, theme) -> Option<Tone>` maps the 12 wire keys
+(`PALETTE_KEYS`: slate red orange amber yellow lime green teal cyan blue indigo pink; `""` = none) to icon ink.
+One lightness per appearance (dark L .76, light L .53) and a chroma and hue per key, so the twelve read as a
+family and contrast is a property of L: every tone has at least **3:1** (non-text) on `bg`, `surface`,
+`surface_raised` and under the selected-row wash in **all 320 looks**, stays in gamut, and is distinct from
+the others (`palette_tests`). Use it only for icon ink and swatches, never for text.
+
+**Full catalog** (`icons::catalog`): all 1512 Phosphor regular icons with their search tags, generated into
+`src/icons/catalog/part_{0..3}.rs` (sorted by name; ~860 KB of source; the release desktop binary grew from 37.06 MB to 40.40 MB, +3.3 MB, for the SVG paths and tags).
+`by_name(&str) -> Option<&'static Icon>` is what a channel's stored icon name resolves through (unknown name:
+fall back to `#`); `entry`, `all()` and `search(query)` (every word must match the name or a tag; exact name,
+name prefix, name substring, then tag-only) serve the picker. The curated `icons::*` constants stay the app's own
+chrome.
 
 ## Kit mapping (`kit.rs`)
 

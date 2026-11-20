@@ -3,6 +3,26 @@
 
 use crate::fake::{ANA, BRUNO, TIM};
 
+/// The newest #general messages, one of each kind of markup (see the design README).
+pub const MARKDOWN_LINES: &[&str] = &[
+    "Release notes are up: **v0.0.3** adds a live gateway, ~~polling~~ and *much* better reconnects.",
+    "Draft is in [the wiki](https://example.com/wiki/release), the changelog is at https://example.com/changelog.",
+    "> staging disk is at 80%\nThat is the first thing to fix. ||it was the old snapshots||",
+    "Plan for Friday:\n- cut the release\n- update the `README`\n- tell @cvetka",
+    "# Release checklist\n1. tag it\n2. ship it",
+    "```sh\ncargo build --release\n```",
+    "__underlined__, `inline code` and _italic_ words, all in one line.",
+];
+
+/// The `i`th of the 150 seeded #general lines: the pool, except the newest few are markup.
+pub fn general_line(i: usize) -> &'static str {
+    const TOTAL: usize = 150;
+    match i.checked_sub(TOTAL - MARKDOWN_LINES.len()) {
+        Some(k) => MARKDOWN_LINES[k],
+        None => GENERAL_LINES[(i * 17 + i / 60) % GENERAL_LINES.len()],
+    }
+}
+
 pub const GENERAL_LINES: &[&str] = &[
     "Morning all.",
     "Staging is back up after the migration.",

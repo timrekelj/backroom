@@ -18,7 +18,7 @@ use rune::Waker;
 use rune::prefs::Prefs;
 use thehideout_api::{ApiError, Client, Event, Gateway, GatewayHandle, GatewayUpdate};
 
-use crate::backend::{Backend, Command, Initial, Reply, Session};
+use crate::backend::{Backend, Command, GuildAccess, Initial, Reply, Session};
 
 pub const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
 pub const SERVER_ENV: &str = "THEHIDEOUT_SERVER_URL";
@@ -280,14 +280,17 @@ async fn fetch_initial(client: &Client) -> Result<Initial, ApiError> {
     let mut lists = tokio::task::JoinSet::new();
     for (i, g) in guilds.iter().enumerate() {
         let (client, id) = (client.clone(), g.id);
-        lists.spawn(async move { (i, client.list_channels(id).await) });
+        lists.spawn(async move { (i, client.list_channels_with_layout(id).await) });
     }
     let mut by_guild = vec![Vec::new(); guilds.len()];
+    let mut layouts = HashMap::new();
     while let Some(done) = lists.join_next().await {
         let (i, list) = done.map_err(|e| ApiError::Other(e.to_string()))?;
-        by_guild[i] = list?;
+        let (channels, layout) = list?;
+        by_guild[i] = channels;
+        layouts.insert(guilds[i].id, layout);
     }
-    Ok(Initial { me, guilds, channels: by_guild.into_iter().flatten().collect(), dms })
+    Ok(Initial { me, guilds, channels: by_guild.into_iter().flatten().collect(), layouts, dms })
 }
 
 impl Backend for RealBackend {
@@ -303,7 +306,7 @@ impl Backend for RealBackend {
                 self.call(async move { fetch_initial(&client).await }, Reply::Refreshed);
             }
             Command::LoadChannels { guild } => {
-                self.call(async move { client.list_channels(guild).await }, move |result| Reply::Channels { guild, result });
+                self.call(async move { client.list_channels_with_layout(guild).await }, move |result| Reply::Channels { guild, result });
             }
             Command::LoadMessages { channel, before } => {
                 self.call(async move { client.list_messages(channel, before, PAGE).await }, move |result| Reply::Messages { channel, before, result });
@@ -318,8 +321,36 @@ impl Backend for RealBackend {
             Command::JoinGuild { code } => {
                 self.call(async move { client.join_guild(&code).await }, Reply::GuildJoined);
             }
-            Command::CreateChannel { guild, name } => {
-                self.call(async move { client.create_channel(guild, &name).await }, Reply::ChannelCreated);
+            Command::CreateChannel { guild, name, section, icon, color } => {
+                self.call(async move { client.create_channel_with(guild, &name, section, &icon, color).await }, Reply::ChannelCreated);
+            }
+            Command::LoadAccess { guild } => {
+                self.call(
+                    async move {
+                        let (roles, members) = tokio::join!(client.list_roles(guild), client.list_members(guild));
+                        let member_roles = members?.into_iter().map(|m| (m.user.id, m.role_ids)).collect();
+                        Ok(GuildAccess { roles: roles?.roles, member_roles })
+                    },
+                    move |result| Reply::Access { guild, result },
+                );
+            }
+            Command::CreateSection { guild, name } => {
+                self.call(async move { client.create_section(guild, &name).await }, move |result| Reply::SectionSaved { guild, result });
+            }
+            Command::RenameSection { guild, section, name } => {
+                self.call(async move { client.update_section(guild, section, &name).await }, move |result| Reply::SectionSaved { guild, result });
+            }
+            Command::DeleteSection { guild, section } => {
+                self.call(async move { client.delete_section(guild, section).await }, move |result| Reply::SectionDeleted { guild, result });
+            }
+            Command::UpdateLayout { guild, layout } => {
+                self.call(async move { client.update_layout(guild, &layout).await }, move |result| Reply::LayoutSaved { guild, result });
+            }
+            Command::UpdateChannel { guild, channel, name, icon, color, topic } => {
+                self.call(
+                    async move { client.update_channel(guild, channel, name.as_deref(), icon.as_ref(), color, topic.as_deref()).await },
+                    move |result| Reply::ChannelSaved { guild, result },
+                );
             }
             Command::LoadMembers { guild } => {
                 self.call(async move { client.list_guild_members(guild).await }, move |result| Reply::Members { guild, result });

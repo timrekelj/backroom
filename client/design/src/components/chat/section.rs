@@ -21,6 +21,8 @@ pub struct SidebarSection {
     add_label: Option<String>,
     toggle: Acts,
     add: Acts,
+    more: Option<El>,
+    decorate: Option<Box<dyn FnOnce(El) -> El>>,
 }
 
 impl SidebarSection {
@@ -33,6 +35,8 @@ impl SidebarSection {
             add_label: None,
             toggle: Acts::default(),
             add: Acts::default(),
+            more: None,
+            decorate: None,
         }
     }
     pub fn child(mut self, row: El) -> Self {
@@ -47,6 +51,17 @@ impl SidebarSection {
     /// Adds the hover "+" button; `label` names it ("Create channel").
     pub fn add_label(mut self, label: impl Into<String>) -> Self {
         self.add_label = Some(label.into());
+        self
+    }
+    /// A built control (an `IconButton`) shown after the title on hover, such as a "more" menu.
+    pub fn more(mut self, control: El) -> Self {
+        self.more = Some(control);
+        self
+    }
+    /// Lets the caller add handlers to the header's title button (a context menu, a drag)
+    /// without the component knowing about them.
+    pub fn decorate_header(mut self, f: impl FnOnce(El) -> El + 'static) -> Self {
+        self.decorate = Some(Box::new(f));
         self
     }
     pub fn on_toggle<S: 'static>(mut self, f: impl Fn(&mut S) + 'static) -> Self {
@@ -87,7 +102,10 @@ impl SidebarSection {
                     .color(t.text_muted.color())
                     .a11y_hidden(),
             );
-        let title = self.toggle.apply(title, true);
+        let mut title = self.toggle.apply(title, true);
+        if let Some(f) = self.decorate {
+            title = f(title);
+        }
         let mut header = row()
             .key("header")
             .w_full()
@@ -105,6 +123,9 @@ impl SidebarSection {
             } else {
                 add.group_opacity(0.0, 1.0)
             });
+        }
+        if let Some(more) = self.more {
+            header = header.child(el().key("more").child(more).group_opacity(0.0, 1.0));
         }
         let mut root = col()
             .role("group")

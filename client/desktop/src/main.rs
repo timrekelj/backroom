@@ -13,10 +13,15 @@ mod fake;
 mod fake_lines;
 mod forms;
 mod format;
+mod layout;
 mod look;
+mod perms;
 mod real;
 mod scenes;
 mod state;
+mod structure;
+#[cfg(test)]
+mod structure_tests;
 #[cfg(test)]
 mod tests;
 mod ui;

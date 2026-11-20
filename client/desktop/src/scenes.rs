@@ -6,17 +6,22 @@ use thehideout_design::components::ToastKind;
 use thehideout_design::{AccentPreset, Appearance, BackgroundPreset, ThemeSpec};
 
 use crate::app::{fake_now, App};
-use crate::fake::{FakeBackend, ANA, BRUNO, CVETKA, DEV, DM_ANA, GENERAL, PLANS, RANDOM};
+use crate::fake::{FakeBackend, ANA, ARCHIVE, BRUNO, CVETKA, DESIGN, DEV, DM_ANA, GENERAL, MUSIC, PLANS, RANDOM};
 use crate::format::Tz;
-use crate::state::{auth_error, AppState, AuthMode, DialogKind};
+use crate::state::{auth_error, AppState, AuthMode, DialogKind, Menu};
 
 /// A signed-in app on the fake world, in the given theme, with The Hideout's #general open.
 pub fn booted(dark: bool) -> (App, FakeBackend) {
+    booted_as(dark, "tim")
+}
+
+/// The same, signed in as `who`: tim owns The Hideout, ana is a plain member there.
+pub fn booted_as(dark: bool, who: &str) -> (App, FakeBackend) {
     let fake = FakeBackend::new();
     let mut state = AppState::new(fake_now, Tz::Fixed(0));
     state.ui.look.spec.appearance = if dark { Appearance::Dark } else { Appearance::Light };
     let mut app = App::new(Box::new(fake.clone()), state);
-    app.state.auth.username.replace_text("tim");
+    app.state.auth.username.replace_text(who);
     app.state.auth.password.replace_text("hunter22");
     app.act(|s| s.submit_auth());
     app.pump();
@@ -147,6 +152,37 @@ fn reconnecting(a: &mut App, dark: bool) {
     *a = app;
 }
 
+/// The busy sidebar: top-level channels, three sections (one folded), coloured icons, unread
+/// and a mention, #design selected.
+fn sections(a: &mut App, dark: bool) {
+    let (mut app, fake) = main_screen(dark);
+    fake.incoming(MUSIC, CVETKA, "new playlist is up");
+    app.pump();
+    app.act(|s| {
+        s.toggle_section(1, ARCHIVE);
+        s.select_channel(DESIGN);
+    });
+    app.pump();
+    *a = app;
+}
+
+/// The channel settings dialog for #dev with the icon picker open on its Icons tab.
+fn channel_settings(a: &mut App, dark: bool, search: &str) {
+    *a = main_screen(dark).0;
+    a.act(|s| s.open_dialog(DialogKind::ChannelSettings { guild: 1, channel: DEV }));
+    a.act(|s| s.toggle_picker());
+    if let Some(f) = a.state.channel_form() {
+        f.search.replace_text(search);
+        f.research();
+    }
+}
+
+/// A channel's context menu, open where a right-click landed.
+fn reorder_menu(a: &mut App, dark: bool) {
+    *a = main_screen(dark).0;
+    a.state.ui.menu = Menu::Channel { id: DESIGN, at: Some((110, 330)) };
+}
+
 type Scene = (&'static str, fn(&mut App));
 
 pub const SCENES: &[Scene] = &[
@@ -183,6 +219,14 @@ pub const SCENES: &[Scene] = &[
     ("main-graphite-deep", |a| {
         main_look(a, true, AccentPreset::Graphite, BackgroundPreset::Deep, false)
     }),
+    ("sections", |a| sections(a, true)),
+    ("sections-light", |a| sections(a, false)),
+    ("channel-settings", |a| channel_settings(a, true, "")),
+    ("channel-settings-light", |a| channel_settings(a, false, "")),
+    ("icon-picker-search", |a| channel_settings(a, true, "game")),
+    ("icon-picker-search-light", |a| channel_settings(a, false, "game")),
+    ("reorder-menu", |a| reorder_menu(a, true)),
+    ("reorder-menu-light", |a| reorder_menu(a, false)),
     ("main-small", |a| main_(a, true)),
     ("main-small-light", |a| main_(a, false)),
 ];

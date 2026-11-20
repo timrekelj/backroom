@@ -6,11 +6,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::SystemTime;
 
 use rune::TextEdit;
-use thehideout_api::{Channel, DmChannel, Guild, MAX_MESSAGE_CHARS, Message, User};
+use thehideout_api::{Channel, ChannelIcon, DmChannel, Guild, GuildLayout, MAX_MESSAGE_CHARS, Message, PaletteColor, Permissions, Role, User};
 use thehideout_design::components::{ConnectionStatus, ToastKind};
 
 use crate::backend::{Command, Session};
-pub use crate::forms::{Auth, AuthError, AuthField, AuthMode, DialogKind, DialogState, Phase, auth_error, check_name, sentence};
+pub use crate::forms::{Auth, AuthError, AuthField, AuthMode, ChannelForm, DialogKind, DialogState, Phase, auth_error, check_name, sentence};
+use crate::layout::{self, Item};
 use crate::format::{Tz, unix};
 use crate::look::Look;
 
@@ -119,6 +120,16 @@ pub struct Data {
     pub members_asked: HashSet<u64>,
     pub logs: HashMap<u64, ChannelLog>,
     pub outgoing: Vec<Outgoing>,
+    /// Each guild's sections and channel order.
+    pub layouts: HashMap<u64, GuildLayout>,
+    pub roles: HashMap<u64, Vec<Role>>,
+    /// Role ids per member per guild.
+    pub member_roles: HashMap<u64, HashMap<u64, Vec<u64>>>,
+    /// Guilds whose access was asked for and not yet refused.
+    pub access_asked: HashSet<u64>,
+    /// The layout as it was before an optimistic edit that the server hasn't answered. While one
+    /// is out, further structure edits wait (they would be based on a version the server is about to retire).
+    pub layout_undo: HashMap<u64, GuildLayout>,
 }
 
 // ---- ui --------------------------------------------------------------------------------------
@@ -161,7 +172,24 @@ pub enum Menu {
     Guild,
     /// The user strip's gear: settings and sign out.
     User,
+    /// A channel's menu (the row's "..." button, or a right-click at `at`).
+    Channel { id: u64, at: Option<(i32, i32)> },
+    /// A section header's menu.
+    Section { id: u64, at: Option<(i32, i32)> },
+    /// The channel menu's "Move to section" submenu.
+    MoveTo { id: u64, at: Option<(i32, i32)> },
 }
+
+/// A sidebar row held by the pointer: dragged `dy` points from where it was.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Drag {
+    pub guild: u64,
+    pub item: Item,
+    pub dy: f32,
+}
+
+/// Points between rows (32 for a row, 2 for the gap): what a drag of `dy` points steps over.
+pub const ROW_PITCH: f32 = 34.0;
 
 /// Whether the event stream has been whole since the last `Connected`. The gateway doesn't
 /// replay what it missed, and `ConnectionStatus` can't say: `Connecting` arrives before every
@@ -199,8 +227,11 @@ pub struct Ui {
     pub at_bottom: bool,
     /// Messages that arrived below the fold while the reader was scrolled up.
     pub unseen_below: u32,
-    pub channels_open: bool,
     pub dms_open: bool,
+    /// Sections the user folded, `(guild, section)`; saved to the prefs (`collapsed_dirty`).
+    pub collapsed: HashSet<(u64, u64)>,
+    pub collapsed_dirty: bool,
+    pub drag: Option<Drag>,
     /// The saved look (accent, background, appearance, tint, contrast, reduce motion). Scenes and
     /// tests force an appearance through it.
     pub look: Look,
@@ -231,8 +262,10 @@ impl Ui {
             stream: Stream::Live,
             at_bottom: true,
             unseen_below: 0,
-            channels_open: true,
             dms_open: true,
+            collapsed: HashSet::new(),
+            collapsed_dirty: false,
+            drag: None,
             look: Look::default(),
             look_dirty: false,
             settings: None,
@@ -284,7 +317,9 @@ impl AppState {
     /// Back to a fresh signed-out app, keeping the server URL and the look.
     pub fn reset(&mut self, error: Option<AuthError>) {
         let (server, look, today, tz, now) = (self.server_url(), self.ui.look, self.today, self.tz, self.now);
+        let collapsed = std::mem::take(&mut self.ui.collapsed);
         *self = AppState::new(now, tz);
+        self.ui.collapsed = collapsed;
         self.today = today;
         self.auth = Auth::new(&server);
         self.auth.error = error;
@@ -313,6 +348,36 @@ impl AppState {
         self.data.channels.get(&guild).map_or(&[], Vec::as_slice)
     }
 
+    /// A guild's channels in sidebar order: the layout's, then any the layout doesn't list yet.
+    pub fn ordered_channels(&self, guild: u64) -> Vec<&Channel> {
+        let all = self.channels_of(guild);
+        let Some(l) = self.data.layouts.get(&guild) else { return all.iter().collect() };
+        let mut out: Vec<&Channel> = layout::channel_order(l).into_iter().filter_map(|id| all.iter().find(|c| c.id == id)).collect();
+        let unlisted: Vec<&Channel> = all.iter().filter(|c| !out.iter().any(|o| o.id == c.id)).collect();
+        out.extend(unlisted);
+        out
+    }
+
+    pub fn channel(&self, guild: u64, id: u64) -> Option<&Channel> {
+        self.channels_of(guild).iter().find(|c| c.id == id)
+    }
+
+    /// What the signed-in user may do in `guild` (nothing until its roles have arrived, unless they own it).
+    pub fn perms(&self, guild: u64) -> Permissions {
+        let Some(g) = self.guild(guild) else { return Permissions::NONE };
+        let mine = self.data.member_roles.get(&guild).and_then(|m| m.get(&self.my_id())).map_or(&[][..], Vec::as_slice);
+        crate::perms::effective(g, self.my_id(), mine, self.data.roles.get(&guild).map_or(&[][..], Vec::as_slice))
+    }
+
+    /// Whether the structure controls (drag, menus, create section, settings) are offered.
+    pub fn can_manage_channels(&self, guild: u64) -> bool {
+        self.perms(guild).contains(Permissions::MANAGE_CHANNELS)
+    }
+
+    pub fn section_open(&self, guild: u64, section: u64) -> bool {
+        !self.ui.collapsed.contains(&(guild, section))
+    }
+
     pub fn dm(&self, id: u64) -> Option<&DmChannel> {
         self.data.dms.iter().find(|d| d.id == id)
     }
@@ -334,6 +399,14 @@ impl AppState {
     pub fn current_guild(&self) -> Option<&Guild> {
         match self.ui.place {
             Place::Guild(g) => self.guild(g),
+            Place::Home => None,
+        }
+    }
+
+    /// The open guild channel, whole (for its icon, colour and topic).
+    pub fn current_guild_channel(&self) -> Option<&Channel> {
+        match self.ui.place {
+            Place::Guild(g) => self.current_channel().and_then(|c| self.channel(g, c)),
             Place::Home => None,
         }
     }
@@ -435,11 +508,12 @@ impl AppState {
         }
         self.ui.place = Place::Guild(id);
         if !self.ui.guild_channel.contains_key(&id)
-            && let Some(first) = self.channels_of(id).first()
+            && let Some(first) = self.ordered_channels(id).first().map(|c| c.id)
         {
-            self.ui.guild_channel.insert(id, first.id);
+            self.ui.guild_channel.insert(id, first);
         }
         self.want_members(id);
+        self.want_access(id);
         if !self.data.channels.contains_key(&id) {
             self.outbox.push(Command::LoadChannels { guild: id });
         }
@@ -450,6 +524,13 @@ impl AppState {
     pub fn want_members(&mut self, guild: u64) {
         if !self.data.members.contains_key(&guild) && self.data.members_asked.insert(guild) {
             self.outbox.push(Command::LoadMembers { guild });
+        }
+    }
+
+    /// Asks for a guild's roles and role assignments unless that is already done or asked.
+    pub fn want_access(&mut self, guild: u64) {
+        if !self.data.roles.contains_key(&guild) && self.data.access_asked.insert(guild) {
+            self.outbox.push(Command::LoadAccess { guild });
         }
     }
 
@@ -480,7 +561,7 @@ impl AppState {
     pub fn step_channel(&mut self, delta: i32) {
         let ids: Vec<u64> = match self.ui.place {
             Place::Home => self.data.dms.iter().map(|d| d.id).collect(),
-            Place::Guild(g) => self.channels_of(g).iter().map(|c| c.id).collect(),
+            Place::Guild(g) => self.ordered_channels(g).iter().map(|c| c.id).collect(),
         };
         if ids.is_empty() {
             return;
@@ -645,7 +726,28 @@ impl AppState {
 
     pub fn open_dialog(&mut self, kind: DialogKind) {
         self.ui.menu = Menu::None;
-        self.ui.dialog = Some(DialogState { kind, input: { let mut e = TextEdit::new(""); e.focused = true; e }, error: None, phase: Phase::Idle });
+        let (text, channel) = match kind {
+            DialogKind::CreateChannel { .. } => (String::new(), Some(ChannelForm::new(None))),
+            DialogKind::RenameSection { guild, section } => {
+                (self.data.layouts.get(&guild).and_then(|l| l.sections.iter().find(|s| s.id == section)).map_or_else(String::new, |s| s.name.clone()), None)
+            }
+            DialogKind::ChannelSettings { guild, channel } => match self.channel(guild, channel) {
+                Some(c) => (c.name.clone(), Some(ChannelForm::of(c))),
+                None => return,
+            },
+            _ => (String::new(), None),
+        };
+        let mut input = TextEdit::new(&text);
+        input.focused = true;
+        self.ui.dialog = Some(DialogState { kind, input, channel, error: None, phase: Phase::Idle });
+    }
+
+    /// "Create channel here": the create dialog with the section already chosen.
+    pub fn open_create_channel_in(&mut self, guild: u64, section: u64) {
+        self.open_dialog(DialogKind::CreateChannel { guild });
+        if let Some(f) = self.ui.dialog.as_mut().and_then(|d| d.channel.as_mut()) {
+            f.section = Some(section);
+        }
     }
 
     pub fn close_dialog(&mut self) {
@@ -677,10 +779,51 @@ impl AppState {
             }
             DialogKind::CreateChannel { guild } => {
                 let name = value.to_lowercase().replace(' ', "-");
+                let f = d.channel.as_ref();
                 match check_name(&name, 1, 32, "Give the channel a name") {
-                    Ok(()) => Command::CreateChannel { guild, name },
+                    Ok(()) => Command::CreateChannel {
+                        guild,
+                        name,
+                        section: f.and_then(|f| f.section),
+                        icon: ChannelIcon::new(f.map_or("", |f| f.icon.as_str())),
+                        color: PaletteColor::from_key(f.map_or("", |f| f.color)),
+                    },
                     Err(e) => return fail(d, e),
                 }
+            }
+            DialogKind::CreateSection { guild } => match check_name(&value, 1, 32, "Give the section a name") {
+                Ok(()) => Command::CreateSection { guild, name: value },
+                Err(e) => return fail(d, e),
+            },
+            DialogKind::RenameSection { guild, section } => match check_name(&value, 1, 32, "Give the section a name") {
+                Ok(()) => Command::RenameSection { guild, section, name: value },
+                Err(e) => return fail(d, e),
+            },
+            DialogKind::DeleteSection { guild, section } => Command::DeleteSection { guild, section },
+            DialogKind::ChannelSettings { guild, channel } => {
+                let name = value.to_lowercase().replace(' ', "-");
+                if let Err(e) = check_name(&name, 1, 32, "Give the channel a name") {
+                    return fail(d, e);
+                }
+                let Some(f) = d.channel.as_ref() else { return };
+                let topic = f.topic.text.trim().to_owned();
+                if topic.chars().count() > 256 {
+                    return fail(d, "Use up to 256 characters for the topic".into());
+                }
+                let old = f.original.as_ref();
+                let cmd = Command::UpdateChannel {
+                    guild,
+                    channel,
+                    name: (old.map(|c| c.name.as_str()) != Some(name.as_str())).then_some(name),
+                    icon: (old.map(|c| c.icon.as_str()) != Some(f.icon.as_str())).then(|| ChannelIcon::new(f.icon.as_str())),
+                    color: (old.map(|c| c.color.as_key()) != Some(f.color)).then(|| PaletteColor::from_key(f.color)),
+                    topic: (old.map(|c| c.topic.as_str()) != Some(topic.as_str())).then_some(topic),
+                };
+                if matches!(&cmd, Command::UpdateChannel { name: None, icon: None, color: None, topic: None, .. }) {
+                    self.ui.dialog = None;
+                    return;
+                }
+                cmd
             }
             DialogKind::NewDm => {
                 let wanted = value.trim_start_matches('@').to_lowercase();

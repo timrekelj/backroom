@@ -8,7 +8,8 @@ use rune::Tx;
 use thehideout_api::{ApiError, Channel, DmChannel, Event, GatewayUpdate, Guild, Message, Page};
 use thehideout_design::components::{ConnectionStatus, ToastKind};
 
-use crate::backend::{Command, Initial, Reply, Session};
+use crate::backend::{Command, GuildAccess, Initial, Reply, Session};
+use crate::layout;
 use crate::state::{AppState, chat_id_of, Delivery, DialogKind, Fetch, Marker, Phase, Place, Screen, Stream, auth_error, sentence};
 
 pub fn apply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
@@ -34,8 +35,50 @@ pub fn apply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
         // Quiet: the lists stay as they were and the next gap tries again.
         Reply::Refreshed(Err(_)) => {}
         Reply::Channels { guild, result } => match result {
-            Ok(list) => set_channels(s, guild, list),
+            Ok((list, layout)) => {
+                set_channels(s, guild, list);
+                // An optimistic edit still out is newer than this answer; its own reply settles it.
+                if !s.data.layout_undo.contains_key(&guild) {
+                    s.data.layouts.insert(guild, layout::normalized(&layout));
+                }
+            }
             Err(e) => s.toast(ToastKind::Danger, format!("Couldn't load channels. {}", sentence(&e.to_string()))),
+        },
+        Reply::Access { guild, result } => match result {
+            Ok(GuildAccess { roles, member_roles }) => {
+                s.data.roles.insert(guild, roles);
+                s.data.member_roles.insert(guild, member_roles);
+            }
+            Err(_) => {
+                s.data.access_asked.remove(&guild);
+            }
+        },
+        Reply::SectionSaved { guild, result } => match result {
+            Ok((section, layout)) => {
+                s.set_layout(guild, layout);
+                let kind = s.ui.dialog.as_ref().map(|d| d.kind);
+                if matches!(kind, Some(DialogKind::CreateSection { guild: g }) | Some(DialogKind::RenameSection { guild: g, .. }) if g == guild) {
+                    s.close_dialog();
+                }
+                s.toast(ToastKind::Success, format!("Saved {}", section.name));
+            }
+            Err(e) => dialog_failed(s, &e),
+        },
+        Reply::SectionDeleted { guild, result } => match result {
+            Ok(layout) => {
+                s.set_layout(guild, layout);
+                s.close_dialog();
+                s.toast(ToastKind::Success, "Section deleted");
+            }
+            Err(e) => dialog_failed(s, &e),
+        },
+        Reply::LayoutSaved { guild, result } => s.layout_replied(guild, result),
+        Reply::ChannelSaved { guild: _, result } => match result {
+            Ok(c) => {
+                update_channel(s, c);
+                s.close_dialog();
+            }
+            Err(e) => dialog_failed(s, &e),
         },
         Reply::Messages { channel, before, result } => messages(s, channel, before, result, tx),
         Reply::Sent { channel, nonce, result } => sent(s, channel, &nonce, result),
@@ -46,6 +89,11 @@ pub fn apply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
                 let guild = c.guild_id;
                 let name = c.name.clone();
                 add_channel(s, c.clone());
+                // The server's layout update follows on the gateway; this keeps the row from waiting for it.
+                if let Some(l) = s.data.layouts.get(&guild) {
+                    let with = layout::with_channel(l, c.id, c.section_id);
+                    s.data.layouts.insert(guild, with);
+                }
                 s.close_dialog();
                 if s.ui.place == Place::Guild(guild) {
                     s.select_channel(c.id);
@@ -96,7 +144,8 @@ fn auth_failed(s: &mut AppState, e: &ApiError) {
 }
 
 fn initial(s: &mut AppState, init: Initial) {
-    let Initial { me, guilds, channels, dms } = init;
+    let Initial { me, guilds, channels, layouts, dms } = init;
+    s.data.layouts = layouts.iter().map(|(g, l)| (*g, layout::normalized(l))).collect();
     if let Some(session) = &mut s.session {
         session.me = me.clone();
     }
@@ -131,7 +180,17 @@ fn refreshed(s: &mut AppState, init: Initial) {
     if s.screen != Screen::Main {
         return;
     }
-    let Initial { me, guilds, channels, dms } = init;
+    let Initial { me, guilds, channels, layouts, dms } = init;
+    for (g, l) in layouts {
+        // An edit still out is newer than this answer; its reply settles the layout.
+        if !s.data.layout_undo.contains_key(&g) {
+            s.data.layouts.insert(g, layout::normalized(&l));
+        }
+    }
+    // Roles and assignments may have changed while away: the open server asks again below, the others when visited.
+    s.data.roles.clear();
+    s.data.member_roles.clear();
+    s.data.access_asked.clear();
     s.data.users.insert(me.id, me);
     for dm in &dms {
         for u in &dm.participants {
@@ -164,6 +223,7 @@ fn refreshed(s: &mut AppState, init: Initial) {
             }
             s.outbox.push(Command::LoadMembers { guild: g });
             s.data.members_asked.insert(g);
+            s.want_access(g);
         }
         None => {}
     }
@@ -176,6 +236,12 @@ fn set_channels(s: &mut AppState, guild: u64, list: Vec<Channel>) {
         && let Some(first) = s.channels_of(guild).first().map(|c| c.id)
     {
         s.select_channel(first);
+    }
+}
+
+fn update_channel(s: &mut AppState, c: Channel) {
+    if let Some(slot) = s.data.channels.get_mut(&c.guild_id).and_then(|l| l.iter_mut().find(|x| x.id == c.id)) {
+        *slot = c;
     }
 }
 
@@ -219,8 +285,10 @@ fn guild_done(s: &mut AppState, r: Result<Guild, ApiError>, kind: DialogKind, me
 fn dialog_failed(s: &mut AppState, e: &ApiError) {
     let message = match e {
         ApiError::NotFound => "That invite code doesn't match any server.".to_owned(),
-        ApiError::AlreadyExists => "You're already in that server.".to_owned(),
-        ApiError::PermissionDenied => "Only the owner can do that.".to_owned(),
+        ApiError::AlreadyExists if matches!(s.ui.dialog.as_ref().map(|d| d.kind), Some(DialogKind::JoinGuild)) => "You're already in that server.".to_owned(),
+        ApiError::AlreadyExists => "That name is already taken here.".to_owned(),
+        ApiError::PermissionDenied => "You don't have permission to do that.".to_owned(),
+        ApiError::Conflict => "That changed while you were editing. Close this and try again.".to_owned(),
         ApiError::InvalidArgument(m) => sentence(m),
         ApiError::Network(_) => "Can't reach the server.".to_owned(),
         other => sentence(&other.to_string()),
@@ -350,16 +418,20 @@ fn event(s: &mut AppState, e: Event, tx: &mut Tx) {
                 *slot = g;
             }
         }
-        Event::ChannelUpdated(c) => {
-            if let Some(slot) = s.data.channels.get_mut(&c.guild_id).and_then(|l| l.iter_mut().find(|x| x.id == c.id)) {
-                *slot = c;
-            }
-        }
+        Event::ChannelUpdated(c) => update_channel(s, c),
         Event::UserUpdated(u) => {
             s.data.users.insert(u.id, u);
         }
-        // handled in the sections/roles task
-        Event::LayoutUpdated { .. } | Event::RolesUpdated { .. } | Event::MemberUpdated { .. } => {}
+        Event::LayoutUpdated { guild_id, layout } => s.set_layout(guild_id, layout),
+        Event::RolesUpdated { guild_id, roles, .. } => {
+            s.data.roles.insert(guild_id, roles);
+        }
+        Event::MemberUpdated { guild_id, member } => {
+            if let Some(m) = s.data.member_roles.get_mut(&guild_id) {
+                m.insert(member.user.id, member.role_ids.clone());
+            }
+            s.data.users.insert(member.user.id, member.user);
+        }
         Event::ChannelCreated(c) => add_channel(s, c),
         Event::DmOpened(dm) => add_dm(s, dm),
         Event::GuildMemberJoined { guild_id, user } => {

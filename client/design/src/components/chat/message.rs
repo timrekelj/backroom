@@ -9,10 +9,12 @@
 //! Motion: a newly mounted message row fades in and rises 6pt on `motion::CONTROL`; pending to
 //! sent only animates opacity; existing rows only move to make room. Keep a message's `id`
 //! stable across pending -> sent (use a client nonce) or the row remounts and replays the entrance.
+//!
+//! Bodies are markup (see `body`); the `id` also scopes which spoilers are revealed.
 
 use std::rc::Rc;
 
-use rune::{El, SpringPair, Transition, col, el, row, text};
+use rune::{col, el, row, text, El, SpringPair, Transition};
 use rune_kit::Kit;
 
 use super::body;
@@ -69,6 +71,7 @@ pub struct MessageGroup {
     copy: Option<Hook>,
     more: Option<Hook>,
     retry: Option<Hook>,
+    wire: Option<body::Wire>,
 }
 
 fn hook<S: 'static>(f: impl Fn(&mut S, &str) + 'static) -> Hook {
@@ -89,7 +92,16 @@ impl MessageGroup {
             copy: None,
             more: None,
             retry: None,
+            wire: None,
         }
+    }
+
+    /// Makes links and spoilers in the bodies pressable in an app whose state is `S`: a link
+    /// opens in the default browser (http, https, mailto only), a spoiler reveals. Without it
+    /// they are drawn but inert.
+    pub fn links<S: 'static>(mut self) -> Self {
+        self.wire = Some(body::wire::<S>());
+        self
     }
 
     /// Splits a transcript into runs that each become one group.
@@ -190,7 +202,7 @@ impl MessageGroup {
             1.0
         };
         content = content.child(
-            body::render(k, &m.body)
+            body::render_with(k, &m.body, &m.id, self.wire.as_ref())
                 .key("body")
                 .opacity(dim)
                 .opacity_motion(motion::CONTROL),

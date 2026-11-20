@@ -15,12 +15,18 @@ mod backend;
 mod forms;
 #[path = "../src/format.rs"]
 mod format;
+#[path = "../src/layout.rs"]
+mod layout;
 #[path = "../src/look.rs"]
 mod look;
+#[path = "../src/perms.rs"]
+mod perms;
 #[path = "../src/real.rs"]
 mod real;
 #[path = "../src/state.rs"]
 mod state;
+#[path = "../src/structure.rs"]
+mod structure;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -171,10 +177,11 @@ fn drives_the_real_server() {
             Reply::Channels { guild: g, result } if *g == guild.id => Some(result.clone()),
             _ => None,
         })
-        .expect("channels");
+        .expect("channels")
+        .0;
     let general = channels[0].id;
     let extra = alice
-        .ask(Command::CreateChannel { guild: guild.id, name: "random".into() }, |r| match r {
+        .ask(Command::CreateChannel { guild: guild.id, name: "random".into(), section: None, icon: Default::default(), color: Default::default() }, |r| match r {
             Reply::ChannelCreated(c) => Some(c.clone()),
             _ => None,
         })
@@ -259,7 +266,7 @@ fn drives_the_real_server() {
     });
 
     // Errors come back as replies, not panics.
-    let denied = bob.ask(Command::CreateChannel { guild: guild.id, name: "nope".into() }, |r| match r {
+    let denied = bob.ask(Command::CreateChannel { guild: guild.id, name: "nope".into(), section: None, icon: Default::default(), color: Default::default() }, |r| match r {
         Reply::ChannelCreated(c) => Some(c.clone()),
         _ => None,
     });
@@ -471,4 +478,132 @@ fn a_dropped_gateway_refetches_what_was_missed() {
     rt.block_on(proxy.kill());
     rt.block_on(server.cleanup());
     std::fs::remove_file(&alice.prefs).ok();
+}
+
+/// Sections, a channel's icon and colour, and the layout, through the real server and a second
+/// client's gateway: what one user edits, the other sees as events.
+#[test]
+fn sections_icons_and_layout_reach_a_second_client() {
+    use thehideout_api::{ChannelIcon, PaletteColor};
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(Server::start());
+    let mut alice = Peer::new(&server.url);
+    let mut bob = Peer::new(&server.url);
+    alice.sign_up("alice");
+    alice.initial();
+    alice.connected();
+    let guild = alice
+        .ask(Command::CreateGuild { name: "friends".into() }, |r| match r {
+            Reply::GuildCreated(g) => Some(g.clone()),
+            _ => None,
+        })
+        .expect("create guild");
+    bob.sign_up("bob");
+    bob.initial();
+    bob.connected();
+    bob.ask(Command::JoinGuild { code: guild.invite_code.clone() }, |r| matches!(r, Reply::GuildJoined(Ok(_))).then_some(()));
+    // Both clients listen for the layout; drop what the setup produced.
+    alice.seen.clear();
+    bob.seen.clear();
+    let guild = guild.id;
+    let is_layout = |r: &Reply| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::LayoutUpdated { guild_id, layout })) if *guild_id == guild => Some(layout.clone()),
+        _ => None,
+    };
+
+    // Alice creates a section: her reply carries the layout, bob's gateway announces it.
+    let (section, layout) = alice
+        .ask(Command::CreateSection { guild, name: "Projects".into() }, |r| match r {
+            Reply::SectionSaved { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("create section");
+    assert_eq!(section.name, "Projects");
+    let seen = bob.wait("the new section on bob's gateway", |r| is_layout(r).filter(|l| l.sections.iter().any(|s| s.id == section.id)));
+    assert_eq!(seen.version, layout.version);
+
+    // A channel with its own icon and colour, created straight into the section.
+    let dev = alice
+        .ask(
+            Command::CreateChannel { guild, name: "dev".into(), section: Some(section.id), icon: ChannelIcon::new("code"), color: PaletteColor::Blue },
+            |r| match r {
+                Reply::ChannelCreated(c) => Some(c.clone()),
+                _ => None,
+            },
+        )
+        .expect("create channel");
+    assert_eq!((dev.section_id, dev.icon.as_str(), dev.color), (Some(section.id), "code", PaletteColor::Blue));
+    let announced = bob.wait("the channel on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::ChannelCreated(c))) if c.id == dev.id => Some(c.clone()),
+        _ => None,
+    });
+    assert_eq!((announced.icon.as_str(), announced.color), ("code", PaletteColor::Blue));
+    let after_create = bob.wait("the layout after the channel", |r| is_layout(r).filter(|l| layout::channels_in(l, Some(section.id)).contains(&dev.id)));
+
+    // Alice moves the channel to the top level with the version she holds; bob sees the new order.
+    let mine = layout::normalized(&after_create);
+    let moved = layout::move_channel_to(&mine, dev.id, None, 0).expect("a real move");
+    let saved = alice
+        .ask(Command::UpdateLayout { guild, layout: moved.clone() }, |r| match r {
+            Reply::LayoutSaved { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("update layout");
+    assert_eq!(layout::channels_in(&saved, None).first(), Some(&dev.id));
+    assert!(saved.version > mine.version, "the server bumped the version");
+    let seen = bob.wait("the move on bob's gateway", |r| is_layout(r).filter(|l| l.version == saved.version));
+    assert_eq!(layout::channels_in(&seen, None).first(), Some(&dev.id));
+
+    // The same stale version again is refused: refetch and retry.
+    let stale = alice.ask(Command::UpdateLayout { guild, layout: moved }, |r| match r {
+        Reply::LayoutSaved { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(stale, Err(ApiError::Conflict));
+
+    // Icon, colour and topic change; bob's gateway carries the new channel.
+    let updated = alice
+        .ask(
+            Command::UpdateChannel { guild, channel: dev.id, name: None, icon: Some(ChannelIcon::new("rocket")), color: Some(PaletteColor::Pink), topic: Some("ship it".into()) },
+            |r| match r {
+                Reply::ChannelSaved { result, .. } => Some(result.clone()),
+                _ => None,
+            },
+        )
+        .expect("update channel");
+    assert_eq!((updated.icon.as_str(), updated.color, updated.topic.as_str()), ("rocket", PaletteColor::Pink, "ship it"));
+    let seen = bob.wait("the update on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::ChannelUpdated(c))) if c.id == dev.id => Some(c.clone()),
+        _ => None,
+    });
+    assert_eq!((seen.icon.as_str(), seen.color, seen.topic.as_str(), seen.name.as_str()), ("rocket", PaletteColor::Pink, "ship it", "dev"));
+
+    // Bob may not: he has no role with MANAGE_CHANNELS.
+    let denied = bob.ask(Command::UpdateChannel { guild, channel: dev.id, name: Some("nope".into()), icon: None, color: None, topic: None }, |r| match r {
+        Reply::ChannelSaved { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(denied, Err(ApiError::PermissionDenied));
+    let access = bob
+        .ask(Command::LoadAccess { guild }, |r| match r {
+            Reply::Access { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("access");
+    assert!(access.member_roles.contains_key(&2) || !access.member_roles.is_empty(), "members are listed with their role ids");
+
+    // Deleting the section leaves its channels at the top level.
+    let after = alice
+        .ask(Command::DeleteSection { guild, section: section.id }, |r| match r {
+            Reply::SectionDeleted { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("delete section");
+    assert!(after.sections.is_empty());
+    assert!(layout::channels_in(&after, None).contains(&dev.id));
+
+    rt.block_on(server.cleanup());
+    std::fs::remove_file(&alice.prefs).ok();
+    std::fs::remove_file(&bob.prefs).ok();
 }

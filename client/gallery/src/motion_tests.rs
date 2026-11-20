@@ -6,7 +6,7 @@ use rune::{Env, Runtime, TextEdit};
 
 use super::*;
 
-const VIEWPORT: (f32, f32) = (1200.0, 3200.0);
+const VIEWPORT: (f32, f32) = (1200.0, 4200.0);
 
 fn chat_runtime() -> Runtime<G> {
     let mut g = init();

@@ -339,6 +339,7 @@ fn transcript(s: &G, k: &Kit) -> El {
         }
         c = c.child(
             MessageGroup::new(run)
+                .links::<G>()
                 .on_retry(|g: &mut G, id: &str| {
                     if let Some(m) = g.chat.messages.iter_mut().find(|m| m.id == id) {
                         m.delivery = DeliveryState::Pending;

@@ -200,6 +200,7 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
         for run in MessageGroup::runs(&msgs) {
             c = c.child(
                 MessageGroup::new(run)
+                    .links::<App>()
                     .on_retry(|a: &mut App, id: &str| {
                         if let Some(nonce) = id.strip_prefix("n:") {
                             let nonce = nonce.to_owned();

@@ -2,12 +2,13 @@
 //! search). The breadcrumb variant reads "Guild / # channel". `HEADER_H` tall with a bottom hairline.
 //! Static: nothing animates here.
 
-use rune::{El, col, icon, row, text};
+use rune::{El, Icon, col, icon, row, text};
 use rune_kit::Kit;
 
 use super::HEADER_H;
 use crate::icons::{CHEVRON_RIGHT, HASH};
 use crate::theme_of;
+use crate::tokens::color::Tone;
 use crate::tokens::{icon as size, type_};
 
 pub struct ChannelHeader {
@@ -15,6 +16,8 @@ pub struct ChannelHeader {
     guild: Option<String>,
     topic: Option<String>,
     actions: Vec<El>,
+    glyph: &'static Icon,
+    tint: Option<Tone>,
 }
 
 impl ChannelHeader {
@@ -24,6 +27,8 @@ impl ChannelHeader {
             guild: None,
             topic: None,
             actions: Vec::new(),
+            glyph: &HASH,
+            tint: None,
         }
     }
     /// The breadcrumb variant: "Guild / # channel" (no topic).
@@ -32,6 +37,12 @@ impl ChannelHeader {
             guild: Some(guild.into()),
             ..ChannelHeader::new(channel)
         }
+    }
+    /// The channel's own icon and palette colour in place of the plain `#`.
+    pub fn glyph(mut self, glyph: &'static Icon, tint: Option<Tone>) -> Self {
+        self.glyph = glyph;
+        self.tint = tint;
+        self
     }
     pub fn topic(mut self, topic: impl Into<String>) -> Self {
         self.topic = Some(topic.into());
@@ -45,8 +56,8 @@ impl ChannelHeader {
 
     pub fn build(self, k: &Kit) -> El {
         let t = theme_of(k);
-        let hash = icon(&HASH, size::MD)
-            .color(t.text_faint.color())
+        let hash = icon(self.glyph, size::MD)
+            .color(self.tint.unwrap_or(t.text_faint).color())
             .a11y_hidden();
         let mut left = row().grow(1.0).shrink().min_w(0.0).gap(8.0).center_y();
         if let Some(g) = &self.guild {

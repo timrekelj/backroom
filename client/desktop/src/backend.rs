@@ -2,7 +2,11 @@
 //! [`Reply`]s (see `apply.rs`); a [`Backend`] turns one into the other. The fake backend in
 //! `fake.rs` answers deterministically; `real.rs` talks to the server through `thehideout-api`.
 
-use thehideout_api::{ApiError, Channel, DmChannel, GatewayUpdate, Guild, Message, Page, User};
+use std::collections::HashMap;
+
+use thehideout_api::{
+    ApiError, Channel, ChannelIcon, DmChannel, GatewayUpdate, Guild, GuildLayout, Message, Page, PaletteColor, Role, Section, User,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -40,6 +44,40 @@ pub enum Command {
     CreateChannel {
         guild: u64,
         name: String,
+        section: Option<u64>,
+        icon: ChannelIcon,
+        color: PaletteColor,
+    },
+    /// The guild's roles and who holds which: what decides the controls shown.
+    LoadAccess {
+        guild: u64,
+    },
+    CreateSection {
+        guild: u64,
+        name: String,
+    },
+    RenameSection {
+        guild: u64,
+        section: u64,
+        name: String,
+    },
+    DeleteSection {
+        guild: u64,
+        section: u64,
+    },
+    /// The desired order, based on `layout.version`; a stale one is refused with `Conflict`.
+    UpdateLayout {
+        guild: u64,
+        layout: GuildLayout,
+    },
+    /// `None` fields stay as they are; empty icon/topic and `PaletteColor::None` clear.
+    UpdateChannel {
+        guild: u64,
+        channel: u64,
+        name: Option<String>,
+        icon: Option<ChannelIcon>,
+        color: Option<PaletteColor>,
+        topic: Option<String>,
     },
     LoadMembers {
         guild: u64,
@@ -64,10 +102,19 @@ pub struct Initial {
     pub me: User,
     pub guilds: Vec<Guild>,
     pub channels: Vec<Channel>,
+    /// Each guild's section layout.
+    pub layouts: HashMap<u64, GuildLayout>,
     pub dms: Vec<DmChannel>,
 }
 
 type R<T> = Result<T, ApiError>;
+
+/// A guild's roles and the role ids each member holds.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct GuildAccess {
+    pub roles: Vec<Role>,
+    pub member_roles: HashMap<u64, Vec<u64>>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
@@ -78,7 +125,28 @@ pub enum Reply {
     Refreshed(R<Initial>),
     Channels {
         guild: u64,
-        result: R<Vec<Channel>>,
+        result: R<(Vec<Channel>, GuildLayout)>,
+    },
+    Access {
+        guild: u64,
+        result: R<GuildAccess>,
+    },
+    /// Answer to `CreateSection` and `RenameSection`.
+    SectionSaved {
+        guild: u64,
+        result: R<(Section, GuildLayout)>,
+    },
+    SectionDeleted {
+        guild: u64,
+        result: R<GuildLayout>,
+    },
+    LayoutSaved {
+        guild: u64,
+        result: R<GuildLayout>,
+    },
+    ChannelSaved {
+        guild: u64,
+        result: R<Channel>,
     },
     Messages {
         channel: u64,

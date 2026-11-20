@@ -9,11 +9,13 @@ use std::rc::Rc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use thehideout_api::{
-    ApiError, Channel, ChannelIcon, DmChannel, Event, GatewayUpdate, Guild, Message, Page, PaletteColor, User,
+    ApiError, Channel, ChannelIcon, DmChannel, Event, GatewayUpdate, Guild, GuildLayout, LayoutEntry, Member, Message, Page,
+    PaletteColor, Permissions, Role, Section, User,
 };
 
-use crate::backend::{Backend, Command, Initial, Reply, Session};
-use crate::fake_lines::{DEV_LINES, DM_ANA_LINES, DM_BRUNO_LINES, GENERAL_LINES};
+use crate::backend::{Backend, Command, GuildAccess, Initial, Reply, Session};
+use crate::layout;
+use crate::fake_lines::{general_line, DEV_LINES, DM_ANA_LINES, DM_BRUNO_LINES};
 use crate::format::{utc, DAY};
 
 const PAGE: usize = 50;
@@ -30,6 +32,19 @@ pub const DEV: u64 = 11;
 pub const RANDOM: u64 = 12;
 /// Always empty.
 pub const PLANS: u64 = 13;
+pub const ANNOUNCE: u64 = 14;
+pub const DESIGN: u64 = 15;
+pub const MUSIC: u64 = 16;
+pub const GAMING: u64 = 17;
+pub const MEMES: u64 = 18;
+pub const BOOKS: u64 = 19;
+pub const BUILDING: u64 = 101;
+pub const HANGOUT: u64 = 102;
+pub const ARCHIVE: u64 = 103;
+/// Tim holds this in Cooking Club (which Bruno owns): a non-owner who may manage channels.
+pub const COOK_MODS: u64 = 3001;
+/// Bruno holds this in The Hideout.
+pub const HIDEOUT_MODS: u64 = 1001;
 pub const DM_ANA: u64 = 50;
 pub const DM_BRUNO: u64 = 51;
 pub const TIM: u64 = 1;
@@ -67,6 +82,14 @@ struct World {
     waker: Option<rune::Waker>,
     log: Vec<Command>,
     fail_sends: u32,
+    layouts: HashMap<u64, GuildLayout>,
+    roles: HashMap<u64, Vec<Role>>,
+    /// Role ids per (guild, user).
+    member_roles: HashMap<(u64, u64), Vec<u64>>,
+    next_section: u64,
+    /// The next `UpdateLayout` is refused as stale, and the server's version moves on (another
+    /// client got there first).
+    conflict_next: bool,
 }
 
 impl Default for World {
@@ -107,6 +130,12 @@ impl World {
             color: PaletteColor::None,
             topic: String::new(),
         };
+        let look = |mut c: Channel, icon: &str, color: PaletteColor, topic: &str| {
+            c.icon = ChannelIcon::new(icon);
+            c.color = color;
+            c.topic = topic.into();
+            c
+        };
         let guild = |id: u64, name: &str, owner: u64, code: &str| Guild {
             id,
             name: name.into(),
@@ -128,10 +157,16 @@ impl World {
                 guild(3, "Cooking Club", BRUNO, "COOK333"),
             ],
             channels: vec![
-                ch(GENERAL, 1, 0, "general"),
-                ch(DEV, 1, 1, "dev"),
-                ch(RANDOM, 1, 2, "random"),
-                ch(PLANS, 1, 3, "plans"),
+                look(ch(GENERAL, 1, 0, "general"), "chat-circle-dots", PaletteColor::Teal, "Say hi, share links, plan the weekend"),
+                look(ch(DEV, 1, 1, "dev"), "code", PaletteColor::Blue, "Builds, reviews and the odd rant about lifetimes"),
+                look(ch(RANDOM, 1, 2, "random"), "dice-five", PaletteColor::Amber, ""),
+                look(ch(PLANS, 1, 3, "plans"), "calendar-check", PaletteColor::Green, ""),
+                look(ch(ANNOUNCE, 1, 4, "announcements"), "megaphone", PaletteColor::Orange, "Read-only news from the mods"),
+                look(ch(DESIGN, 1, 5, "design"), "paint-brush", PaletteColor::Pink, ""),
+                look(ch(MUSIC, 1, 6, "music"), "music-notes", PaletteColor::Indigo, ""),
+                look(ch(GAMING, 1, 7, "gaming"), "game-controller", PaletteColor::Red, ""),
+                look(ch(MEMES, 1, 8, "memes"), "smiley", PaletteColor::Yellow, ""),
+                look(ch(BOOKS, 1, 9, "books"), "books", PaletteColor::Slate, ""),
                 ch(20, 2, 0, "general"),
                 ch(21, 2, 1, "gigs"),
                 ch(30, 3, 0, "recipes"),
@@ -153,9 +188,88 @@ impl World {
             waker: None,
             log: Vec::new(),
             fail_sends: 0,
+            layouts: HashMap::new(),
+            roles: HashMap::new(),
+            member_roles: HashMap::new(),
+            next_section: 200,
+            conflict_next: false,
         };
+        f.seed_structure();
         f.seed();
         f
+    }
+
+    /// Sections, layouts and roles: Tim owns The Hideout, is a plain member of Garage Band and a
+    /// moderator (not owner) of Cooking Club.
+    fn seed_structure(&mut self) {
+        let section = |id: u64, name: &str, position: i32| Section { id, guild_id: 1, name: name.into(), position };
+        self.layouts.insert(
+            1,
+            GuildLayout {
+                version: 3,
+                sections: vec![section(BUILDING, "Building", 0), section(HANGOUT, "Hangout", 1), section(ARCHIVE, "Archive", 2)],
+                entries: vec![
+                    LayoutEntry { section_id: None, channel_ids: vec![GENERAL, DEV, ANNOUNCE] },
+                    LayoutEntry { section_id: Some(BUILDING), channel_ids: vec![DESIGN, PLANS] },
+                    LayoutEntry { section_id: Some(HANGOUT), channel_ids: vec![RANDOM, MUSIC, GAMING, MEMES] },
+                    LayoutEntry { section_id: Some(ARCHIVE), channel_ids: vec![BOOKS] },
+                ],
+            },
+        );
+        for (g, ids) in [(2, vec![20, 21]), (3, vec![30, 31])] {
+            self.layouts.insert(g, GuildLayout { version: 1, sections: vec![], entries: vec![LayoutEntry { section_id: None, channel_ids: ids }] });
+        }
+        let role = |id: u64, guild: u64, name: &str, permissions: Permissions| Role {
+            id,
+            guild_id: guild,
+            name: name.into(),
+            color: PaletteColor::Teal,
+            position: 1,
+            permissions,
+            created_at: time(utc(2026, 1, 6, 9, 0)),
+        };
+        self.roles.insert(1, vec![role(HIDEOUT_MODS, 1, "Moderator", Permissions::MANAGE_CHANNELS)]);
+        self.roles.insert(3, vec![role(COOK_MODS, 3, "Moderator", Permissions::MANAGE_CHANNELS)]);
+        self.member_roles.insert((1, BRUNO), vec![HIDEOUT_MODS]);
+        self.member_roles.insert((3, TIM), vec![COOK_MODS]);
+        for g in [1, 2, 3] {
+            self.sync_channels(g);
+        }
+    }
+
+    /// Channels carry their place too; keep it in step with the layout.
+    fn sync_channels(&mut self, guild: u64) {
+        let Some(l) = self.layouts.get(&guild) else { return };
+        for e in &l.entries {
+            for (i, id) in e.channel_ids.iter().enumerate() {
+                if let Some(c) = self.channels.iter_mut().find(|c| c.id == *id) {
+                    c.section_id = e.section_id;
+                    c.position = i as i32;
+                }
+            }
+        }
+    }
+
+    fn can_manage(&self, guild: u64, user: u64) -> bool {
+        let owner = self.guilds.iter().find(|g| g.id == guild).map(|g| g.owner_id);
+        if owner == Some(user) {
+            return true;
+        }
+        let mine = self.member_roles.get(&(guild, user)).map_or(&[][..], Vec::as_slice);
+        self.roles.get(&guild).is_some_and(|rs| rs.iter().any(|r| mine.contains(&r.id) && r.permissions.contains(Permissions::MANAGE_CHANNELS)))
+    }
+
+    /// Bumps the layout version, as the server's `publish_layout` does. The caller queues the
+    /// `LayoutUpdated` event (`layout_event`) after its own reply.
+    fn publish_layout(&mut self, guild: u64) -> GuildLayout {
+        self.sync_channels(guild);
+        let l = self.layouts.entry(guild).or_default();
+        l.version += 1;
+        l.clone()
+    }
+
+    fn layout_event(&self, guild: u64) -> Reply {
+        Reply::Gateway(GatewayUpdate::Event(Event::LayoutUpdated { guild_id: guild, layout: self.layouts.get(&guild).cloned().unwrap_or_default() }))
     }
 
     fn push(&mut self, channel: u64, author: u64, at: i64, content: &str) {
@@ -223,7 +337,7 @@ impl World {
                 GENERAL,
                 authors[i],
                 t,
-                GENERAL_LINES[(i * 17 + i / 60) % GENERAL_LINES.len()],
+                general_line(i),
             );
         }
         for (i, line) in DEV_LINES.iter().enumerate() {
@@ -272,6 +386,25 @@ impl World {
     #[cfg_attr(not(test), allow(dead_code))]
     fn set_fail_sends(&mut self, n: u32) {
         self.fail_sends = n;
+    }
+
+    /// The next `UpdateLayout` is refused as stale (another client edited first).
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn set_conflict_next(&mut self) {
+        self.conflict_next = true;
+    }
+
+    /// `user` gains (or loses) the moderator role of `guild`, announced as the gateway would.
+    fn set_moderator(&mut self, guild: u64, user: u64, on: bool) {
+        let role = self.roles.get(&guild).and_then(|r| r.first()).map(|r| r.id);
+        let Some(role) = role else { return };
+        let ids = self.member_roles.entry((guild, user)).or_default();
+        ids.retain(|r| *r != role);
+        if on {
+            ids.push(role);
+        }
+        let member = Member { user: self.users.iter().find(|u| u.id == user).cloned().unwrap(), role_ids: ids.clone(), joined_at: time(utc(2026, 1, 6, 9, 0)) };
+        self.enqueue(Reply::Gateway(GatewayUpdate::Event(Event::MemberUpdated { guild_id: guild, member })));
     }
 
     /// `author` posts `content` in `channel`, as the gateway would deliver it.
@@ -336,10 +469,12 @@ impl World {
             .filter(|d| d.participants.iter().any(|p| p.id == self.me.id))
             .cloned()
             .collect();
+        let layouts = mine.iter().filter_map(|g| self.layouts.get(&g.id).map(|l| (g.id, l.clone()))).collect();
         Initial {
             me: self.me.clone(),
             guilds: mine,
             channels,
+            layouts,
             dms,
         }
     }
@@ -424,15 +559,123 @@ impl World {
             ],
             Command::Refresh => vec![Reply::Refreshed(Ok(self.initial()))],
             Command::LoadChannels { guild } => {
-                vec![Reply::Channels {
-                    guild,
-                    result: Ok(self
-                        .channels
-                        .iter()
-                        .filter(|c| c.guild_id == guild)
-                        .cloned()
-                        .collect()),
-                }]
+                let channels = self.channels.iter().filter(|c| c.guild_id == guild).cloned().collect();
+                let layout = self.layouts.get(&guild).cloned().unwrap_or_default();
+                vec![Reply::Channels { guild, result: Ok((channels, layout)) }]
+            }
+            Command::LoadAccess { guild } => {
+                let roles = self.roles.get(&guild).cloned().unwrap_or_default();
+                let member_roles = self.member_roles.iter().filter(|((g, _), _)| *g == guild).map(|((_, u), r)| (*u, r.clone())).collect();
+                vec![Reply::Access { guild, result: Ok(GuildAccess { roles, member_roles }) }]
+            }
+            Command::CreateSection { guild, name } => {
+                let r = if !self.can_manage(guild, me) {
+                    Err(ApiError::PermissionDenied)
+                } else {
+                    self.next_section += 1;
+                    let section = Section { id: self.next_section, guild_id: guild, name, position: 0 };
+                    let l = self.layouts.entry(guild).or_default();
+                    l.sections.push(section.clone());
+                    l.entries.push(LayoutEntry { section_id: Some(section.id), channel_ids: vec![] });
+                    let l = self.publish_layout(guild);
+                    Ok((section, l))
+                };
+                let echo = r.is_ok().then(|| self.layout_event(guild));
+                std::iter::once(Reply::SectionSaved { guild, result: r }).chain(echo).collect()
+            }
+            Command::RenameSection { guild, section, name } => {
+                let r = if !self.can_manage(guild, me) {
+                    Err(ApiError::PermissionDenied)
+                } else {
+                    match self.layouts.get_mut(&guild).and_then(|l| l.sections.iter_mut().find(|s| s.id == section)) {
+                        None => Err(ApiError::NotFound),
+                        Some(s) => {
+                            s.name = name;
+                            let s = s.clone();
+                            Ok((s, self.publish_layout(guild)))
+                        }
+                    }
+                };
+                let echo = r.is_ok().then(|| self.layout_event(guild));
+                std::iter::once(Reply::SectionSaved { guild, result: r }).chain(echo).collect()
+            }
+            Command::DeleteSection { guild, section } => {
+                let r = if !self.can_manage(guild, me) {
+                    Err(ApiError::PermissionDenied)
+                } else if !self.layouts.get(&guild).is_some_and(|l| l.sections.iter().any(|s| s.id == section)) {
+                    Err(ApiError::NotFound)
+                } else {
+                    let l = self.layouts.get_mut(&guild).unwrap();
+                    l.sections.retain(|s| s.id != section);
+                    let moved = l.entries.iter().find(|e| e.section_id == Some(section)).map(|e| e.channel_ids.clone()).unwrap_or_default();
+                    l.entries.retain(|e| e.section_id != Some(section));
+                    if let Some(top) = l.entries.iter_mut().find(|e| e.section_id.is_none()) {
+                        top.channel_ids.extend(moved);
+                    }
+                    Ok(self.publish_layout(guild))
+                };
+                let echo = r.is_ok().then(|| self.layout_event(guild));
+                std::iter::once(Reply::SectionDeleted { guild, result: r }).chain(echo).collect()
+            }
+            Command::UpdateLayout { guild, layout: want } => {
+                let result = if !self.can_manage(guild, me) {
+                    Err(ApiError::PermissionDenied)
+                } else if std::mem::take(&mut self.conflict_next) {
+                    // Someone else's edit lands first.
+                    self.publish_layout(guild);
+                    Err(ApiError::Conflict)
+                } else {
+                    let cur = self.layouts.get(&guild).cloned().unwrap_or_default();
+                    let sorted = |v: Vec<u64>| {
+                        let mut v = v;
+                        v.sort_unstable();
+                        v
+                    };
+                    let (a, b) = (layout::normalized(&cur), layout::normalized(&want));
+                    if want.version != cur.version {
+                        Err(ApiError::Conflict)
+                    } else if sorted(a.sections.iter().map(|s| s.id).collect()) != sorted(b.sections.iter().map(|s| s.id).collect())
+                        || sorted(layout::channel_order(&a)) != sorted(layout::channel_order(&b))
+                    {
+                        Err(ApiError::InvalidArgument("layout is not a permutation of the current one".into()))
+                    } else {
+                        let l = self.layouts.get_mut(&guild).unwrap();
+                        l.sections = b.sections.clone();
+                        l.entries = b.entries;
+                        Ok(self.publish_layout(guild))
+                    }
+                };
+                // A refusal for a stale version still means the server's layout moved on.
+                let echo = (result.is_ok() || result == Err(ApiError::Conflict)).then(|| self.layout_event(guild));
+                std::iter::once(Reply::LayoutSaved { guild, result }).chain(echo).collect()
+            }
+            Command::UpdateChannel { guild, channel, name, icon, color, topic } => {
+                let r = if !self.can_manage(guild, me) {
+                    Err(ApiError::PermissionDenied)
+                } else if name.as_ref().is_some_and(|n| self.channels.iter().any(|c| c.guild_id == guild && c.id != channel && &c.name == n)) {
+                    Err(ApiError::AlreadyExists)
+                } else {
+                    match self.channels.iter_mut().find(|c| c.guild_id == guild && c.id == channel) {
+                        None => Err(ApiError::NotFound),
+                        Some(c) => {
+                            if let Some(n) = name {
+                                c.name = n;
+                            }
+                            if let Some(i) = icon {
+                                c.icon = i;
+                            }
+                            if let Some(col) = color {
+                                c.color = col;
+                            }
+                            if let Some(t) = topic {
+                                c.topic = t;
+                            }
+                            Ok(c.clone())
+                        }
+                    }
+                };
+                let echo = r.clone().ok().map(|c| Reply::Gateway(GatewayUpdate::Event(Event::ChannelUpdated(c))));
+                std::iter::once(Reply::ChannelSaved { guild, result: r }).chain(echo).collect()
             }
             Command::LoadMessages { channel, before } => vec![Reply::Messages {
                 channel,
@@ -504,6 +747,7 @@ impl World {
                     topic: String::new(),
                 });
                 self.members.insert(id, vec![me]);
+                self.layouts.insert(id, GuildLayout { version: 1, sections: vec![], entries: vec![LayoutEntry { section_id: None, channel_ids: vec![id * 10] }] });
                 vec![Reply::GuildCreated(Ok(g))]
             }
             Command::JoinGuild { code } => {
@@ -524,40 +768,39 @@ impl World {
                 };
                 vec![Reply::GuildJoined(r)]
             }
-            Command::CreateChannel { guild, name } => {
-                let owner = self
-                    .guilds
-                    .iter()
-                    .find(|g| g.id == guild)
-                    .map(|g| g.owner_id);
-                let r = match owner {
-                    None => Err(ApiError::NotFound),
-                    Some(o) if o != me => Err(ApiError::PermissionDenied),
-                    Some(_)
-                        if self
-                            .channels
-                            .iter()
-                            .any(|c| c.guild_id == guild && c.name == name) =>
-                    {
-                        Err(ApiError::AlreadyExists)
-                    }
-                    Some(_) => {
-                        let c = Channel {
-                            id: 1000 + self.channels.len() as u64,
-                            guild_id: guild,
-                            name,
-                            created_at: time(now_unix()),
-                            section_id: None,
-                            position: self.channels.iter().filter(|c| c.guild_id == guild).count() as i32,
-                            icon: ChannelIcon::default(),
-                            color: PaletteColor::None,
-                            topic: String::new(),
-                        };
-                        self.channels.push(c.clone());
-                        Ok(c)
-                    }
+            Command::CreateChannel { guild, name, section, icon, color } => {
+                let known = self.guilds.iter().any(|g| g.id == guild);
+                let r = if !known {
+                    Err(ApiError::NotFound)
+                } else if !self.can_manage(guild, me) {
+                    Err(ApiError::PermissionDenied)
+                } else if self.channels.iter().any(|c| c.guild_id == guild && c.name == name) {
+                    Err(ApiError::AlreadyExists)
+                } else {
+                    let c = Channel {
+                        id: 1000 + self.channels.len() as u64,
+                        guild_id: guild,
+                        name,
+                        created_at: time(now_unix()),
+                        section_id: section,
+                        position: 0,
+                        icon,
+                        color,
+                        topic: String::new(),
+                    };
+                    self.channels.push(c.clone());
+                    let l = self.layouts.entry(guild).or_default();
+                    *l = layout::with_channel(l, c.id, section);
+                    Ok(c)
                 };
-                vec![Reply::ChannelCreated(r)]
+                let mut out = vec![Reply::ChannelCreated(r.clone())];
+                if let Ok(c) = r {
+                    // The server announces the channel, then the new layout.
+                    out.push(Reply::Gateway(GatewayUpdate::Event(Event::ChannelCreated(c))));
+                    self.publish_layout(guild);
+                    out.push(self.layout_event(guild));
+                }
+                out
             }
             Command::LoadMembers { guild } => {
                 let ids = self.members.get(&guild).cloned().unwrap_or_default();
@@ -652,6 +895,30 @@ impl FakeBackend {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn fail_sends(&self, n: u32) {
         self.0.borrow_mut().set_fail_sends(n);
+    }
+
+    /// The next `UpdateLayout` is refused as stale (another client edited first).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn conflict_next_layout(&self) {
+        self.0.borrow_mut().set_conflict_next();
+    }
+
+    /// `user` gains or loses the Moderator role (MANAGE_CHANNELS) of `guild`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_moderator(&self, guild: u64, user: u64, on: bool) {
+        self.0.borrow_mut().set_moderator(guild, user, on);
+    }
+
+    /// The server's layout of `guild` (tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn layout(&self, guild: u64) -> GuildLayout {
+        self.0.borrow().layouts.get(&guild).cloned().unwrap_or_default()
+    }
+
+    /// The server's copy of a channel (tests).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn channel(&self, id: u64) -> Option<Channel> {
+        self.0.borrow().channels.iter().find(|c| c.id == id).cloned()
     }
 
     /// `author` posts `content` in `channel`, as the gateway would deliver it.

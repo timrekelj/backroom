@@ -15,7 +15,7 @@ use crate::state::{AppState, Delivery, Phase, Place, Screen};
 
 const VIEWPORT: (f32, f32) = (1280.0, 800.0);
 
-fn runtime(app: App) -> Runtime<App> {
+pub(crate) fn runtime(app: App) -> Runtime<App> {
     let mut rt = Runtime::new(
         app,
         view,
@@ -32,46 +32,46 @@ fn runtime(app: App) -> Runtime<App> {
 }
 
 /// A signed-in app on the fake world (the data is already in), with replies `latency` seconds late.
-fn signed_in(latency: f64) -> (Runtime<App>, FakeBackend) {
+pub(crate) fn signed_in(latency: f64) -> (Runtime<App>, FakeBackend) {
     let (app, fake) = booted(true);
     fake.set_latency(latency);
     (runtime(app), fake)
 }
 
-fn settle(rt: &mut Runtime<App>, frames: usize) {
+pub(crate) fn settle(rt: &mut Runtime<App>, frames: usize) {
     for _ in 0..frames {
         rt.frame(1.0 / 60.0);
     }
 }
 
-fn click_at(rt: &mut Runtime<App>, (x, y): (f32, f32)) {
+pub(crate) fn click_at(rt: &mut Runtime<App>, (x, y): (f32, f32)) {
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
 }
 
-fn click(rt: &mut Runtime<App>, key: &str) {
+pub(crate) fn click(rt: &mut Runtime<App>, key: &str) {
     let at = rt.find(key).unwrap_or_else(|| panic!("no element {key}"));
     click_at(rt, at);
 }
 
-fn key(rt: &mut Runtime<App>, key: Key) {
+pub(crate) fn key(rt: &mut Runtime<App>, key: Key) {
     rt.key(KeyEvent {
         key,
         mods: Mods::default(),
     });
 }
 
-fn type_text(rt: &mut Runtime<App>, s: &str) {
+pub(crate) fn type_text(rt: &mut Runtime<App>, s: &str) {
     key(rt, Key::Text(s.into()));
 }
 
-fn rect_of(rt: &Runtime<App>, key: &str) -> [f32; 4] {
+pub(crate) fn rect_of(rt: &Runtime<App>, key: &str) -> [f32; 4] {
     rt.presented(key)
         .unwrap_or_else(|| panic!("no element {key}"))
         .0
 }
 
-fn has(rt: &Runtime<App>, key: &str) -> bool {
+pub(crate) fn has(rt: &Runtime<App>, key: &str) -> bool {
     rt.find(key).is_some()
 }
 

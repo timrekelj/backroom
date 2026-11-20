@@ -1,8 +1,11 @@
 //! Form state shared by the auth screen and the dialogs: which mode, what is typed, what went
 //! wrong. Pure data; `AppState` owns the instances and the transitions that submit them.
 
+use std::rc::Rc;
+
 use rune::TextEdit;
-use thehideout_api::ApiError;
+use thehideout_api::{ApiError, Channel};
+use thehideout_design::icons::catalog::{self, CatalogIcon};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Phase {
@@ -87,11 +90,84 @@ pub enum DialogKind {
     CreateChannel { guild: u64 },
     Invite { guild: u64 },
     NewDm,
+    CreateSection { guild: u64 },
+    RenameSection { guild: u64, section: u64 },
+    /// A confirmation: no field, only "Delete section".
+    DeleteSection { guild: u64, section: u64 },
+    ChannelSettings { guild: u64, channel: u64 },
+}
+
+/// The look and place fields of the channel dialogs (create and settings): where the channel
+/// goes, its icon and colour, topic, and the icon picker's search.
+pub struct ChannelForm {
+    /// `None` = top level. Only the create dialog offers the choice.
+    pub section: Option<u64>,
+    pub section_open: bool,
+    /// Phosphor name, `""` = the default `#`.
+    pub icon: String,
+    /// Palette key, `""` = none.
+    pub color: &'static str,
+    pub topic: TextEdit,
+    pub picker_open: bool,
+    /// The picker tab; only 0 (Icons) is populated so far.
+    pub tab: usize,
+    pub search: TextEdit,
+    /// The keyboard-chosen result in `results`.
+    pub highlight: Option<usize>,
+    pub results: Rc<Vec<&'static CatalogIcon>>,
+    /// What the channel had when the dialog opened (settings), to send only what changed.
+    pub original: Option<Channel>,
+}
+
+impl ChannelForm {
+    pub fn new(section: Option<u64>) -> ChannelForm {
+        ChannelForm {
+            section,
+            section_open: false,
+            icon: String::new(),
+            color: "",
+            topic: TextEdit::new(""),
+            picker_open: false,
+            tab: 0,
+            search: TextEdit::new(""),
+            highlight: None,
+            results: Rc::new(catalog::search("")),
+            original: None,
+        }
+    }
+
+    pub fn of(c: &Channel) -> ChannelForm {
+        let mut f = ChannelForm::new(c.section_id);
+        f.icon = c.icon.0.clone();
+        f.color = thehideout_design::PALETTE_KEYS.iter().copied().find(|k| *k == c.color.as_key()).unwrap_or("");
+        f.topic = TextEdit::new(&c.topic);
+        f.original = Some(c.clone());
+        f
+    }
+
+    /// Recomputes `results` after the search text changed, and puts the highlight on the best one.
+    pub fn research(&mut self) {
+        self.results = Rc::new(catalog::search(&self.search.text));
+        self.highlight = (!self.results.is_empty()).then_some(0);
+    }
+
+    /// Arrow keys in the grid: `dx` columns, `dy` rows. Starts at the first result.
+    pub fn step_highlight(&mut self, dx: i32, dy: i32) {
+        use thehideout_design::components::chat::pickers::GRID_COLS;
+        let n = self.results.len() as i32;
+        if n == 0 {
+            return;
+        }
+        let at = self.highlight.map_or(-dx - dy * GRID_COLS as i32, |h| h as i32) + dx + dy * GRID_COLS as i32;
+        self.highlight = Some(at.clamp(0, n - 1) as usize);
+    }
 }
 
 pub struct DialogState {
     pub kind: DialogKind,
     pub input: TextEdit,
+    /// Present for the channel dialogs.
+    pub channel: Option<ChannelForm>,
     pub error: Option<String>,
     pub phase: Phase,
 }

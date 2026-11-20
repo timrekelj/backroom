@@ -7,7 +7,7 @@
 //! | [`GuildBadge`], [`RailTile`] | `guild_badge` |
 //! | [`Segmented`] | `segmented` |
 //! | [`NavRow`], [`ChannelRow`], [`SidebarSection`] | `nav_row`, `section` |
-//! | [`MessageGroup`], [`ChatMessage`] | `message`, `body` |
+//! | [`MessageGroup`], [`ChatMessage`] | `message`, `body`, `markdown` |
 //! | [`DateDivider`], [`NewMessagesDivider`] | `dividers` |
 //! | [`Composer`] | `composer` |
 //! | [`ChannelHeader`], [`MemberRow`], [`EmptyState`] | `header`, `member_row`, `empty_state` |
@@ -30,10 +30,12 @@ pub mod dividers;
 pub mod empty_state;
 pub mod guild_badge;
 pub mod header;
+pub mod markdown;
 pub mod member_row;
 pub mod message;
 pub mod segmented;
 pub mod nav_row;
+pub mod pickers;
 pub mod section;
 pub mod toast;
 
@@ -47,6 +49,7 @@ pub use header::ChannelHeader;
 pub use member_row::MemberRow;
 pub use message::{ChatMessage, DeliveryState, GROUP_WINDOW_SECS, MessageGroup, collapses_into};
 pub use nav_row::{ChannelRow, NavRow};
+pub use pickers::{ColorSwatches, IconGrid, PickerTabs};
 pub use segmented::Segmented;
 pub use section::SidebarSection;
 pub use toast::{Toast, ToastKind};

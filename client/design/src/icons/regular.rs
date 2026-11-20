@@ -45,6 +45,11 @@ pub static PLUS: Icon = Icon {
     view: 256.0,
     body: r##"<path d="M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z"/>"##,
 };
+pub static FOLDER_PLUS: Icon = Icon {
+    name: "folder-plus",
+    view: 256.0,
+    body: r##"<path d="M216,72H131.31L104,44.69A15.86,15.86,0,0,0,92.69,40H40A16,16,0,0,0,24,56V200.62A15.4,15.4,0,0,0,39.38,216H216.89A15.13,15.13,0,0,0,232,200.89V88A16,16,0,0,0,216,72ZM92.69,56l16,16H40V56ZM216,200H40V88H216Zm-88-88a8,8,0,0,1,8,8v16h16a8,8,0,0,1,0,16H136v16a8,8,0,0,1-16,0V152H104a8,8,0,0,1,0-16h16V120A8,8,0,0,1,128,112Z"/>"##,
+};
 pub static X: Icon = Icon {
     name: "x",
     view: 256.0,
@@ -84,6 +89,16 @@ pub static ARROW_LEFT: Icon = Icon {
     name: "arrow-left",
     view: 256.0,
     body: r##"<path d="M224,128a8,8,0,0,1-8,8H59.31l58.35,58.34a8,8,0,0,1-11.32,11.32l-72-72a8,8,0,0,1,0-11.32l72-72a8,8,0,0,1,11.32,11.32L59.31,120H216A8,8,0,0,1,224,128Z"/>"##,
+};
+pub static ARROW_UP: Icon = Icon {
+    name: "arrow-up",
+    view: 256.0,
+    body: r##"<path d="M205.66,117.66a8,8,0,0,1-11.32,0L136,59.31V216a8,8,0,0,1-16,0V59.31L61.66,117.66a8,8,0,0,1-11.32-11.32l72-72a8,8,0,0,1,11.32,0l72,72A8,8,0,0,1,205.66,117.66Z"/>"##,
+};
+pub static ARROW_DOWN: Icon = Icon {
+    name: "arrow-down",
+    view: 256.0,
+    body: r##"<path d="M205.66,149.66l-72,72a8,8,0,0,1-11.32,0l-72-72a8,8,0,0,1,11.32-11.32L120,196.69V40a8,8,0,0,1,16,0V196.69l58.34-58.35a8,8,0,0,1,11.32,11.32Z"/>"##,
 };
 pub static BELL: Icon = Icon {
     name: "bell",
@@ -247,7 +262,7 @@ pub static INFO: Icon = Icon {
 };
 
 /// Every icon in this weight, in catalog order.
-pub static ALL: [&Icon; 48] = [
+pub static ALL: [&Icon; 51] = [
     &HASH,
     &AT,
     &CHAT,
@@ -256,6 +271,7 @@ pub static ALL: [&Icon; 48] = [
     &GEAR,
     &SEARCH,
     &PLUS,
+    &FOLDER_PLUS,
     &X,
     &CHECK,
     &CHEVRON_DOWN,
@@ -264,6 +280,8 @@ pub static ALL: [&Icon; 48] = [
     &CHEVRON_UP,
     &CHEVRON_UP_DOWN,
     &ARROW_LEFT,
+    &ARROW_UP,
+    &ARROW_DOWN,
     &BELL,
     &BELL_SLASH,
     &SMILEY,

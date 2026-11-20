@@ -15,6 +15,7 @@ use super::ROW_H;
 use crate::components::{Avatar, MentionPill, UnreadDot};
 use crate::icons::HASH;
 use crate::theme_of;
+use crate::tokens::color::Tone;
 use crate::tokens::{icon as size, motion, radius, type_};
 
 struct Row {
@@ -30,6 +31,12 @@ struct Row {
     state: State,
     group: String,
     acts: Acts,
+    /// A palette colour for the icon (channels); the selected highlight takes a faint wash of it.
+    tint: Option<Tone>,
+    /// A control shown on hover at the row's right edge (a "more" button).
+    trailing: Option<El>,
+    /// Replaces the label as the element key, so a rename keeps the row (and its slide) alive.
+    id: Option<String>,
 }
 
 impl Row {
@@ -46,6 +53,9 @@ impl Row {
             state: State::Rest,
             group: "rows".into(),
             acts: Acts::default(),
+            tint: None,
+            trailing: None,
+            id: None,
         }
     }
 
@@ -61,7 +71,9 @@ impl Row {
         } else {
             t.text_muted
         };
-        let icon_ink = if self.selected {
+        let icon_ink = if let Some(tone) = self.tint {
+            tone.alpha(if self.muted { 0.55 } else { 1.0 })
+        } else if self.selected {
             t.text
         } else if self.muted {
             t.text_faint
@@ -82,7 +94,7 @@ impl Row {
         };
 
         let mut e = row()
-            .key(format!("{}-row-{}", self.group, self.label))
+            .key(format!("{}-row-{}", self.group, self.id.as_deref().unwrap_or(&self.label)))
             .role("button")
             .label(self.label.clone())
             .w_full()
@@ -103,7 +115,10 @@ impl Row {
                 .w_full()
                 .h_full()
                 .radius(radius::MD)
-                .fill(t.pressed.color())
+                .fill(match self.tint {
+                    Some(tone) => over(tone.alpha(0.12).color(), t.pressed.color()),
+                    None => t.pressed.color(),
+                })
                 .token_motion(motion::REFLOW)
                 .transition(Transition::opacity())
                 .a11y_hidden();
@@ -130,12 +145,25 @@ impl Row {
                 .font(font)
                 .color(ink.color())
                 .grow(1.0)
+                .shrink()
+                .max_lines(1)
                 .a11y_hidden(),
         );
         if self.mentions > 0 {
             e = e.child(MentionPill::new(self.mentions).build(k));
         } else if self.unread && !self.muted && !self.selected {
             e = e.child(UnreadDot::build(k));
+        }
+        if let Some(more) = self.trailing {
+            e = e.hover_group().child(
+                row()
+                    .key("more")
+                    .pin(Some(0.0), Some(4.0), Some(0.0), Some(0.0))
+                    .justify_end()
+                    .center_y()
+                    .group_opacity(0.0, 1.0)
+                    .child(more),
+            );
         }
         self.acts.apply(e, true)
     }
@@ -214,3 +242,27 @@ impl ChannelRow {
     }
 }
 row_api!(ChannelRow);
+
+impl ChannelRow {
+    /// A Phosphor icon in place of `#` (the channel's own), regular weight even when selected.
+    pub fn icon(mut self, glyph: &'static Icon) -> Self {
+        self.0.glyph = glyph;
+        self.0.glyph_selected = glyph;
+        self
+    }
+    /// Tints the icon with a palette colour and washes the selected highlight with it.
+    pub fn tint(mut self, tone: Option<Tone>) -> Self {
+        self.0.tint = tone;
+        self
+    }
+    /// A built control that fades in at the row's right edge on hover (an `IconButton`).
+    pub fn trailing(mut self, control: El) -> Self {
+        self.0.trailing = Some(control);
+        self
+    }
+    /// A stable id for the element key (the channel id), so renames and moves keep the row.
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.0.id = Some(id.into());
+        self
+    }
+}

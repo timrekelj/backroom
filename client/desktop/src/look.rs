@@ -6,6 +6,7 @@
 //! of the frame loop. The thread shares the one `Prefs` with the network backend, which keeps
 //! the session in the same file, so neither can overwrite the other's keys.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -14,6 +15,8 @@ use thehideout_design::ThemeSpec;
 
 /// The prefs key.
 pub const KEY: &str = "appearance";
+/// The prefs key of the folded sidebar sections: `{"<guild>": [<section>, ...]}`.
+pub const COLLAPSED_KEY: &str = "collapsed_sections";
 
 pub use crate::real::SharedPrefs;
 
@@ -54,24 +57,48 @@ pub fn load(prefs: &SharedPrefs) -> Look {
     prefs.lock().unwrap_or_else(|e| e.into_inner()).get(KEY).unwrap_or_default()
 }
 
-/// Writes looks to the prefs on its own thread; a burst of changes is written as its last one.
+/// The folded sections as `(guild, section)` pairs; unreadable prefs mean none are folded.
+pub fn load_collapsed(prefs: &SharedPrefs) -> HashSet<(u64, u64)> {
+    let saved: HashMap<String, Vec<u64>> = prefs.lock().unwrap_or_else(|e| e.into_inner()).get(COLLAPSED_KEY).unwrap_or_default();
+    saved.into_iter().filter_map(|(g, v)| g.parse::<u64>().ok().map(|g| (g, v))).flat_map(|(g, v)| v.into_iter().map(move |s| (g, s))).collect()
+}
+
+enum Save {
+    Look(Look),
+    Collapsed(HashMap<String, Vec<u64>>),
+}
+
+/// Writes looks and folded sections to the prefs on its own thread; a burst of changes is
+/// written as its last one of each kind.
 pub struct Saver {
-    tx: Option<Sender<Look>>,
+    tx: Option<Sender<Save>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Saver {
     pub fn spawn(prefs: SharedPrefs) -> Saver {
-        let (tx, rx) = mpsc::channel::<Look>();
+        let (tx, rx) = mpsc::channel::<Save>();
         let thread = thread::Builder::new()
             .name("thehideout-prefs".into())
             .spawn(move || {
-                while let Ok(mut look) = rx.recv() {
+                while let Ok(first) = rx.recv() {
+                    let (mut look, mut collapsed) = (None, None);
+                    let mut take = |s: Save| match s {
+                        Save::Look(l) => look = Some(l),
+                        Save::Collapsed(c) => collapsed = Some(c),
+                    };
+                    take(first);
                     while let Ok(newer) = rx.try_recv() {
-                        look = newer;
+                        take(newer);
                     }
-                    // A look that can't be saved only costs the next launch's choice.
-                    prefs.lock().unwrap_or_else(|e| e.into_inner()).set(KEY, &look).ok();
+                    // A pref that can't be saved only costs the next launch's choice.
+                    let mut p = prefs.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(l) = look {
+                        p.set(KEY, &l).ok();
+                    }
+                    if let Some(c) = collapsed {
+                        p.set(COLLAPSED_KEY, &c).ok();
+                    }
                 }
             })
             .ok();
@@ -80,7 +107,18 @@ impl Saver {
 
     pub fn save(&self, look: Look) {
         if let Some(tx) = &self.tx {
-            tx.send(look).ok();
+            tx.send(Save::Look(look)).ok();
+        }
+    }
+
+    pub fn save_collapsed(&self, collapsed: &HashSet<(u64, u64)>) {
+        let mut by_guild: HashMap<String, Vec<u64>> = HashMap::new();
+        for (g, s) in collapsed {
+            by_guild.entry(g.to_string()).or_default().push(*s);
+        }
+        by_guild.values_mut().for_each(|v| v.sort_unstable());
+        if let Some(tx) = &self.tx {
+            tx.send(Save::Collapsed(by_guild)).ok();
         }
     }
 }
