@@ -94,6 +94,8 @@ type Hook = Box<dyn Fn(El, &str) -> El>;
 /// Hooks the chips: the message id and the reaction key.
 type ChipHook = Box<dyn Fn(El, &str, &str) -> El>;
 /// Looks something up by author id: their picture, or their name's colour.
+/// Builds what hangs under a message's body (its attachments and embeds), by message id.
+type Extras = Rc<dyn Fn(&str) -> Vec<El>>;
 type ById<T> = Rc<dyn Fn(&str) -> Option<T>>;
 
 pub struct MessageGroup {
@@ -110,6 +112,7 @@ pub struct MessageGroup {
     avatar: Option<ById<rune::Pixels>>,
     name_color: Option<ById<rune::Color>>,
     mention: Option<body::MentionInk>,
+    extras: Option<Extras>,
 }
 
 fn hook<S: 'static>(f: impl Fn(&mut S, &str) + 'static) -> Hook {
@@ -137,7 +140,15 @@ impl MessageGroup {
             avatar: None,
             name_color: None,
             mention: None,
+            extras: None,
         }
+    }
+
+    /// Content under a message's body, built by the app from the message id: attachments, then
+    /// embeds. Empty means nothing.
+    pub fn extras(mut self, f: impl Fn(&str) -> Vec<El> + 'static) -> Self {
+        self.extras = Some(Rc::new(f));
+        self
     }
 
     /// How custom emojis in bodies and reaction chips find their pictures.
@@ -304,6 +315,12 @@ impl MessageGroup {
                 .opacity(dim)
                 .opacity_motion(motion::CONTROL),
         );
+        if let Some(f) = &self.extras {
+            let under = f(&m.id);
+            if !under.is_empty() {
+                content = content.child(col().key("extras").w_full().gap(6.0).pt(4.0).opacity(dim).children(under));
+            }
+        }
         if !m.reactions.is_empty() {
             content = content.child(self.chips(k, m));
         }

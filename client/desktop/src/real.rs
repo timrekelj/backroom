@@ -89,6 +89,8 @@ struct Shared {
     generation: AtomicU64,
     gateway: Mutex<Option<(u64, GatewayHandle)>>,
     store: Store,
+    /// Uploads under way by the client's id, so one can be stopped.
+    uploads: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
 }
 
 impl Shared {
@@ -185,6 +187,7 @@ impl RealBackend {
                 generation: AtomicU64::new(0),
                 gateway: Mutex::new(None),
                 store,
+                uploads: Mutex::new(HashMap::new()),
             }),
             sent: Vec::new(),
         }
@@ -221,6 +224,56 @@ impl RealBackend {
                 shared.push(make(result));
             }
         });
+    }
+
+    /// Streams an upload on the runtime and reports its progress (a step per percent) and end. The
+    /// task is kept so `CancelUpload` can stop it; a stopped upload reports nothing more.
+    fn upload(&mut self, id: u64, source: UploadSource, filename: String, content_type: String, channel: u64) {
+        let shared = Arc::clone(&self.shared);
+        let generation = shared.generation();
+        let client = shared.client();
+        let handle = self.runtime().spawn({
+            let shared = Arc::clone(&shared);
+            async move {
+                let steps = Arc::new(AtomicU64::new(u64::MAX));
+                let report = {
+                    let (shared, steps) = (Arc::clone(&shared), Arc::clone(&steps));
+                    move |sent: u64, total: u64| {
+                        let step = (sent * 100).checked_div(total).unwrap_or(100);
+                        if steps.swap(step, Ordering::Relaxed) != step {
+                            shared.push(Reply::UploadProgress { id, sent, total });
+                        }
+                    }
+                };
+                let result = match source {
+                    UploadSource::Bytes(bytes) => client.upload_attachment(channel, &filename, &content_type, bytes, report).await,
+                    UploadSource::Path { path, size } => {
+                        // The thumbnail of a picture is read beside the upload, off the UI thread.
+                        if content_type.starts_with("image/") && size <= thehideout_api::MAX_MEDIA_BYTES as u64 {
+                            let p = path.clone();
+                            if let Ok(Ok(bytes)) = tokio::task::spawn_blocking(move || std::fs::read(p)).await {
+                                shared.push(Reply::UploadPreview { id, bytes });
+                            }
+                        }
+                        match tokio::task::spawn_blocking(move || std::fs::File::open(path)).await {
+                            Ok(Ok(file)) => client.upload_attachment_reader(channel, &filename, &content_type, size, file, report).await,
+                            Ok(Err(e)) => Err(ApiError::InvalidArgument(format!("can't read that file: {e}"))),
+                            Err(e) => Err(ApiError::Other(e.to_string())),
+                        }
+                    }
+                };
+                shared.uploads.lock().unwrap().remove(&id);
+                if shared.generation() != generation {
+                    return;
+                }
+                if matches!(result, Err(ApiError::Unauthenticated)) {
+                    shared.expire();
+                } else {
+                    shared.push(Reply::Uploaded { id, result });
+                }
+            }
+        });
+        self.shared.uploads.lock().unwrap().insert(id, handle.abort_handle());
     }
 
     /// A sign-in: a fresh client for the form's server, then `auth` on it; on success the session
@@ -317,6 +370,11 @@ async fn fetch_initial(client: &Client) -> Result<Initial, ApiError> {
     })
 }
 
+enum UploadSource {
+    Path { path: std::path::PathBuf, size: u64 },
+    Bytes(Vec<u8>),
+}
+
 impl Backend for RealBackend {
     fn submit(&mut self, cmd: Command) {
         self.sent.push(cmd.clone());
@@ -362,6 +420,73 @@ impl Backend for RealBackend {
                         result,
                     },
                 );
+            }
+            Command::SendWith {
+                channel,
+                content,
+                nonce,
+                attachments,
+            } => {
+                let n = nonce.clone();
+                self.call(
+                    async move {
+                        client
+                            .send_message_with(channel, &content, Some(&n), &attachments)
+                            .await
+                    },
+                    move |result| Reply::Sent {
+                        channel,
+                        nonce,
+                        result,
+                    },
+                );
+            }
+            Command::UploadFile {
+                channel,
+                id,
+                path,
+                filename,
+                content_type,
+                size,
+            } => self.upload(id, UploadSource::Path { path, size }, filename, content_type, channel),
+            Command::UploadBytes {
+                channel,
+                id,
+                filename,
+                content_type,
+                bytes,
+            } => self.upload(id, UploadSource::Bytes(bytes), filename, content_type, channel),
+            Command::CancelUpload { id } => {
+                if let Some(h) = self.shared.uploads.lock().unwrap().remove(&id) {
+                    h.abort();
+                }
+            }
+            Command::Download { key, path } => {
+                let shared = Arc::clone(&self.shared);
+                let generation = shared.generation();
+                self.runtime().spawn(async move {
+                    let steps = AtomicU64::new(u64::MAX);
+                    let result = match std::fs::File::create(&path) {
+                        Ok(file) => {
+                            let mut file = std::io::BufWriter::new(file);
+                            let progress = |received: u64, total: Option<u64>| {
+                                let step = total.filter(|t| *t > 0).map_or(received >> 18, |t| received * 100 / t);
+                                if steps.swap(step, Ordering::Relaxed) != step {
+                                    shared.push(Reply::DownloadProgress { key: key.clone(), received, total });
+                                }
+                            };
+                            client.download(&key, &mut file, progress).await
+                        }
+                        Err(e) => Err(ApiError::Other(format!("can't write {}: {e}", path.display()))),
+                    };
+                    // A broken download leaves no half file behind.
+                    if result.is_err() {
+                        std::fs::remove_file(&path).ok();
+                    }
+                    if shared.generation() == generation {
+                        shared.push(Reply::Downloaded { key, path, result });
+                    }
+                });
             }
             Command::CreateGuild { name } => {
                 self.call(

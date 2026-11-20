@@ -9,6 +9,7 @@
 //! Every message row is a plain element (no virtual list): 150 messages is a few thousand
 //! elements and a page adds at most fifty more. Growing histories would want `virtualize`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -148,6 +149,23 @@ impl Looks {
     }
 }
 
+/// What hangs under each message with attachments or embeds, by row id, and under each pending
+/// message's files.
+fn extras(a: &App, k: &Kit, channel: u64) -> HashMap<String, Vec<El>> {
+    let s = &a.state;
+    let me = s.my_id();
+    let mut out = HashMap::new();
+    if let Some(log) = s.log(channel) {
+        for m in log.messages.iter().filter(|m| !m.attachments.is_empty() || !m.embeds.is_empty()) {
+            out.insert(chat_id_of(m, me), super::attach::extras(a, k, m));
+        }
+    }
+    for o in s.data.outgoing.iter().filter(|o| o.channel == channel && !o.files.is_empty()) {
+        out.insert(format!("n:{}", o.nonce), super::attach::outgoing_extras(a, k, o));
+    }
+    out
+}
+
 /// Index of the first message the "New" divider sits above.
 fn marker_index(items: &[Item], marker: Marker, channel: u64) -> Option<usize> {
     let Marker::After { channel: c, id } = marker else { return None };
@@ -165,16 +183,26 @@ pub fn build(a: &App, k: &Kit) -> El {
         None => placeholder_stage(a, k),
     };
     let mut area = col().key("transcript-area").grow(1.0).min_h(0.0).w_full().fill(t.surface.color()).child(stage);
+    area = drop_zone(area);
     let pill_shown = !s.ui.at_bottom && s.ui.unseen_below > 0;
     if pill_shown
         && let Some(c) = s.current_channel()
     {
         area = area.child(pill(k, c));
     }
+    if let Some(hint) = super::attach::drop_hint(a, k) {
+        area = area.child(hint);
+    }
     if let Some(toast) = super::toasts::over_transcript(a, k, pill_shown) {
         area = area.child(toast);
     }
     area
+}
+
+/// Files dropped anywhere on the transcript go to the composer's tray.
+pub fn drop_zone(e: El) -> El {
+    e.on_drop_files(|a: &mut App, files, _tx| a.act(|s| s.attach_paths(files)))
+        .on_drop_hover(|a: &mut App, over, _tx| a.state.ui.attach.drop_over = over)
 }
 
 fn fade() -> Transition {
@@ -261,6 +289,7 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
     }
 
     let looks = Looks::of(a, k, list);
+    let under = Rc::new(RefCell::new(extras(a, k, channel)));
     let emojis = s.emoji_set();
     let marker_at = marker_index(list, s.ui.marker, channel);
     let mut start = 0;
@@ -288,6 +317,10 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
                     .apply(MessageGroup::new(run))
                     .links::<App>()
                     .emojis(emojis.clone())
+                    .extras({
+                        let under = under.clone();
+                        move |id| under.borrow_mut().remove(id).unwrap_or_default()
+                    })
                     .on_react(|a: &mut App, id: &str, key: &str| {
                         if let Some(emoji) = ReactionEmoji::from_key(key) {
                             a.act(|s| {

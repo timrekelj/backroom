@@ -23,11 +23,13 @@ pub const FOOTER_H: f32 = 64.0;
 /// Height of a sidebar row (nav, channel, DM) and of a member row.
 pub const ROW_H: f32 = 32.0;
 
+pub mod attachments;
 pub mod body;
 pub mod composer;
 pub mod connection;
 pub mod dialog;
 pub mod dividers;
+pub mod embed;
 pub mod emoji;
 pub mod emoji_picker;
 pub mod empty_state;
@@ -42,10 +44,12 @@ pub mod pickers;
 pub mod section;
 pub mod toast;
 
+pub use attachments::{AudioRow, Cell, Chip, ChipState, FileCard, FileKind, GridImage, LightboxView, VideoCard, VideoUi, Wire, file_kind, human_size, image_grid, image_grid_el, lightbox, tray, tray_note};
 pub use composer::Composer;
 pub use connection::{ConnectionPill, ConnectionStatus};
 pub use dialog::{Dialog, dialog_field};
 pub use dividers::{DateDivider, NewMessagesDivider};
+pub use embed::{EmbedCard, Provider as EmbedProvider};
 pub use emoji::{EmojiImage, EmojiSet, Pick, ServerEmoji, Suggestion};
 pub use emoji_picker::{EmojiPicker, EmojiPickerState, EmojiSuggest, Scope as EmojiScope};
 pub use empty_state::EmptyState;

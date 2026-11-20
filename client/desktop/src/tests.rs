@@ -1076,9 +1076,9 @@ fn the_sidebar_and_member_lists_report_their_edges_too() {
 #[test]
 fn the_sidebar_narrows_and_the_member_panel_hides_in_small_windows() {
     use crate::ui::shell::Layout;
-    assert_eq!(Layout::of(1280.0, 800.0), Layout { sidebar: 240.0, members: true, height: 800.0 });
-    assert_eq!(Layout::of(1050.0, 800.0), Layout { sidebar: 208.0, members: true, height: 800.0 });
-    assert_eq!(Layout::of(800.0, 600.0), Layout { sidebar: 208.0, members: false, height: 600.0 });
+    assert_eq!(Layout::of(1280.0, 800.0), Layout { sidebar: 240.0, members: true, height: 800.0, width: 1280.0 });
+    assert_eq!(Layout::of(1050.0, 800.0), Layout { sidebar: 208.0, members: true, height: 800.0, width: 1050.0 });
+    assert_eq!(Layout::of(800.0, 600.0), Layout { sidebar: 208.0, members: false, height: 600.0, width: 800.0 });
 }
 
 // ---- appearance ------------------------------------------------------------------------------

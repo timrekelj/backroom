@@ -3,6 +3,7 @@
 //! to the backend). Nothing here owns state.
 
 pub mod admin;
+pub mod attach;
 pub mod auth;
 pub mod channels;
 pub mod composer;

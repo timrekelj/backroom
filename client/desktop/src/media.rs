@@ -347,6 +347,34 @@ pub fn generated_png(seed: u64, side: u32) -> Vec<u8> {
     })
 }
 
+/// A deterministic `w` x `h` picture for `seed`: the avatar's gradient, stretched, so scenes
+/// have photographs of any shape.
+pub fn generated_picture(seed: u64, w: u32, h: u32) -> Vec<u8> {
+    let hue = |s: u64| -> [f32; 3] {
+        let a = ((s.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 40) % 360) as f32;
+        let (c, x) = (0.85 * 0.55, 0.85 * 0.55 * (1.0 - ((a / 60.0) % 2.0 - 1.0).abs()));
+        let m = 0.85 - c;
+        let (r, g, b) = match (a / 60.0) as u32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        [r + m, g + m, b + m]
+    };
+    let (from, to) = (hue(seed), hue(seed ^ 0x5555));
+    png(w, h, |px, py| {
+        let t = (px as f32 / w as f32 + py as f32 / h as f32) / 2.0;
+        // A soft horizon and a disc, so crops and aspect show.
+        let d = ((px as f32 / w as f32 - 0.7).hypot((py as f32 / h as f32 - 0.35) * h as f32 / w as f32)) / 0.18;
+        let lift = if d < 1.0 { 0.25 } else if py as f32 > h as f32 * 0.75 { -0.12 } else { 0.0 };
+        let mix = |a: f32, b: f32| ((a + (b - a) * t + lift).clamp(0.0, 1.0) * 255.0) as u8;
+        [mix(from[0], to[0]), mix(from[1], to[1]), mix(from[2], to[2])]
+    })
+}
+
 /// A deterministic static emoji for `seed`: a round face on a transparent square, so scenes see
 /// how emojis sit in a line of text.
 pub fn generated_emoji(seed: u64, side: u32) -> Vec<u8> {

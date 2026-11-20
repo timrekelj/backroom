@@ -20,6 +20,15 @@ use crate::fake_lines::{DEV_LINES, DM_ANA_LINES, DM_BRUNO_LINES, general_line};
 use crate::format::{DAY, utc};
 use crate::layout;
 
+#[path = "fake_files.rs"]
+mod files;
+
+/// The bytes of a generated file (tests compare downloads with them).
+#[cfg(test)]
+pub fn files_fixture_bytes(key: &str) -> Vec<u8> {
+    files::fixture_bytes(key).expect("a generated file")
+}
+
 const PAGE: usize = 50;
 const MAX_ROLE_NAME: usize = crate::server_settings::MAX_ROLE_NAME;
 const MAX_CHARS: usize = thehideout_api::MAX_MESSAGE_CHARS;
@@ -124,6 +133,8 @@ struct World {
     next_emoji: u64,
     /// The next `n` reaction calls fail with a network error.
     fail_reactions: u32,
+    /// Uploads, downloads and generated files.
+    files: files::Files,
     /// The site-admin side (users, servers, files, activity, audit).
     admin: AdminWorld,
 }
@@ -281,6 +292,7 @@ impl World {
             emojis: HashMap::new(),
             next_emoji: 7200,
             fail_reactions: 0,
+            files: files::Files::default(),
             admin: AdminWorld::empty(),
         };
         f.admin = AdminWorld::new(&f.users, &f.guilds);
@@ -1073,6 +1085,10 @@ impl World {
     }
 
     fn handle(&mut self, cmd: Command) -> Vec<Reply> {
+        let cmd = match self.files_command(cmd) {
+            Ok(replies) => return replies,
+            Err(cmd) => cmd,
+        };
         let me = self.me.id;
         match cmd {
             Command::SignUp { username, password } => {
@@ -1349,6 +1365,12 @@ impl World {
                 .chain(echo)
                 .collect()
             }
+            // Answered by `files_command` before this match.
+            Command::SendWith { .. }
+            | Command::UploadFile { .. }
+            | Command::UploadBytes { .. }
+            | Command::CancelUpload { .. }
+            | Command::Download { .. } => Vec::new(),
             Command::CreateGuild { name } => {
                 let n = name.chars().count();
                 if !(2..=32).contains(&n) {
@@ -1625,6 +1647,7 @@ impl World {
             Command::FetchMedia { key } => {
                 let result = match self.media.get(&key) {
                     Some(bytes) => Ok(bytes.clone()),
+                    None if files::is_fixture(&key) => files::fixture_bytes(&key),
                     None if key.starts_with("adm-") => Ok(crate::media::generated_png(
                         key.bytes()
                             .fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b))),
@@ -2351,6 +2374,10 @@ impl Backend for FakeBackend {
 
     fn next_due(&self) -> Option<f64> {
         self.0.borrow().due()
+    }
+
+    fn media_path(&self, key: &str) -> Option<std::path::PathBuf> {
+        self.0.borrow_mut().local_path(key)
     }
 
     fn set_waker(&mut self, waker: rune::Waker) {

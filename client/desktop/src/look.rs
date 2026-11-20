@@ -17,6 +17,8 @@ use thehideout_design::ThemeSpec;
 pub const KEY: &str = "appearance";
 /// The prefs key of the folded sidebar sections: `{"<guild>": [<section>, ...]}`.
 pub const COLLAPSED_KEY: &str = "collapsed_sections";
+/// The prefs key of the folded embeds: `[[<message>, <embed>], ...]`, oldest first.
+pub const EMBEDS_KEY: &str = "collapsed_embeds";
 pub use crate::emoji::RECENTS_KEY;
 
 pub use crate::real::SharedPrefs;
@@ -71,8 +73,16 @@ pub fn load_recents(prefs: &SharedPrefs) -> Vec<String> {
     saved
 }
 
+/// The folded embeds as `(message, embed)` pairs, oldest first; unreadable prefs mean none.
+pub fn load_embeds(prefs: &SharedPrefs) -> std::collections::VecDeque<(u64, u32)> {
+    let saved: Vec<(u64, u32)> = prefs.lock().unwrap_or_else(|e| e.into_inner()).get(EMBEDS_KEY).unwrap_or_default();
+    let skip = saved.len().saturating_sub(crate::attach::EMBED_PREFS_CAP);
+    saved.into_iter().skip(skip).collect()
+}
+
 enum Save {
     Look(Look),
+    Embeds(Vec<(u64, u32)>),
     Collapsed(HashMap<String, Vec<u64>>),
     Recents(Vec<String>),
 }
@@ -91,11 +101,12 @@ impl Saver {
             .name("thehideout-prefs".into())
             .spawn(move || {
                 while let Ok(first) = rx.recv() {
-                    let (mut look, mut collapsed, mut recents) = (None, None, None);
+                    let (mut look, mut collapsed, mut recents, mut embeds) = (None, None, None, None);
                     let mut take = |s: Save| match s {
                         Save::Look(l) => look = Some(l),
                         Save::Collapsed(c) => collapsed = Some(c),
                         Save::Recents(r) => recents = Some(r),
+                        Save::Embeds(e) => embeds = Some(e),
                     };
                     take(first);
                     while let Ok(newer) = rx.try_recv() {
@@ -112,6 +123,9 @@ impl Saver {
                     if let Some(r) = recents {
                         p.set(RECENTS_KEY, &r).ok();
                     }
+                    if let Some(e) = embeds {
+                        p.set(EMBEDS_KEY, &e).ok();
+                    }
                 }
             })
             .ok();
@@ -121,6 +135,12 @@ impl Saver {
     pub fn save(&self, look: Look) {
         if let Some(tx) = &self.tx {
             tx.send(Save::Look(look)).ok();
+        }
+    }
+
+    pub fn save_embeds(&self, embeds: &std::collections::VecDeque<(u64, u32)>) {
+        if let Some(tx) = &self.tx {
+            tx.send(Save::Embeds(embeds.iter().copied().collect())).ok();
         }
     }
 

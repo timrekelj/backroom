@@ -11,6 +11,8 @@
 mod admin;
 #[path = "../src/apply.rs"]
 mod apply;
+#[path = "../src/attach.rs"]
+mod attach;
 #[path = "../src/backend.rs"]
 mod backend;
 #[path = "../src/emoji.rs"]
@@ -1384,6 +1386,120 @@ fn an_uploaded_avatar_reaches_a_second_client_and_can_be_fetched() {
     });
 
     rt.block_on(server.cleanup());
+    std::fs::remove_file(&alice.prefs).ok();
+    std::fs::remove_file(&bob.prefs).ok();
+}
+
+/// A file uploaded from disk with progress, sent with a message, reaches the second client as an
+/// attachment, and downloads to the same bytes (streamed to a path, with progress).
+#[test]
+fn an_uploaded_file_reaches_a_second_client_and_downloads_identical_bytes() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(Server::start_with_media());
+    let mut alice = Peer::new(&server.url);
+    let mut bob = Peer::new(&server.url);
+    alice.sign_up("alice");
+    alice.initial();
+    alice.connected();
+    let guild = alice
+        .ask(Command::CreateGuild { name: "friends".into() }, |r| match r {
+            Reply::GuildCreated(g) => Some(g.clone()),
+            _ => None,
+        })
+        .expect("create guild");
+    let channel = alice
+        .ask(Command::LoadChannels { guild: guild.id }, |r| match r {
+            Reply::Channels { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("list channels")
+        .0
+        .first()
+        .expect("a default channel")
+        .id;
+    bob.sign_up("bob");
+    bob.initial();
+    bob.connected();
+    bob.ask(Command::JoinGuild { code: guild.invite_code.clone() }, |r| matches!(r, Reply::GuildJoined(Ok(_))).then_some(()));
+    bob.seen.clear();
+
+    // Bigger than one 64 KiB chunk, so progress has steps; a pattern, so a wrong byte shows.
+    let data: Vec<u8> = (0..200_000u32).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
+    let dir = std::env::temp_dir().join(format!("thehideout-files-{:016x}", rand::rng().random::<u64>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("blob.bin");
+    std::fs::write(&source, &data).unwrap();
+
+    let pending = alice
+        .ask(
+            Command::UploadFile {
+                channel,
+                id: 7,
+                path: source.clone(),
+                filename: "blob.bin".into(),
+                content_type: "application/octet-stream".into(),
+                size: data.len() as u64,
+            },
+            |r| match r {
+                Reply::Uploaded { id: 7, result } => Some(result.clone()),
+                _ => None,
+            },
+        )
+        .expect("the upload is accepted");
+    assert_eq!((pending.filename.as_str(), pending.size), ("blob.bin", data.len() as u64));
+    let steps: Vec<u64> = alice
+        .seen
+        .iter()
+        .filter_map(|r| match r {
+            Reply::UploadProgress { id: 7, sent, total } => {
+                assert_eq!(*total, data.len() as u64);
+                Some(*sent)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(steps.len() >= 2 && steps.windows(2).all(|w| w[0] < w[1]), "progress moved up in steps: {steps:?}");
+    assert_eq!(steps.last().copied(), Some(data.len() as u64), "and reached the whole file");
+
+    // Sent with a message: alice's reply and bob's gateway both carry the attachment.
+    alice.ask(
+        Command::SendWith { channel, content: "the blob".into(), nonce: "n1".into(), attachments: vec![pending.id] },
+        |r| match r {
+            Reply::Sent { result, .. } => Some(result.clone().expect("sent")),
+            _ => None,
+        },
+    );
+    let message = bob.wait("the message with its file on bob's gateway", |r| match r {
+        Reply::Gateway(GatewayUpdate::Event(Event::MessageCreated(m))) if !m.attachments.is_empty() => Some(m.clone()),
+        _ => None,
+    });
+    assert_eq!(message.content, "the blob");
+    let att = &message.attachments[0];
+    assert_eq!((att.filename.as_str(), att.size, att.removed), ("blob.bin", data.len() as u64, false));
+    let key = att.file.clone().expect("the file has a key");
+
+    // Bob downloads it: streamed to a path, progress reported, identical bytes.
+    let out = dir.join("downloaded.bin");
+    let written = bob
+        .ask(Command::Download { key: key.clone(), path: out.clone() }, |r| match r {
+            Reply::Downloaded { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("download");
+    assert_eq!(written, data.len() as u64);
+    assert_eq!(std::fs::read(&out).unwrap(), data, "the same bytes came back");
+    assert!(bob.seen.iter().any(|r| matches!(r, Reply::DownloadProgress { received, .. } if *received > 0)), "progress was reported");
+    // An unknown key fails and leaves no file.
+    let gone = dir.join("gone.bin");
+    let missing = bob.ask(Command::Download { key: "no-such-key".into(), path: gone.clone() }, |r| match r {
+        Reply::Downloaded { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(missing, Err(ApiError::NotFound));
+    assert!(!gone.exists());
+
+    rt.block_on(server.cleanup());
+    std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_file(&alice.prefs).ok();
     std::fs::remove_file(&bob.prefs).ok();
 }

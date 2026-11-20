@@ -42,6 +42,7 @@ impl App {
         state.ui.look = look::load(&prefs);
         state.ui.collapsed = look::load_collapsed(&prefs);
         state.ui.recents = look::load_recents(&prefs);
+        state.ui.attach.embeds_collapsed = look::load_embeds(&prefs);
         let mut app = App::new(backend, state);
         app.saver = Some(Saver::spawn(prefs));
         app
@@ -63,6 +64,11 @@ impl App {
             && let Some(saver) = &self.saver
         {
             saver.save_recents(&self.state.ui.recents);
+        }
+        if std::mem::take(&mut self.state.ui.attach.embeds_dirty)
+            && let Some(saver) = &self.saver
+        {
+            saver.save_embeds(&self.state.ui.attach.embeds_collapsed);
         }
         for cmd in std::mem::take(&mut self.state.outbox) {
             if matches!(cmd, Command::Login { .. } | Command::SignUp { .. }) {
@@ -170,6 +176,7 @@ pub fn init() -> App {
 pub fn setup(a: &mut App, waker: Waker) {
     // Pictures decode off the frame loop and wake the window when they are ready.
     a.state.data.media.set_waker(waker.clone());
+    a.state.ui.attach.waker = Some(waker.clone());
     a.backend.set_waker(waker);
 }
 
@@ -202,6 +209,11 @@ pub fn poll(a: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(text) = a.state.ui.copy_request.take() {
         tx.copy(text);
     }
+    // A playing video's time moves the scrub bar: the view runs about ten times a second meanwhile.
+    let playing = a.state.any_clip_playing();
+    if playing {
+        tx.wake_after(Duration::from_millis(100));
+    }
     let (ticked, wake) = a.state.tick(clock);
     if let Some(due) = [wake, a.backend.next_due()]
         .into_iter()
@@ -210,7 +222,7 @@ pub fn poll(a: &mut App, clock: f64, tx: &mut Tx) -> bool {
     {
         tx.wake_at(due);
     }
-    changed || ticked
+    changed || ticked || playing
 }
 
 /// Keys no focused control took: Cmd/Ctrl+W closes the window, Cmd/Ctrl+Q quits, Alt+Up and
@@ -223,6 +235,9 @@ pub fn on_key(a: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Command(c) if c.eq_ignore_ascii_case(&'a') && ev.mods.shift && a.state.is_admin() => {
             a.act(|s| s.open_admin())
         }
+        Key::Escape if a.state.ui.attach.lightbox.is_some() => a.act(|s| s.close_lightbox()),
+        Key::Left if a.state.ui.attach.lightbox.is_some() => a.act(|s| s.lightbox_step(-1)),
+        Key::Right if a.state.ui.attach.lightbox.is_some() => a.act(|s| s.lightbox_step(1)),
         Key::Escape
             if a.state
                 .ui
@@ -292,6 +307,7 @@ pub fn view(a: &App, cx: &mut Cx<App>) -> El {
     let screen = screen.absolute(0.0, 0.0).w_full().h_full().transition(fade);
     ui::dialogs::build(a, k, &mut layer, lay.height);
     ui::emoji::build(a, k, &mut layer);
+    ui::attach::lightbox_layer(a, k, &mut layer, (lay.width, lay.height));
     layer.push(ui::toasts::build(a, k));
     // Where the window's own controls sit over the content: a strip that drags the window.
     let mut stage = el()

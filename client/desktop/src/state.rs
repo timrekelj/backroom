@@ -12,6 +12,7 @@ use thehideout_api::{
 };
 use thehideout_design::components::{ConnectionStatus, EmojiPickerState, ScrollEdges, ToastKind};
 
+use crate::attach::{AttachUi, OutFile, UploadState};
 use crate::backend::{Command, Session};
 use crate::emoji::{PickerUi, Reduced, SuggestUi};
 use crate::format::{Tz, unix};
@@ -130,6 +131,10 @@ pub struct Outgoing {
     pub content: String,
     pub at: SystemTime,
     pub state: Delivery,
+    /// The files sent with it, for display.
+    pub files: Vec<OutFile>,
+    /// Their `PendingAttachment` ids, for the send and its retry.
+    pub ids: Vec<u64>,
 }
 
 #[derive(Default)]
@@ -308,6 +313,8 @@ pub struct Ui {
     pub reduced: Reduced,
     /// The scroll-edge hairlines of each scrolling region (see `ScrollEdges`).
     pub edges: Edges,
+    /// Attachments, the lightbox, players, downloads and folded embeds.
+    pub attach: AttachUi,
 }
 
 /// One `ScrollEdges` per scrolling region of the window; their values live here so a rebuilt view
@@ -359,6 +366,7 @@ impl Ui {
             recents_dirty: false,
             reduced: Reduced::default(),
             edges: Edges::default(),
+            attach: AttachUi::default(),
         }
     }
 }
@@ -419,6 +427,8 @@ impl AppState {
         );
         let collapsed = std::mem::take(&mut self.ui.collapsed);
         let recents = std::mem::take(&mut self.ui.recents);
+        let folded = std::mem::take(&mut self.ui.attach.embeds_collapsed);
+        let waker = self.ui.attach.waker.take();
         // The picture cache keeps its decoder (and the waker it was given); the pictures go.
         let mut media = std::mem::take(&mut self.data.media);
         media.clear();
@@ -426,6 +436,8 @@ impl AppState {
         self.data.media = media;
         self.ui.collapsed = collapsed;
         self.ui.recents = recents;
+        self.ui.attach.embeds_collapsed = folded;
+        self.ui.attach.waker = waker;
         self.today = today;
         self.auth = Auth::new(&server);
         self.auth.error = error;
@@ -610,6 +622,7 @@ impl AppState {
             keys.extend(self.emojis_of(g).iter().map(|e| e.image.clone()));
         }
         keys.extend(self.admin_media_keys());
+        keys.extend(self.attachment_media_keys());
         keys.sort();
         keys.dedup();
         for key in keys {
@@ -915,15 +928,32 @@ impl AppState {
 
     // ---- sending -----------------------------------------------------------------------------
 
-    /// Queues `text` as a pending message in the open channel. False (and nothing queued) when
-    /// there is no channel or the text is over the limit.
+    /// Queues `text` (with the channel's uploaded files) as a pending message in the open channel.
+    /// False (and nothing queued) when there is no channel, the text is over the limit, a file is
+    /// still going up, or there is neither text nor a finished file.
     pub fn send(&mut self, text: &str) -> bool {
         let content = text.trim();
         let Some(channel) = self.current_channel() else {
             return false;
         };
-        if content.is_empty() || content.chars().count() > MAX_MESSAGE_CHARS {
+        if content.chars().count() > MAX_MESSAGE_CHARS {
             return false;
+        }
+        let draft = self.ui.attach.drafts.get(&channel);
+        if draft.is_some_and(|d| d.uploading()) || (content.is_empty() && draft.is_none_or(|d| d.ready() == 0)) {
+            return false;
+        }
+        let (mut ids, mut files) = (Vec::new(), Vec::new());
+        if let Some(d) = self.ui.attach.drafts.get_mut(&channel) {
+            d.files.retain(|f| match &f.state {
+                UploadState::Ready { pending } => {
+                    ids.push(*pending);
+                    files.push(OutFile { name: f.name.clone(), content_type: f.content_type.clone(), size: f.size, thumb: f.thumb.clone() });
+                    false
+                }
+                _ => true,
+            });
+            d.note = None;
         }
         self.nonce += 1;
         let nonce = format!("{}-{}", self.my_id(), self.nonce);
@@ -933,12 +963,10 @@ impl AppState {
             content: content.to_owned(),
             at: (self.now)(),
             state: Delivery::Pending,
+            files,
+            ids: ids.clone(),
         });
-        self.outbox.push(Command::Send {
-            channel,
-            content: content.to_owned(),
-            nonce,
-        });
+        self.outbox.push(send_command(channel, content.to_owned(), nonce, ids));
         true
     }
 
@@ -950,11 +978,7 @@ impl AppState {
             .find(|o| o.nonce == nonce && o.state == Delivery::Failed)
         {
             o.state = Delivery::Pending;
-            self.outbox.push(Command::Send {
-                channel: o.channel,
-                content: o.content.clone(),
-                nonce: o.nonce.clone(),
-            });
+            self.outbox.push(send_command(o.channel, o.content.clone(), o.nonce.clone(), o.ids.clone()));
         }
     }
 
@@ -1239,6 +1263,15 @@ impl AppState {
 
     pub fn day_of(&self, unix: i64) -> i64 {
         crate::format::day_of(self.tz, unix)
+    }
+}
+
+/// `Send` for a text message, `SendWith` when files go along.
+fn send_command(channel: u64, content: String, nonce: String, attachments: Vec<u64>) -> Command {
+    if attachments.is_empty() {
+        Command::Send { channel, content, nonce }
+    } else {
+        Command::SendWith { channel, content, nonce, attachments }
     }
 }
 

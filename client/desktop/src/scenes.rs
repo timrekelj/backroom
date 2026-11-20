@@ -496,6 +496,110 @@ fn admin_unavailable(a: &mut App, dark: bool) {
     *a = app;
 }
 
+// ---- attachments and embeds ------------------------------------------------------------------
+
+/// A file of `size` bytes (sparse) in the temp directory, for the composer scenes.
+fn temp_file(name: &str, size: u64, picture: Option<(u64, u32, u32)>) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("thehideout-scene-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok();
+    let path = dir.join(name);
+    match picture {
+        Some((seed, w, h)) => std::fs::write(&path, crate::media::generated_picture(seed, w, h)).ok(),
+        None => std::fs::File::create(&path).and_then(|f| f.set_len(size)).ok(),
+    };
+    path
+}
+
+/// #plans (empty in the seed) with its composer holding files at every stage: a picture and a
+/// PDF that are up, a zip at 60%, and one that failed.
+fn attachments_composer(a: &mut App, dark: bool) {
+    let (mut app, fake) = booted(dark);
+    app.act(|s| s.select_channel(PLANS));
+    app.pump();
+    let photo = temp_file("harbour-evening.png", 0, Some((5, 640, 420)));
+    let pdf = temp_file("Q4-roadmap.pdf", 2_516_582, None);
+    app.act(|s| s.attach_paths(&[photo, pdf]));
+    app.pump();
+    fake.stall_uploads(Some(60));
+    app.act(|s| s.attach_paths(&[temp_file("asset-bundle.zip", 18_874_368, None)]));
+    app.pump();
+    fake.stall_uploads(None);
+    fake.fail_uploads(1);
+    app.act(|s| s.attach_paths(&[temp_file("screen-recording.mov", 6_291_456, None)]));
+    app.pump();
+    app.state.data.media.settle();
+    app.state.composer_mut().replace_text("Here is everything for the review");
+    *a = app;
+}
+
+/// #plans with `parts` of the seeded attachments, the picture caches filled.
+fn attachments_in_plans(dark: bool, parts: &[&str]) -> (App, FakeBackend) {
+    let (mut app, fake) = booted(dark);
+    fake.seed_attachments(PLANS, parts);
+    app.act(|s| s.select_channel(PLANS));
+    app.pump();
+    app.state.data.media.settle();
+    (app, fake)
+}
+
+fn attachments_messages(a: &mut App, dark: bool) {
+    *a = attachments_in_plans(dark, &["one", "video", "docs", "audio", "removed"]).0;
+}
+
+fn attachments_images(a: &mut App, dark: bool) {
+    *a = attachments_in_plans(dark, &["three", "four"]).0;
+}
+
+fn lightbox(a: &mut App, dark: bool) {
+    let (mut app, _fake) = attachments_in_plans(dark, &["three"]);
+    let (message, attachment) = {
+        let s = &app.state;
+        let m = s.log(PLANS).and_then(|l| l.messages.last()).expect("the seeded message");
+        (m.id, m.attachments[1].id)
+    };
+    app.act(|s| s.open_lightbox_attachment(message, attachment));
+    app.pump();
+    app.state.data.media.settle();
+    *a = app;
+}
+
+/// #plans with `which` embeds, the picture caches filled.
+fn embeds_in_plans(dark: bool, which: &[&str]) -> (App, FakeBackend) {
+    let (mut app, fake) = booted(dark);
+    fake.seed_embeds(PLANS, which);
+    app.act(|s| s.select_channel(PLANS));
+    app.pump();
+    app.state.data.media.settle();
+    (app, fake)
+}
+
+fn embeds(a: &mut App, dark: bool) {
+    *a = embeds_in_plans(dark, &["link", "x"]).0;
+}
+
+fn embeds_gallery(a: &mut App, dark: bool) {
+    *a = embeds_in_plans(dark, &["reddit", "big"]).0;
+}
+
+fn embeds_collapsed(a: &mut App, dark: bool) {
+    let (mut app, _fake) = embeds_in_plans(dark, &[]);
+    let ids: Vec<u64> = app.state.log(PLANS).map(|l| l.messages.iter().map(|m| m.id).collect()).unwrap_or_default();
+    app.act(|s| ids.iter().for_each(|id| s.toggle_embed(*id, 0)));
+    *a = app;
+}
+
+/// The X video started: the scrub bar, the time and the mute button over the picture.
+fn video_embed(a: &mut App, dark: bool) {
+    let (mut app, _fake) = embeds_in_plans(dark, &["x"]);
+    // Playback itself can't be decoded headless, so the controls are pinned mid-clip.
+    app.state.ui.attach.pinned.insert(
+        "fx-clip-x".into(),
+        thehideout_design::components::VideoUi { playing: true, time: 1.4, duration: 3.0, muted: true, loading: false, failed: false },
+    );
+    app.pump();
+    *a = app;
+}
+
 type Scene = (&'static str, fn(&mut App));
 
 pub const SCENES: &[Scene] = &[
@@ -602,6 +706,22 @@ pub const SCENES: &[Scene] = &[
     ("channel-icon-unicode-tab", |a| {
         channel_icon_emoji(a, true, 1)
     }),
+    ("attachments-composer", |a| attachments_composer(a, true)),
+    ("attachments-composer-light", |a| attachments_composer(a, false)),
+    ("attachments-messages", |a| attachments_messages(a, true)),
+    ("attachments-messages-light", |a| attachments_messages(a, false)),
+    ("attachments-images", |a| attachments_images(a, true)),
+    ("attachments-images-light", |a| attachments_images(a, false)),
+    ("lightbox", |a| lightbox(a, true)),
+    ("lightbox-light", |a| lightbox(a, false)),
+    ("embeds", |a| embeds(a, true)),
+    ("embeds-light", |a| embeds(a, false)),
+    ("embeds-gallery", |a| embeds_gallery(a, true)),
+    ("embeds-gallery-light", |a| embeds_gallery(a, false)),
+    ("embeds-collapsed", |a| embeds_collapsed(a, true)),
+    ("embeds-collapsed-light", |a| embeds_collapsed(a, false)),
+    ("video-embed", |a| video_embed(a, true)),
+    ("video-embed-light", |a| video_embed(a, false)),
     ("main-small", |a| main_(a, true)),
     ("main-small-light", |a| main_(a, false)),
     ("admin-overview", |a| admin_overview(a, true)),

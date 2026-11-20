@@ -11,6 +11,9 @@ mod admin;
 mod admin_tests;
 mod app;
 mod apply;
+mod attach;
+#[cfg(test)]
+mod attach_tests;
 mod backend;
 mod emoji;
 #[cfg(test)]

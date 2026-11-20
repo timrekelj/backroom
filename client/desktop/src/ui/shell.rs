@@ -19,6 +19,7 @@ pub struct Layout {
     pub members: bool,
     /// The window's height, for what must fit in it (a dialog's body scrolls past it).
     pub height: f32,
+    pub width: f32,
 }
 
 impl Layout {
@@ -27,6 +28,7 @@ impl Layout {
             sidebar: if width >= 1100.0 { 240.0 } else { 208.0 },
             members: width >= 1000.0,
             height,
+            width,
         }
     }
 }

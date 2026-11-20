@@ -20,7 +20,10 @@ use crate::state::{
 
 pub fn apply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
     // A picture arriving can't bring news of other pictures; everything else may.
-    let fetched = matches!(reply, Reply::Media { .. });
+    let fetched = matches!(
+        reply,
+        Reply::Media { .. } | Reply::UploadProgress { .. } | Reply::DownloadProgress { .. }
+    );
     apply_reply(s, reply, tx);
     if !fetched {
         s.want_media();
@@ -115,6 +118,15 @@ fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
             nonce,
             result,
         } => sent(s, channel, &nonce, result),
+        Reply::UploadProgress { id, sent, total } => s.upload_progress(id, sent, total),
+        Reply::UploadPreview { id, bytes } => s.upload_preview(id, bytes),
+        Reply::Uploaded { id, result } => s.uploaded(id, result),
+        Reply::DownloadProgress {
+            key,
+            received,
+            total,
+        } => s.download_progress(&key, received, total),
+        Reply::Downloaded { key, path, result } => s.downloaded(&key, &path, result),
         Reply::GuildCreated(r) => guild_done(s, r, DialogKind::CreateGuild, "Server created"),
         Reply::GuildJoined(r) => guild_done(s, r, DialogKind::JoinGuild, "Joined the server"),
         Reply::ChannelCreated(r) => match r {
@@ -757,8 +769,18 @@ fn event(s: &mut AppState, e: Event, tx: &mut Tx) {
             emoji,
             user_id,
         } => s.reaction_event(channel_id, message_id, &emoji, user_id, false),
-        // handled in the attachments task
-        Event::MessageUpdated(_) => {}
+        Event::MessageUpdated(m) => {
+            if message_updated(s, m) {
+                // Embeds arrive a moment after the message. At the end they ease in under it;
+                // while the reader is up in older messages the page changes at once, so their
+                // row holds its place (the transcript's scroll anchor does the rest).
+                if s.ui.at_bottom {
+                    tx.animated();
+                } else {
+                    tx.instant();
+                }
+            }
+        }
         Event::GuildUpdated(g) => s.set_guild(g),
         Event::ChannelUpdated(c) => update_channel(s, c),
         Event::UserUpdated(u) => user_updated(s, u),
@@ -793,6 +815,27 @@ fn event(s: &mut AppState, e: Event, tx: &mut Tx) {
             }
         }
     }
+}
+
+/// A message changed on the server (its embeds were resolved, an admin removed a file). Takes the
+/// new content, attachments and embeds; your reactions stay as they are (events keep those
+/// current). Returns whether the open channel shows it.
+pub fn message_updated(s: &mut AppState, m: Message) -> bool {
+    let channel = m.channel_id;
+    let visible = s.screen == Screen::Main && s.current_channel() == Some(channel);
+    let Some(slot) = s
+        .data
+        .logs
+        .get_mut(&channel)
+        .and_then(|l| l.messages.iter_mut().find(|x| x.id == m.id))
+    else {
+        return false;
+    };
+    slot.content = m.content;
+    slot.edited_at = m.edited_at;
+    slot.attachments = m.attachments;
+    slot.embeds = m.embeds;
+    visible
 }
 
 /// Files an incoming message. Returns whether its commit should animate: it landed in the

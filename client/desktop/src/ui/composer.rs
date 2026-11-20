@@ -45,9 +45,19 @@ pub fn build(a: &App, k: &Kit) -> El {
         .placeholder(placeholder)
         .bind(draft, send)
         .on_key(super::emoji::composer_key)
-        .on_emoji(|a: &mut App| a.act(|s| s.open_picker(PickerTarget::Composer, "composer-emoji")));
+        .on_emoji(|a: &mut App| a.act(|s| s.open_picker(PickerTarget::Composer, "composer-emoji")))
+        .on_add_tx(|_: &mut App, tx| super::attach::choose_files(tx))
+        .on_paste(|a: &mut App, content, _tx| super::attach::paste(a, content));
     if let Some(reason) = s.composer_block() {
         composer = composer.disabled_reason(reason);
+    }
+    if let Some(channel) = s.current_channel() {
+        // Files that are up (and none still going) let Send go with no text.
+        let draft = s.draft(channel);
+        composer = composer.allow_empty(draft.is_some_and(|d| d.ready() > 0 && !d.uploading()));
+        if let Some(tray) = super::attach::composer_tray(a, k, channel) {
+            composer = composer.tray(tray);
+        }
     }
     let used = s.composer().text.chars().count();
     // At rest exactly `FOOTER_H`, the height of the sidebar's user strip, so the scroll-edge line
@@ -66,5 +76,5 @@ pub fn build(a: &App, k: &Kit) -> El {
         let ink = if over { t.danger } else { t.text_muted };
         c = c.child(row().key("counter").w_full().justify_end().child(text(format!("{used} / {MAX_MESSAGE_CHARS}")).font(type_::CAPTION).color(ink.color())));
     }
-    c.child(composer.build(k))
+    super::transcript::drop_zone(c.child(composer.build(k)))
 }

@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use thehideout_api::{
     ActivityPoint, AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, ApiError, AuditEntry,
     Channel, ChannelIconRef, DmChannel, Emoji, GatewayUpdate, Guild, GuildLayout, Member, Message,
-    Overview, Page, Paged, PaletteColor, Permissions, ReactionEmoji, Role, RoleList, Section, User,
+    Overview, Page, Paged, PaletteColor, PendingAttachment, Permissions, ReactionEmoji, Role, RoleList, Section,
+    User,
 };
 
 /// What a picked picture is for.
@@ -51,6 +52,40 @@ pub enum Command {
         channel: u64,
         content: String,
         nonce: String,
+    },
+    /// `Send` with uploaded files linked to the message (`attachments` are `PendingAttachment` ids).
+    SendWith {
+        channel: u64,
+        content: String,
+        nonce: String,
+        attachments: Vec<u64>,
+    },
+    /// Streams a file from disk to the server off the UI thread, reporting `UploadProgress`, then
+    /// `Uploaded`. `id` is the client's name for the upload (its tray chip).
+    UploadFile {
+        channel: u64,
+        id: u64,
+        path: PathBuf,
+        filename: String,
+        content_type: String,
+        size: u64,
+    },
+    /// The same for bytes already in memory (a pasted picture).
+    UploadBytes {
+        channel: u64,
+        id: u64,
+        filename: String,
+        content_type: String,
+        bytes: Vec<u8>,
+    },
+    /// Stops an upload; nothing more is reported for it.
+    CancelUpload {
+        id: u64,
+    },
+    /// Streams a stored file to `path`, reporting `DownloadProgress`, then `Downloaded`.
+    Download {
+        key: String,
+        path: PathBuf,
     },
     CreateGuild {
         name: String,
@@ -305,6 +340,33 @@ pub enum Reply {
         nonce: String,
         result: R<Message>,
     },
+    /// An upload moved: `sent` of `total` bytes are on their way.
+    UploadProgress {
+        id: u64,
+        sent: u64,
+        total: u64,
+    },
+    /// The bytes of a picked picture, for its chip's thumbnail (read off the UI thread).
+    UploadPreview {
+        id: u64,
+        bytes: Vec<u8>,
+    },
+    /// Answer to `UploadFile` and `UploadBytes`.
+    Uploaded {
+        id: u64,
+        result: R<PendingAttachment>,
+    },
+    DownloadProgress {
+        key: String,
+        received: u64,
+        total: Option<u64>,
+    },
+    /// Answer to `Download`: the bytes written.
+    Downloaded {
+        key: String,
+        path: PathBuf,
+        result: R<u64>,
+    },
     GuildCreated(R<Guild>),
     GuildJoined(R<Guild>),
     ChannelCreated(R<Channel>),
@@ -418,6 +480,11 @@ pub trait Backend {
     fn poll(&mut self, now: f64) -> Vec<Reply>;
     /// When the next queued reply is due, so the app can schedule a poll.
     fn next_due(&self) -> Option<f64> {
+        None
+    }
+    /// Where a stored file lives on this machine, when it does (the fake world's clips): a video
+    /// plays from there instead of from the server's URL.
+    fn media_path(&self, _key: &str) -> Option<PathBuf> {
         None
     }
     /// Called once with the shell's waker: wake it whenever a reply becomes available.
