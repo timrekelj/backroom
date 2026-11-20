@@ -9,14 +9,16 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::broadcast;
 
-use crate::proto::thehideout::v1::{Channel, GuildMemberJoined, Message};
+use crate::proto::thehideout::v1::{Channel, DmChannel, GuildMemberJoined, Message};
 
 /// Messages buffered per guild channel before slow receivers start lagging.
 const GUILD_CHANNEL_CAPACITY: usize = 1024;
+/// Messages buffered per DM channel before slow receivers start lagging.
+const DM_CHANNEL_CAPACITY: usize = 1024;
 /// Control notifications buffered per user.
 const USER_CHANNEL_CAPACITY: usize = 64;
 
-/// An event payload published to a guild; the gateway stamps it with a per-stream sequence.
+/// An event payload published to a guild or DM channel; the gateway stamps it with a per-stream sequence.
 #[derive(Debug, Clone)]
 pub enum EventPayload {
     MessageCreated(Message),
@@ -25,15 +27,19 @@ pub enum EventPayload {
 }
 
 /// Control notification delivered to a user's open streams.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UserControl {
     /// The user joined this guild; streams should start listening to it.
     JoinedGuild(u64),
+    /// A DM channel was opened with the user; streams should start listening to
+    /// it and emit a `dm_opened` event for it.
+    OpenedDm(DmChannel),
 }
 
 #[derive(Default)]
 pub struct EventBus {
     guilds: Mutex<HashMap<u64, broadcast::Sender<Arc<EventPayload>>>>,
+    dms: Mutex<HashMap<u64, broadcast::Sender<Arc<EventPayload>>>>,
     users: Mutex<HashMap<u64, broadcast::Sender<UserControl>>>,
 }
 
@@ -67,14 +73,44 @@ impl EventBus {
             .subscribe()
     }
 
+    /// Delivers `payload` to every current subscriber of the DM channel. Never fails; having no
+    /// subscribers is normal.
+    pub fn publish_to_dm(&self, dm_id: u64, payload: EventPayload) {
+        let mut dms = lock(&self.dms);
+        if let Some(tx) = dms.get(&dm_id) {
+            if tx.receiver_count() == 0 {
+                dms.remove(&dm_id);
+            } else {
+                let _ = tx.send(Arc::new(payload));
+            }
+        }
+    }
+
+    /// Receives events published to the DM channel from now on.
+    pub fn subscribe_dm(&self, dm_id: u64) -> broadcast::Receiver<Arc<EventPayload>> {
+        lock(&self.dms)
+            .entry(dm_id)
+            .or_insert_with(|| broadcast::channel(DM_CHANNEL_CAPACITY).0)
+            .subscribe()
+    }
+
     /// Tells the user's open streams to start listening to `guild_id`.
     pub fn notify_user_joined_guild(&self, user_id: u64, guild_id: u64) {
+        self.notify_user(user_id, UserControl::JoinedGuild(guild_id));
+    }
+
+    /// Tells the user's open streams a DM channel was opened with them.
+    pub fn notify_user_opened_dm(&self, user_id: u64, channel: DmChannel) {
+        self.notify_user(user_id, UserControl::OpenedDm(channel));
+    }
+
+    fn notify_user(&self, user_id: u64, control: UserControl) {
         let mut users = lock(&self.users);
         if let Some(tx) = users.get(&user_id) {
             if tx.receiver_count() == 0 {
                 users.remove(&user_id);
             } else {
-                let _ = tx.send(UserControl::JoinedGuild(guild_id));
+                let _ = tx.send(control);
             }
         }
     }
@@ -87,15 +123,21 @@ impl EventBus {
             .subscribe()
     }
 
-    /// Removes guild/user channels nobody listens to anymore; called when a stream ends.
+    /// Removes guild/DM/user channels nobody listens to anymore; called when a stream ends.
     pub fn prune(&self) {
         lock(&self.guilds).retain(|_, tx| tx.receiver_count() > 0);
+        lock(&self.dms).retain(|_, tx| tx.receiver_count() > 0);
         lock(&self.users).retain(|_, tx| tx.receiver_count() > 0);
     }
 
     /// Number of guild channels currently held (for leak checks in tests).
     pub fn guild_channel_count(&self) -> usize {
         lock(&self.guilds).len()
+    }
+
+    /// Number of DM channels currently held (for leak checks in tests).
+    pub fn dm_channel_count(&self) -> usize {
+        lock(&self.dms).len()
     }
 
     /// Number of user control channels currently held (for leak checks in tests).
@@ -126,12 +168,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dm_publish_reaches_subscribers_and_prunes_dead_channels() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe_dm(9);
+        bus.publish_to_dm(9, channel_event());
+        assert!(matches!(*rx.recv().await.unwrap(), EventPayload::ChannelCreated(_)));
+        assert_eq!(bus.dm_channel_count(), 1);
+
+        drop(rx);
+        bus.publish_to_dm(9, channel_event());
+        assert_eq!(bus.dm_channel_count(), 0);
+    }
+
+    #[tokio::test]
     async fn user_notifications_are_delivered_and_pruned() {
         let bus = EventBus::new();
         bus.notify_user_joined_guild(7, 1); // no subscribers: no-op
         let mut rx = bus.subscribe_user(7);
         bus.notify_user_joined_guild(7, 2);
         assert_eq!(rx.recv().await.unwrap(), UserControl::JoinedGuild(2));
+        bus.notify_user_opened_dm(7, DmChannel {
+            id: 42,
+            ..Default::default()
+        });
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            UserControl::OpenedDm(DmChannel {
+                id: 42,
+                ..Default::default()
+            })
+        );
         drop(rx);
         bus.prune();
         assert_eq!(bus.user_channel_count(), 0);

@@ -26,8 +26,9 @@ impl GatewaySvc {
 }
 
 impl GatewayService for GatewaySvc {
-    /// Streams events for every guild the caller belongs to, plus any guild they join while
-    /// the stream is open.
+    /// Streams events for every guild the caller belongs to and every DM channel they
+    /// participate in, plus any guild they join or DM opened with them while the stream is
+    /// open.
     ///
     /// Each stream numbers its events from 1 and sends a heartbeat immediately and then every
     /// heartbeat interval. Events are not replayed: anything published before the stream
@@ -46,8 +47,9 @@ impl GatewayService for GatewaySvc {
         let token_hash = hash_token(bearer_token(&ctx).expect("authenticate succeeded"));
         let bus = &self.state.events;
 
-        // Subscribe to the control channel before reading memberships so a guild joined in
-        // between is not missed (re-adding a guild that is already subscribed is harmless).
+        // Subscribe to the control channel before reading memberships/DMs so a guild joined
+        // or a DM opened in between is not missed (re-adding an already-subscribed channel is
+        // harmless).
         let control = bus.subscribe_user(user_id);
         let guild_ids = self
             .state
@@ -61,10 +63,27 @@ impl GatewayService for GatewaySvc {
             .map_err(internal)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(internal)?;
+        let dm_ids = self
+            .state
+            .session
+            .execute_unpaged("SELECT dm_id FROM dms_by_user WHERE user_id = ?", (id_to_db(user_id),))
+            .await
+            .map_err(internal)?
+            .into_rows_result()
+            .map_err(internal)?
+            .rows::<(i64,)>()
+            .map_err(internal)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal)?;
         let mut guilds = StreamMap::new();
         for (id,) in guild_ids {
             let id = id_from_db(id);
             guilds.insert(id, BroadcastStream::new(bus.subscribe_guild(id)));
+        }
+        let mut dms = StreamMap::new();
+        for (id,) in dm_ids {
+            let id = id_from_db(id);
+            dms.insert(id, BroadcastStream::new(bus.subscribe_dm(id)));
         }
 
         let mut heartbeat = tokio::time::interval_at(
@@ -77,6 +96,7 @@ impl GatewayService for GatewaySvc {
             state: self.state.clone(),
             control: Some(control),
             guilds,
+            dms,
             heartbeat,
             sequence: 0,
             token_hash,
@@ -99,6 +119,7 @@ struct EventStream {
     /// `None` only while dropping.
     control: Option<broadcast::Receiver<UserControl>>,
     guilds: StreamMap<u64, BroadcastStream<Arc<EventPayload>>>,
+    dms: StreamMap<u64, BroadcastStream<Arc<EventPayload>>>,
     heartbeat: Interval,
     sequence: u64,
     /// Hash of the token the stream was opened with, re-checked periodically.
@@ -143,10 +164,23 @@ impl EventStream {
                         let rx = self.state.events.subscribe_guild(guild_id);
                         self.guilds.insert(guild_id, BroadcastStream::new(rx));
                     }
+                    Ok(UserControl::OpenedDm(channel)) => {
+                        // Subscribe to the DM channel, then emit the event itself so the
+                        // client learns about the new conversation on this stream.
+                        let rx = self.state.events.subscribe_dm(channel.id);
+                        self.dms.insert(channel.id, BroadcastStream::new(rx));
+                        return Ok(Payload::DmOpened(channel.into()));
+                    }
                     Err(RecvError::Lagged(_)) => return Err(lagged()),
                     Err(RecvError::Closed) => return Err(internal("user control channel closed")),
                 },
                 Some((_, item)) = self.guilds.next(), if !self.guilds.is_empty() => {
+                    return match item {
+                        Ok(event) => Ok(to_payload(&event)),
+                        Err(BroadcastStreamRecvError::Lagged(_)) => Err(lagged()),
+                    };
+                }
+                Some((_, item)) = self.dms.next(), if !self.dms.is_empty() => {
                     return match item {
                         Ok(event) => Ok(to_payload(&event)),
                         Err(BroadcastStreamRecvError::Lagged(_)) => Err(lagged()),
@@ -161,6 +195,7 @@ impl Drop for EventStream {
     /// Releases every receiver first so the bus can drop channels nobody listens to.
     fn drop(&mut self) {
         self.guilds.clear();
+        self.dms.clear();
         self.control = None;
         self.state.events.prune();
     }

@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package thehideout.v1;
+
+import "thehideout/v1/types.proto";
+
+// Direct messages: 1:1 channels between two users. A DM channel's ID works
+// with MessageService exactly like a guild channel's ID, and DMs show up on
+// the GatewayService stream like any other channel.
+service DmService {
+  // Opens a DM channel with a user, or returns the existing one. Idempotent:
+  // if both users open a DM with each other, they get the same channel.
+  rpc OpenDm(OpenDmRequest) returns (OpenDmResponse);
+  // Lists the caller's DM channels, newest first.
+  rpc ListDms(ListDmsRequest) returns (ListDmsResponse);
+}
+
+// Request to open a DM channel.
+message OpenDmRequest {
+  // ID of the user to open a DM with; must exist and must not be the caller.
+  uint64 user_id = 1;
+}
+
+// Result of opening a DM channel.
+message OpenDmResponse {
+  // The DM channel, existing or newly created.
+  DmChannel channel = 1;
+}
+
+// Request to list the caller's DM channels.
+message ListDmsRequest {}
+
+// The caller's DM channels.
+message ListDmsResponse {
+  // DM channels the caller participates in, newest first.
+  repeated DmChannel channels = 1;
+}

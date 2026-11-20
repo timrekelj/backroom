@@ -22,6 +22,7 @@ fn main() {
             "thehideout/v1/gateway_service.proto",
             "thehideout/v1/guild_service.proto",
             "thehideout/v1/message_service.proto",
+            "thehideout/v1/dm_service.proto",
             "thehideout/v1/types.proto",
         ])
         .include_file("_connectrpc.rs")

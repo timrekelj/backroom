@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
 
 use crate::AppState;
-use crate::access::require_channel_member;
+use crate::access::{ChannelAccess, require_channel_access};
 use crate::auth::{authenticate, internal};
 use crate::convert::{datetime_to_proto, id_from_db, id_to_db, snowflake_datetime};
 use crate::events::EventPayload;
@@ -49,7 +49,12 @@ impl MessageService for MessageSvc {
         req: ServiceRequest<'_, SendMessageRequest>,
     ) -> ServiceResult<SendMessageResponse> {
         let user_id = authenticate(&self.state, &ctx).await?;
-        let guild_id = require_channel_member(&self.state, user_id, req.channel_id).await?;
+        let access = require_channel_access(&self.state, user_id, req.channel_id).await?;
+        // DM messages carry guild_id = 0; guild channels carry their guild's ID.
+        let guild_id = match &access {
+            ChannelAccess::Guild(guild_id) => *guild_id,
+            ChannelAccess::Dm => 0,
+        };
 
         if req.content.trim().is_empty() {
             return Err(ConnectError::invalid_argument("message content must not be empty"));
@@ -95,9 +100,11 @@ impl MessageService for MessageSvc {
                 None,
             ),
         );
-        self.state
-            .events
-            .publish_to_guild(guild_id, EventPayload::MessageCreated(message.clone()));
+        let event = EventPayload::MessageCreated(message.clone());
+        match &access {
+            ChannelAccess::Guild(guild_id) => self.state.events.publish_to_guild(*guild_id, event),
+            ChannelAccess::Dm => self.state.events.publish_to_dm(req.channel_id, event),
+        }
         Response::ok(SendMessageResponse {
             message: message.into(),
             ..Default::default()
@@ -110,7 +117,7 @@ impl MessageService for MessageSvc {
         req: ServiceRequest<'_, ListMessagesRequest>,
     ) -> ServiceResult<ListMessagesResponse> {
         let user_id = authenticate(&self.state, &ctx).await?;
-        require_channel_member(&self.state, user_id, req.channel_id).await?;
+        require_channel_access(&self.state, user_id, req.channel_id).await?;
 
         let limit = match req.limit as usize {
             0 => DEFAULT_PAGE_SIZE,

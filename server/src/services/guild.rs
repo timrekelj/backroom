@@ -7,11 +7,9 @@ use rand::distr::{Alphanumeric, SampleString};
 use scylla::statement::batch::{Batch, BatchType};
 
 use crate::AppState;
-use crate::access::{is_member, require_guild_member};
+use crate::access::{find_user, is_member, require_guild_member};
 use crate::auth::{authenticate, internal, peer_key};
-use crate::convert::{
-    datetime_to_proto, id_from_db, id_to_db, snowflake_datetime, user_to_proto,
-};
+use crate::convert::{datetime_to_proto, id_from_db, id_to_db, snowflake_datetime};
 use crate::events::EventPayload;
 use crate::proto::thehideout::v1::*;
 
@@ -182,7 +180,7 @@ impl GuildService for GuildSvc {
 
         if !is_member(&self.state, user_id, guild.id).await? {
             self.add_member(guild.id, user_id).await?;
-            if let Some(user) = self.find_user(id_to_db(user_id)).await? {
+            if let Some(user) = find_user(&self.state, id_to_db(user_id)).await? {
                 self.state.events.publish_to_guild(
                     guild.id,
                     EventPayload::GuildMemberJoined(GuildMemberJoined {
@@ -225,7 +223,7 @@ impl GuildService for GuildSvc {
             .collect::<Result<Vec<_>, _>>()
             .map_err(internal)?;
 
-        let mut users = try_join_all(member_ids.into_iter().map(|(id,)| self.find_user(id)))
+        let mut users = try_join_all(member_ids.into_iter().map(|(id,)| find_user(&self.state, id)))
             .await?
             .into_iter()
             .flatten()
@@ -460,19 +458,6 @@ impl GuildSvc {
             }))
     }
 
-    async fn find_user(&self, db_id: i64) -> Result<Option<User>, ConnectError> {
-        Ok(self
-            .state
-            .session
-            .execute_unpaged("SELECT username, created_at FROM users WHERE id = ?", (db_id,))
-            .await
-            .map_err(internal)?
-            .into_rows_result()
-            .map_err(internal)?
-            .maybe_first_row::<(String, DateTime<Utc>)>()
-            .map_err(internal)?
-            .map(|(username, created_at)| user_to_proto(id_from_db(db_id), &username, created_at)))
-    }
 }
 
 #[cfg(test)]

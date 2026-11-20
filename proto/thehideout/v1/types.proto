@@ -40,13 +40,24 @@ message Channel {
   google.protobuf.Timestamp created_at = 4;
 }
 
+// A direct-message channel between exactly two users. Its `id` is a channel
+// ID usable with MessageService exactly like a guild channel's ID.
+message DmChannel {
+  // Unique Snowflake ID of the DM channel; also the `channel_id` of its messages.
+  uint64 id = 1;
+  // The two participants, ordered by user ID ascending.
+  repeated User participants = 2;
+  // When the DM channel was created.
+  google.protobuf.Timestamp created_at = 3;
+}
+
 // A chat message posted in a channel.
 message Message {
   // Unique Snowflake ID of the message; IDs increase with time.
   uint64 id = 1;
-  // ID of the channel the message was posted in.
+  // ID of the channel the message was posted in; a guild channel or a DM channel.
   uint64 channel_id = 2;
-  // ID of the guild that owns the channel.
+  // ID of the guild that owns the channel; 0 for direct-message channels.
   uint64 guild_id = 3;
   // ID of the user who wrote the message.
   uint64 author_id = 4;
