@@ -137,6 +137,98 @@ impl From<pb::Attachment> for Attachment {
     }
 }
 
+/// What an embed shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum EmbedKind {
+    /// Unset: servers that predate rich embeds leave this; treat as [`EmbedKind::Link`].
+    #[default]
+    Unspecified,
+    /// A page: title, description and an optional thumbnail.
+    Link,
+    /// A direct image link or a post whose media is only images.
+    Image,
+    /// A post whose media includes a video.
+    Video,
+    /// A post with text (and optionally media), e.g. a tweet or a Reddit post.
+    Rich,
+}
+
+impl EmbedKind {
+    fn from_proto(kind: pb::EmbedKind) -> Self {
+        use pb::EmbedKind as K;
+        match kind {
+            K::EMBED_KIND_LINK => Self::Link,
+            K::EMBED_KIND_IMAGE => Self::Image,
+            K::EMBED_KIND_VIDEO => Self::Video,
+            K::EMBED_KIND_RICH => Self::Rich,
+            _ => Self::Unspecified,
+        }
+    }
+}
+
+/// What one [`EmbedMedia`] item is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum EmbedMediaKind {
+    #[default]
+    Unspecified,
+    Image,
+    /// A video with a sound track (when the source had one).
+    Video,
+    /// A looping, silent clip stored as MP4 (a GIF, or a video without audio):
+    /// autoplay it muted.
+    Gifv,
+}
+
+impl EmbedMediaKind {
+    fn from_proto(kind: pb::EmbedMediaKind) -> Self {
+        use pb::EmbedMediaKind as K;
+        match kind {
+            K::EMBED_MEDIA_KIND_IMAGE => Self::Image,
+            K::EMBED_MEDIA_KIND_VIDEO => Self::Video,
+            K::EMBED_MEDIA_KIND_GIFV => Self::Gifv,
+            _ => Self::Unspecified,
+        }
+    }
+}
+
+/// One image, video or GIF of an embed, stored in S3 and served from
+/// `/media/{file}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbedMedia {
+    pub kind: EmbedMediaKind,
+    /// Media key: WebP (at most 1600 px on the longer side) for images, MP4 as
+    /// downloaded (not transcoded) for videos and GIFs.
+    pub file: String,
+    /// Media key of a WebP still of a video, if the provider had one.
+    pub poster: Option<String>,
+    /// Pixel width; 0 if unknown.
+    pub width: u32,
+    /// Pixel height; 0 if unknown.
+    pub height: u32,
+    /// Duration of a video or GIF in milliseconds, if known.
+    pub duration_ms: Option<u32>,
+    /// Size of `file` in bytes.
+    pub size: u64,
+}
+
+impl From<pb::EmbedMedia> for EmbedMedia {
+    fn from(m: pb::EmbedMedia) -> Self {
+        Self {
+            kind: m
+                .kind
+                .as_known()
+                .map(EmbedMediaKind::from_proto)
+                .unwrap_or_default(),
+            file: m.file,
+            poster: m.poster.and_then(non_empty),
+            width: m.width,
+            height: m.height,
+            duration_ms: m.duration_ms,
+            size: m.size,
+        }
+    }
+}
+
 /// A link preview resolved by the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Embed {
@@ -148,6 +240,23 @@ pub struct Embed {
     pub thumbnail: Option<String>,
     pub thumbnail_width: Option<u32>,
     pub thumbnail_height: Option<u32>,
+    /// What the embed shows; [`EmbedKind::Unspecified`] from servers that
+    /// predate rich embeds (treat as [`EmbedKind::Link`]).
+    pub kind: EmbedKind,
+    /// Provider of a rich embed: "x", "tiktok", "instagram" or "reddit"; "" for
+    /// a generic link.
+    pub provider: String,
+    /// Display name of the author or account (provider embeds); "" if none.
+    pub author_name: String,
+    /// Profile URL of the author, if known (a link, never fetched by clients).
+    pub author_url: Option<String>,
+    /// Media key of a small WebP avatar of the author, if cheap to get.
+    pub author_icon: Option<String>,
+    /// Stored media in display order (at most 4): images, videos and GIFs
+    /// downloaded by the server. Empty for plain link embeds.
+    pub media: Vec<EmbedMedia>,
+    /// When the post was published, if the provider says.
+    pub published_at: Option<SystemTime>,
 }
 
 impl From<pb::Embed> for Embed {
@@ -160,6 +269,17 @@ impl From<pb::Embed> for Embed {
             thumbnail: e.thumbnail.and_then(non_empty),
             thumbnail_width: e.thumbnail_width,
             thumbnail_height: e.thumbnail_height,
+            kind: e
+                .kind
+                .as_known()
+                .map(EmbedKind::from_proto)
+                .unwrap_or_default(),
+            provider: e.provider,
+            author_name: e.author_name,
+            author_url: e.author_url.and_then(non_empty),
+            author_icon: e.author_icon.and_then(non_empty),
+            media: e.media.into_iter().map(EmbedMedia::from).collect(),
+            published_at: e.published_at.as_option().map(|ts| time(Some(ts))),
         }
     }
 }
@@ -282,6 +402,97 @@ mod tests {
         }
         .into();
         assert_eq!((a.file, a.thumbnail, a.removed), (None, None, true));
+    }
+
+    #[test]
+    fn embed_maps_rich_provider_fields_and_media() {
+        use buffa_types::google::protobuf::Timestamp;
+        let published = Timestamp {
+            seconds: 1_700_000_000,
+            nanos: 0,
+            ..Default::default()
+        };
+        let e: Embed = pb::Embed {
+            url: "https://x.com/nasa/status/123".into(),
+            title: "NASA".into(),
+            description: "a post".into(),
+            site_name: "x.com".into(),
+            thumbnail: Some("t".into()),
+            kind: pb::EmbedKind::EMBED_KIND_VIDEO.into(),
+            provider: "x".into(),
+            author_name: "NASA".into(),
+            author_url: Some("https://x.com/nasa".into()),
+            author_icon: Some("icon.webp".into()),
+            media: vec![
+                pb::EmbedMedia {
+                    kind: pb::EmbedMediaKind::EMBED_MEDIA_KIND_VIDEO.into(),
+                    file: "embeds/v.mp4".into(),
+                    poster: Some("embeds/p.webp".into()),
+                    width: 1280,
+                    height: 720,
+                    duration_ms: Some(12_000),
+                    size: 5_000_000,
+                    ..Default::default()
+                },
+                pb::EmbedMedia {
+                    kind: pb::EmbedMediaKind::EMBED_MEDIA_KIND_IMAGE.into(),
+                    file: "embeds/i.webp".into(),
+                    poster: Some(String::new()),
+                    width: 0,
+                    height: 0,
+                    size: 42,
+                    ..Default::default()
+                },
+            ],
+            published_at: published.clone().into(),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(e.kind, EmbedKind::Video);
+        assert_eq!(e.provider, "x");
+        assert_eq!(e.author_name, "NASA");
+        assert_eq!(e.author_url.as_deref(), Some("https://x.com/nasa"));
+        assert_eq!(e.author_icon.as_deref(), Some("icon.webp"));
+        assert_eq!(e.published_at, SystemTime::try_from(published).ok());
+        assert_eq!(e.media.len(), 2);
+        assert_eq!(
+            e.media[0],
+            EmbedMedia {
+                kind: EmbedMediaKind::Video,
+                file: "embeds/v.mp4".into(),
+                poster: Some("embeds/p.webp".into()),
+                width: 1280,
+                height: 720,
+                duration_ms: Some(12_000),
+                size: 5_000_000,
+            }
+        );
+        assert_eq!(e.media[1].kind, EmbedMediaKind::Image);
+        assert_eq!(e.media[1].poster, None, "empty poster maps to None");
+        assert_eq!(e.media[1].duration_ms, None);
+    }
+
+    #[test]
+    fn embed_defaults_to_unspecified_kind_and_no_media() {
+        let e: Embed = pb::Embed {
+            url: "https://example.com".into(),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(e.kind, EmbedKind::Unspecified);
+        assert_eq!(e.provider, "");
+        assert_eq!(e.author_name, "");
+        assert_eq!(e.author_url, None);
+        assert_eq!(e.author_icon, None);
+        assert!(e.media.is_empty());
+        assert_eq!(e.published_at, None);
+        // Unknown enum values (newer server) degrade instead of failing.
+        let e: Embed = pb::Embed {
+            kind: buffa::EnumValue::Unknown(99),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(e.kind, EmbedKind::Unspecified);
     }
 
     #[test]

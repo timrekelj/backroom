@@ -18,6 +18,10 @@ pub struct Config {
     pub embeds_enabled: bool,
     /// Contact shown in the embed fetcher's user agent (`THEHIDEOUT_EMBEDS_CONTACT`).
     pub embeds_contact: Option<String>,
+    /// Mirror lists of the provider embeds (`THEHIDEOUT_EMBED_MIRRORS`, a JSON object of role → base URLs).
+    pub embed_mirrors: crate::embeds::providers::Mirrors,
+    /// Largest video stored in an embed (`THEHIDEOUT_EMBED_MAX_VIDEO_BYTES`).
+    pub embed_max_video_bytes: usize,
 }
 
 /// Connection settings of the S3-compatible object store holding media.
@@ -82,6 +86,18 @@ impl Config {
             "off" | "false" | "0" | "no" => false,
             other => bail!("invalid THEHIDEOUT_EMBEDS {other:?}, expected on or off"),
         };
+        let embed_mirrors = match env::var("THEHIDEOUT_EMBED_MIRRORS").ok().filter(|s| !s.trim().is_empty()) {
+            Some(json) => crate::embeds::providers::Mirrors::default()
+                .with_override(&json)
+                .map_err(|e| anyhow::anyhow!("invalid THEHIDEOUT_EMBED_MIRRORS: {e}"))?,
+            None => crate::embeds::providers::Mirrors::default(),
+        };
+        let embed_max_video_bytes: usize = var("THEHIDEOUT_EMBED_MAX_VIDEO_BYTES", &crate::embeds::MAX_VIDEO_BYTES.to_string())
+            .parse()
+            .context("invalid THEHIDEOUT_EMBED_MAX_VIDEO_BYTES")?;
+        if embed_max_video_bytes == 0 {
+            bail!("THEHIDEOUT_EMBED_MAX_VIDEO_BYTES must be at least 1");
+        }
         Ok(Self {
             listen_addr,
             scylla_nodes,
@@ -92,6 +108,8 @@ impl Config {
             max_upload_bytes,
             embeds_enabled,
             embeds_contact: env::var("THEHIDEOUT_EMBEDS_CONTACT").ok().filter(|s| !s.trim().is_empty()),
+            embed_mirrors,
+            embed_max_video_bytes,
         })
     }
 }

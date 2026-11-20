@@ -134,13 +134,19 @@ pub struct EmbedThumbnail {
 /// renders its embed thumbnail on a blocking thread, holding a decode slot.
 /// `None` if the data is not a decodable image of those formats or is too large to decode.
 pub async fn embed_thumbnail(data: Vec<u8>) -> Option<EmbedThumbnail> {
+    embed_image(data, ATTACHMENT_THUMBNAIL_EDGE).await
+}
+
+/// Like [`embed_thumbnail`] with another longest edge (never upscaled): 1600
+/// for stored embed media, a small one for author avatars.
+pub async fn embed_image(data: Vec<u8>, edge: u32) -> Option<EmbedThumbnail> {
     let _permit = acquire_decode_slot().await?;
     tokio::task::spawn_blocking(move || {
         let format = image::guess_format(&data).ok()?;
         if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif) {
             return None;
         }
-        let image = fit(decode(&data, format).ok()?.into_rgba8(), ATTACHMENT_THUMBNAIL_EDGE);
+        let image = fit(decode(&data, format).ok()?.into_rgba8(), edge);
         let (width, height) = image.dimensions();
         let bytes = encode_webp(&image).ok()?.bytes;
         Some(EmbedThumbnail { bytes, width, height })

@@ -69,6 +69,8 @@ async fn main() -> Result<()> {
         let mut embeds = EmbedSettings::default();
         embeds.enabled = config.embeds_enabled;
         embeds.contact = config.embeds_contact.clone();
+        embeds.mirrors = config.embed_mirrors.clone();
+        embeds.max_video_bytes = config.embed_max_video_bytes;
         embeds
     });
     media::pending::spawn_sweeper(state.clone());

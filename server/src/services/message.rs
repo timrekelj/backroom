@@ -9,7 +9,7 @@ use scylla::value::{CqlValue, Row};
 use crate::AppState;
 use crate::access::{ChannelAccess, require_channel_access};
 use crate::auth::{authenticate, internal};
-use crate::embeds::{self, EmbedRow, row_to_embed};
+use crate::embeds::{self, EMBED_COLUMNS, EmbedRow, MEDIA_COLUMNS, MediaRow, row_to_embed, row_to_media};
 use crate::convert::{datetime_to_proto, id_from_db, id_to_db, snowflake_datetime};
 use crate::events::EventPayload;
 use crate::media::{self, Owner, pending};
@@ -542,20 +542,20 @@ impl MessageSvc {
     }
 
     /// The embeds of every message of a page: one query per bucket the page
-    /// touches, like attachments.
+    /// touches (for the embeds and for their media), like attachments.
     async fn load_embeds(&self, channel_id: u64, messages: &[Message]) -> Result<HashMap<u64, Vec<Embed>>, ConnectError> {
         let mut per_bucket: BTreeMap<i32, Vec<i64>> = BTreeMap::new();
         for m in messages {
             per_bucket.entry(bucket_of(m.id)).or_default().push(id_to_db(m.id));
         }
+        let embed_query = format!("SELECT {EMBED_COLUMNS} FROM message_embeds WHERE channel_id = ? AND bucket = ? AND message_id IN ?");
+        let media_query = format!("SELECT {MEDIA_COLUMNS} FROM message_embed_media WHERE channel_id = ? AND bucket = ? AND message_id IN ?");
+        let (embed_query, media_query) = (embed_query.as_str(), media_query.as_str());
         let fetched = try_join_all(per_bucket.into_iter().map(|(bucket, ids)| async move {
-            self.state
+            let embeds = self
+                .state
                 .session
-                .execute_unpaged(
-                    "SELECT message_id, position, url, title, description, site_name, thumbnail, thumbnail_width, \
-                     thumbnail_height FROM message_embeds WHERE channel_id = ? AND bucket = ? AND message_id IN ?",
-                    (id_to_db(channel_id), bucket, ids),
-                )
+                .execute_unpaged(embed_query, (id_to_db(channel_id), bucket, ids.clone()))
                 .await
                 .map_err(internal)?
                 .into_rows_result()
@@ -563,14 +563,44 @@ impl MessageSvc {
                 .rows::<EmbedRow>()
                 .map_err(internal)?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(internal)
+                .map_err(internal)?;
+            // Only provider embeds (column 10, `provider`) have media rows; skip the query for plain links.
+            let media = if embeds.iter().any(|r| r.10.is_some()) {
+                self.state
+                    .session
+                    .execute_unpaged(media_query, (id_to_db(channel_id), bucket, ids))
+                    .await
+                    .map_err(internal)?
+                    .into_rows_result()
+                    .map_err(internal)?
+                    .rows::<MediaRow>()
+                    .map_err(internal)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(internal)?
+            } else {
+                Vec::new()
+            };
+            Ok::<_, ConnectError>((embeds, media))
         }))
         .await?;
-        let mut rows: Vec<EmbedRow> = fetched.into_iter().flatten().collect();
+        let mut rows: Vec<EmbedRow> = Vec::new();
+        let mut media_rows: Vec<MediaRow> = Vec::new();
+        for (embeds, media) in fetched {
+            rows.extend(embeds);
+            media_rows.extend(media);
+        }
         rows.sort_by_key(|r| (r.0, r.1));
+        let mut media: HashMap<(u64, i32), Vec<(i32, EmbedMedia)>> = HashMap::new();
+        for (message_id, position, idx, m) in media_rows.into_iter().filter_map(row_to_media) {
+            media.entry((message_id, position)).or_default().push((idx, m));
+        }
         let mut out: HashMap<u64, Vec<Embed>> = HashMap::new();
         for row in rows {
-            let (message_id, embed) = row_to_embed(row);
+            let (message_id, position, mut embed) = row_to_embed(row);
+            if let Some(mut items) = media.remove(&(message_id, position)) {
+                items.sort_by_key(|(idx, _)| *idx);
+                embed.media = items.into_iter().map(|(_, m)| m).collect();
+            }
             out.entry(message_id).or_default().push(embed);
         }
         Ok(out)

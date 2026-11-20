@@ -19,6 +19,10 @@ pub struct Metadata {
     pub site_name: String,
     /// Raw (possibly relative) preview image URL.
     pub image: Option<String>,
+    /// Raw (possibly relative) `og:video` / `twitter:player:stream` URL.
+    pub video: Option<String>,
+    pub video_width: Option<u32>,
+    pub video_height: Option<u32>,
 }
 
 pub fn parse(bytes: &[u8]) -> Metadata {
@@ -50,6 +54,11 @@ pub fn parse(bytes: &[u8]) -> Metadata {
         ])
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty()),
+        video: pick(&["og:video", "og:video:url", "og:video:secure_url", "twitter:player:stream"])
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty()),
+        video_width: pick(&["og:video:width", "twitter:player:width"]).and_then(|v| v.trim().parse().ok()).filter(|v| *v > 0),
+        video_height: pick(&["og:video:height", "twitter:player:height"]).and_then(|v| v.trim().parse().ok()).filter(|v| *v > 0),
     }
 }
 

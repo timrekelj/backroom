@@ -15,7 +15,7 @@ pub use accounting::{Owner, delete_record, record, totals};
 pub use http::media_route;
 pub use pipeline::{
     ATTACHMENT_IMAGE_MAX_BYTES, ImageInfo, MAX_INPUT_BYTES, MediaError, Processed, acquire_decode_slot,
-    inspect_attachment_image, process, EmbedThumbnail, embed_thumbnail,
+    inspect_attachment_image, process, EmbedThumbnail, embed_image, embed_thumbnail,
 };
 pub use accounting::{KindTotals, totals_by_kind};
 
@@ -103,7 +103,15 @@ pub fn label_of_key(key: &str) -> Option<&'static str> {
 
 /// Content type a key's extension implies (used when the store kept none).
 pub fn content_type_of_key(key: &str) -> &'static str {
-    if key.ends_with(".gif") { "image/gif" } else { "image/webp" }
+    if key.ends_with(".gif") {
+        "image/gif"
+    } else if key.ends_with(".mp4") {
+        "video/mp4"
+    } else if key.ends_with(".webm") {
+        "video/webm"
+    } else {
+        "image/webp"
+    }
 }
 
 /// Key prefixes the `/media` route serves.
@@ -112,7 +120,7 @@ const KEY_PREFIXES: &[&str] = &["avatars", "guild-icons", "emojis", "embeds"];
 /// `…/{32 hex}-thumb.webp`); the hex part is random, not a content hash.
 pub const ATTACHMENT_PREFIX: &str = "attachments";
 const THUMB_SUFFIX: &str = "-thumb.webp";
-const KEY_EXTENSIONS: &[&str] = &["webp", "gif"];
+const KEY_EXTENSIONS: &[&str] = &["webp", "gif", "mp4", "webm"];
 const HASH_HEX_LEN: usize = 32;
 
 /// Content-addressed key `{prefix}/{owner_id}/{hash}.{ext}` (`ext` is `webp`
@@ -148,6 +156,12 @@ pub fn embed_thumbnail_key(channel_id: u64) -> String {
     format!("embeds/{channel_id}/{}.webp", random_attachment_id())
 }
 
+/// `embeds/{channel_id}/{32 hex}.{ext}`: a stored image (`webp`) or video
+/// (`mp4`, `webm`) of an embed.
+pub fn embed_media_key(channel_id: u64, ext: &str) -> String {
+    format!("embeds/{channel_id}/{}.{ext}", random_attachment_id())
+}
+
 /// Whether `key` names an attachment object (file or thumbnail).
 pub fn is_attachment_key(key: &str) -> bool {
     key.starts_with("attachments/")
@@ -178,8 +192,14 @@ pub fn parse_key(key: &str) -> Option<&str> {
     }
     let (hash, ext) = file.split_once('.')?;
     let hash_ok = is_hex_id(hash);
-    // Only emojis may be animated, so only they use `.gif`.
-    let ext_ok = KEY_EXTENSIONS.contains(&ext) && (ext == "webp" || prefix == "emojis");
+    // Only emojis may be animated, so only they use `.gif`; only embeds hold videos.
+    let ext_ok = match ext {
+        "webp" => true,
+        "gif" => prefix == "emojis",
+        "mp4" | "webm" => prefix == "embeds",
+        _ => false,
+    };
+    debug_assert!(KEY_EXTENSIONS.contains(&ext) || !ext_ok);
     (hash_ok && ext_ok).then_some(hash)
 }
 
@@ -236,10 +256,20 @@ mod tests {
         assert!(key.starts_with("embeds/42/") && key.ends_with(".webp"));
         assert!(parse_key(&key).is_some());
         assert_eq!(label_of_key(&key), Some("embed"));
+        for ext in ["mp4", "webm", "webp"] {
+            let media = embed_media_key(42, ext);
+            assert!(parse_key(&media).is_some(), "{media}");
+            assert_eq!(label_of_key(&media), Some("embed"));
+        }
+        assert_eq!(content_type_of_key(&embed_media_key(42, "mp4")), "video/mp4");
+        assert_eq!(content_type_of_key(&embed_media_key(42, "webm")), "video/webm");
         let zeros = "0".repeat(32);
         for bad in [
             format!("embeds/42/{zeros}.gif"),
             format!("embeds/42/{zeros}.png"),
+            format!("embeds/42/{zeros}.mov"),
+            format!("avatars/42/{zeros}.mp4"),
+            format!("emojis/42/{zeros}.webm"),
             format!("embeds/42/{zeros}"),
             format!("embeds/x/{zeros}.webp"),
             format!("embeds/42/../{zeros}.webp"),

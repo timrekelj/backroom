@@ -88,7 +88,7 @@ pub use admin::{
     ActivityPoint, AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, AuditEntry, Overview, Paged, StorageBreakdown,
 };
 pub use client::{Client, DEFAULT_MAX_UPLOAD_BYTES, MAX_EMOJI_BYTES, MAX_MEDIA_BYTES, MAX_MESSAGE_CHARS};
-pub use content::{Attachment, Embed, Emoji, PendingAttachment, Reaction, ReactionEmoji};
+pub use content::{Attachment, Embed, EmbedKind, EmbedMedia, EmbedMediaKind, Emoji, PendingAttachment, Reaction, ReactionEmoji};
 pub use error::ApiError;
 pub use gateway::{Gateway, GatewayConfig, GatewayHandle, GatewayUpdate};
 pub use structure::{ChannelIcon, ChannelIconRef, GuildLayout, LayoutEntry, Member, PaletteColor, Permissions, Role, RoleList, Section};

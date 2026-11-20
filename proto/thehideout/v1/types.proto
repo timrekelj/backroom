@@ -162,6 +162,64 @@ message Embed {
   optional uint32 thumbnail_width = 6;
   // Pixel height of the thumbnail.
   optional uint32 thumbnail_height = 7;
+  // What the embed shows; `EMBED_KIND_UNSPECIFIED` from servers that predate
+  // rich embeds (treat as LINK).
+  EmbedKind kind = 8;
+  // Provider of a rich embed: "x", "tiktok", "instagram" or "reddit"; "" for a
+  // generic link.
+  string provider = 9;
+  // Display name of the author or account (provider embeds); "" if none.
+  string author_name = 10;
+  // Profile URL of the author, if known (a link, never fetched by clients).
+  optional string author_url = 11;
+  // Media key of a small WebP avatar of the author, if cheap to get.
+  optional string author_icon = 12;
+  // Stored media in display order (at most 4): images, videos and GIFs
+  // downloaded by the server. Empty for plain link embeds.
+  repeated EmbedMedia media = 13;
+  // When the post was published, if the provider says.
+  optional google.protobuf.Timestamp published_at = 14;
+}
+
+// What an embed represents.
+enum EmbedKind {
+  EMBED_KIND_UNSPECIFIED = 0;
+  // A page: title, description and an optional thumbnail.
+  EMBED_KIND_LINK = 1;
+  // A direct image link or a post whose media is only images.
+  EMBED_KIND_IMAGE = 2;
+  // A post whose media includes a video.
+  EMBED_KIND_VIDEO = 3;
+  // A post with text (and optionally media), e.g. a tweet or a Reddit post.
+  EMBED_KIND_RICH = 4;
+}
+
+// One image, video or GIF of an embed, stored in S3 (served from `/media/{key}`).
+message EmbedMedia {
+  EmbedMediaKind kind = 1;
+  // Media key: WebP (at most 1600 px on the longer side) for images, MP4 as
+  // downloaded (not transcoded) for videos and GIFs.
+  string file = 2;
+  // Media key of a WebP still of a video, if the provider had one.
+  optional string poster = 3;
+  // Pixel width; 0 if unknown.
+  uint32 width = 4;
+  // Pixel height; 0 if unknown.
+  uint32 height = 5;
+  // Duration of a video or GIF in milliseconds, if known.
+  optional uint32 duration_ms = 6;
+  // Size of `file` in bytes.
+  uint64 size = 7;
+}
+
+enum EmbedMediaKind {
+  EMBED_MEDIA_KIND_UNSPECIFIED = 0;
+  EMBED_MEDIA_KIND_IMAGE = 1;
+  // A video with a sound track (when the source had one).
+  EMBED_MEDIA_KIND_VIDEO = 2;
+  // A looping, silent clip stored as MP4 (a GIF, or a video without audio):
+  // clients autoplay it muted.
+  EMBED_MEDIA_KIND_GIFV = 3;
 }
 
 // A direct-message channel between exactly two users. Its `id` is a channel

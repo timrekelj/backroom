@@ -12,7 +12,19 @@ use thehideout_server::{AppState, build_app, migrations};
 use connectrpc::client::{ClientConfig, HttpClient};
 use rand::Rng;
 use scylla::client::caching_session::CachingSession;
+use scylla::client::execution_profile::ExecutionProfile;
 use scylla::client::session_builder::SessionBuilder;
+use tokio::sync::Semaphore;
+
+/// Test apps that may create their keyspace at the same time. Scylla DDL is
+/// slow (every CREATE KEYSPACE / TABLE is a schema change the node has to
+/// agree on), and the default test threads start dozens of apps at once; past
+/// a handful the DDL queues up and migrations time out. Only the schema setup
+/// is serialised: tests themselves still run in parallel.
+const CONCURRENT_STARTUPS: usize = 3;
+static STARTUPS: Semaphore = Semaphore::const_new(CONCURRENT_STARTUPS);
+/// Attempts at creating a keyspace and running the migrations.
+const MIGRATION_ATTEMPTS: usize = 4;
 
 /// A running app backed by a throwaway keyspace.
 pub struct TestApp {
@@ -68,15 +80,17 @@ impl TestApp {
         settings: AttachmentSettings,
         embeds: EmbedSettings,
     ) -> Self {
+        // DDL can take far longer than the driver's 30 s default request
+        // timeout when many keyspaces are being created.
+        let profile = ExecutionProfile::builder().request_timeout(Some(Duration::from_secs(180))).build();
         let session = SessionBuilder::new()
             .known_node("127.0.0.1:9042")
+            .default_execution_profile_handle(profile.into_handle())
+            .schema_agreement_timeout(Duration::from_secs(120))
             .build()
             .await
             .expect("connect to ScyllaDB at 127.0.0.1:9042 (is `docker compose up -d` running?)");
-        let keyspace = format!("test_{:016x}", rand::rng().random::<u64>());
-        migrations::run(&session, &keyspace)
-            .await
-            .expect("run migrations");
+        let keyspace = Self::create_keyspace(&session).await;
 
         let session = Arc::new(CachingSession::from(session, 64));
         let mut state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, heartbeat_interval);
@@ -100,6 +114,28 @@ impl TestApp {
             base_url: format!("http://{addr}"),
             state,
         }
+    }
+
+    /// Creates a fresh `test_<random>` keyspace and runs the migrations in it.
+    /// Startups are limited to [`CONCURRENT_STARTUPS`] at a time and a failed
+    /// attempt (a timeout under load leaves the keyspace half-built) is
+    /// dropped and retried under a new name with a growing pause.
+    async fn create_keyspace(session: &scylla::client::session::Session) -> String {
+        let _permit = STARTUPS.acquire().await.expect("startup semaphore is never closed");
+        let mut last_error = None;
+        for attempt in 0..MIGRATION_ATTEMPTS {
+            let keyspace = format!("test_{:016x}", rand::rng().random::<u64>());
+            match migrations::run(session, &keyspace).await {
+                Ok(()) => return keyspace,
+                Err(e) => {
+                    eprintln!("test keyspace {keyspace}: migrations failed (attempt {}): {e:#}", attempt + 1);
+                    let _ = session.query_unpaged(format!("DROP KEYSPACE IF EXISTS {keyspace}"), ()).await;
+                    last_error = Some(e);
+                    tokio::time::sleep(Duration::from_millis(500 << attempt)).await;
+                }
+            }
+        }
+        panic!("run migrations: {:#}", last_error.expect("at least one attempt"));
     }
 
     /// Client config for generated Connect clients, optionally with a bearer token.

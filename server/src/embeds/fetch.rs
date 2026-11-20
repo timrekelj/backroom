@@ -81,13 +81,18 @@ impl Fetcher {
     /// GET `url`, following up to `max_redirects` redirects with every hop
     /// vetted. Only 2xx replies are returned.
     pub async fn get(&self, url: &Url) -> Result<Reply, FetchError> {
+        self.get_accepting(url, "text/html,application/xhtml+xml,image/*;q=0.8,*/*;q=0.1").await
+    }
+
+    /// Like [`Fetcher::get`] with another `Accept` header (JSON APIs, video).
+    pub async fn get_accepting(&self, url: &Url, accept: &str) -> Result<Reply, FetchError> {
         let mut url = url.clone();
         for hop in 0..=self.max_redirects {
             let addr = ssrf::vet(&url, self.policy).await?;
             let response = self
                 .client(&url, addr)?
                 .get(url.clone())
-                .header(ACCEPT, "text/html,application/xhtml+xml,image/*;q=0.8,*/*;q=0.1")
+                .header(ACCEPT, accept)
                 .header(ACCEPT_LANGUAGE, "en;q=0.9,*;q=0.5")
                 .send()
                 .await
@@ -194,6 +199,59 @@ impl Reply {
             body.extend_from_slice(&chunk);
         }
         Ok(body)
+    }
+
+    /// Streams a video into object storage without buffering it. The first
+    /// bytes go to `prepare`, which recognises the container and returns the
+    /// key and content type to store under (`None`: not a video we accept →
+    /// `NotAllowedType`). Past `cap` bytes the download fails with `TooLarge`
+    /// and leaves no object. Returns the key and the size stored.
+    pub async fn download_video_to_storage(
+        mut self,
+        cap: usize,
+        storage: &Storage,
+        prepare: impl FnOnce(&[u8]) -> Option<(String, &'static str)>,
+    ) -> Result<(String, u64), FetchError> {
+        let storage_error = |e: anyhow::Error| FetchError::Storage(format!("{e:#}"));
+        // The container is recognised from the first 16 bytes; collect them first.
+        let mut head: Vec<u8> = Vec::new();
+        let mut ended = false;
+        while head.len() < 16 {
+            match self.chunk(cap).await? {
+                Some(chunk) => head.extend_from_slice(&chunk),
+                None => {
+                    ended = true;
+                    break;
+                }
+            }
+        }
+        let (key, content_type) = prepare(&head).ok_or_else(|| FetchError::NotAllowedType("not a recognised video".to_owned()))?;
+        let mut upload = storage.begin_upload(&key, content_type, None).await.map_err(storage_error)?;
+        let mut size = head.len() as u64;
+        if let Err(e) = upload.write(Bytes::from(head)).await {
+            let _ = upload.abort().await;
+            return Err(storage_error(e));
+        }
+        if !ended {
+            loop {
+                match self.chunk(cap).await {
+                    Ok(Some(chunk)) => {
+                        size += chunk.len() as u64;
+                        if let Err(e) = upload.write(chunk).await {
+                            let _ = upload.abort().await;
+                            return Err(storage_error(e));
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        let _ = upload.abort().await;
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        upload.finish().await.map_err(storage_error)?;
+        Ok((key, size))
     }
 
     /// Streams the body into object storage under `key` without buffering it
