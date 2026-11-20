@@ -9,6 +9,7 @@ use scylla::value::{CqlValue, Row};
 use crate::AppState;
 use crate::access::{ChannelAccess, require_channel_access};
 use crate::auth::{authenticate, internal};
+use crate::embeds::{self, EmbedRow, row_to_embed};
 use crate::convert::{datetime_to_proto, id_from_db, id_to_db, snowflake_datetime};
 use crate::events::EventPayload;
 use crate::media::{self, Owner, pending};
@@ -144,6 +145,16 @@ impl MessageService for MessageSvc {
             ChannelAccess::Guild(guild_id) => self.state.events.publish_to_guild(*guild_id, event),
             ChannelAccess::Dm => self.state.events.publish_to_dm(req.channel_id, event),
         }
+        embeds::spawn(
+            &self.state,
+            embeds::Job {
+                channel_id: req.channel_id,
+                guild_id,
+                message_id: id,
+                author_id: user_id,
+                content: req.content.to_owned(),
+            },
+        );
         Response::ok(SendMessageResponse {
             message: message.into(),
             ..Default::default()
@@ -175,9 +186,11 @@ impl MessageService for MessageSvc {
             .collect();
         let mut reactions = self.load_reactions(req.channel_id, user_id, &messages).await?;
         let mut attachments = self.load_attachments(req.channel_id, &messages).await?;
+        let mut embeds = self.load_embeds(req.channel_id, &messages).await?;
         for message in &mut messages {
             message.reactions = reactions.remove(&message.id).unwrap_or_default();
             message.attachments = attachments.remove(&message.id).unwrap_or_default();
+            message.embeds = embeds.remove(&message.id).unwrap_or_default();
         }
         let next_before = has_more.then(|| messages.last().map(|m| m.id)).flatten();
         Response::ok(ListMessagesResponse {
@@ -331,7 +344,7 @@ fn pending_to_attachment(p: &pending::Pending) -> Attachment {
     }
 }
 
-/// Reloads a message (reactions and attachments included) and publishes it as
+/// Reloads a message (reactions, attachments and embeds included) and publishes it as
 /// `message_updated` to the audience of its channel. Used whenever a message
 /// changes after creation (attachment removed, embeds resolved).
 pub async fn publish_message_updated(state: &AppState, channel_id: u64, message_id: u64) -> Result<(), ConnectError> {
@@ -528,7 +541,42 @@ impl MessageSvc {
         Ok(out)
     }
 
-    /// One message with its reactions and attachments, as seen by `viewer`
+    /// The embeds of every message of a page: one query per bucket the page
+    /// touches, like attachments.
+    async fn load_embeds(&self, channel_id: u64, messages: &[Message]) -> Result<HashMap<u64, Vec<Embed>>, ConnectError> {
+        let mut per_bucket: BTreeMap<i32, Vec<i64>> = BTreeMap::new();
+        for m in messages {
+            per_bucket.entry(bucket_of(m.id)).or_default().push(id_to_db(m.id));
+        }
+        let fetched = try_join_all(per_bucket.into_iter().map(|(bucket, ids)| async move {
+            self.state
+                .session
+                .execute_unpaged(
+                    "SELECT message_id, position, url, title, description, site_name, thumbnail, thumbnail_width, \
+                     thumbnail_height FROM message_embeds WHERE channel_id = ? AND bucket = ? AND message_id IN ?",
+                    (id_to_db(channel_id), bucket, ids),
+                )
+                .await
+                .map_err(internal)?
+                .into_rows_result()
+                .map_err(internal)?
+                .rows::<EmbedRow>()
+                .map_err(internal)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(internal)
+        }))
+        .await?;
+        let mut rows: Vec<EmbedRow> = fetched.into_iter().flatten().collect();
+        rows.sort_by_key(|r| (r.0, r.1));
+        let mut out: HashMap<u64, Vec<Embed>> = HashMap::new();
+        for row in rows {
+            let (message_id, embed) = row_to_embed(row);
+            out.entry(message_id).or_default().push(embed);
+        }
+        Ok(out)
+    }
+
+    /// One message with its reactions, attachments and embeds, as seen by `viewer`
     /// (`0` = nobody: `me` is false everywhere).
     async fn load_message(&self, channel_id: u64, message_id: u64, viewer: u64) -> Result<Option<Message>, ConnectError> {
         let Some(row) = self
@@ -551,9 +599,11 @@ impl MessageSvc {
         let mut messages = vec![row_to_message(channel_id, row)];
         let mut reactions = self.load_reactions(channel_id, viewer, &messages).await?;
         let mut attachments = self.load_attachments(channel_id, &messages).await?;
+        let mut embeds = self.load_embeds(channel_id, &messages).await?;
         let mut message = messages.remove(0);
         message.reactions = reactions.remove(&message.id).unwrap_or_default();
         message.attachments = attachments.remove(&message.id).unwrap_or_default();
+        message.embeds = embeds.remove(&message.id).unwrap_or_default();
         Ok(Some(message))
     }
 

@@ -8,6 +8,7 @@ use connectrpc::Router as ConnectRouter;
 use scylla::client::caching_session::CachingSession;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use crate::embeds::EmbedSettings;
 use crate::events::EventBus;
 use crate::media::attachments::AttachmentSettings;
 use crate::media::{self, MAX_INPUT_BYTES};
@@ -31,6 +32,8 @@ pub struct AppState {
     pub storage: Option<Storage>,
     /// Limits and timings of message attachments.
     pub attachments: AttachmentSettings,
+    /// Link embed pipeline (SSRF-safe unfurling of URLs in messages).
+    pub embeds: EmbedSettings,
 }
 
 impl AppState {
@@ -49,12 +52,19 @@ impl AppState {
             heartbeat_interval,
             storage: None,
             attachments: AttachmentSettings::default(),
+            embeds: EmbedSettings::default(),
         }
     }
 
     /// Overrides the attachment limits (`THEHIDEOUT_MAX_UPLOAD_BYTES`, tests).
     pub fn with_attachment_settings(mut self, attachments: AttachmentSettings) -> Self {
         self.attachments = attachments;
+        self
+    }
+
+    /// Overrides the embed settings (`THEHIDEOUT_EMBEDS`, tests).
+    pub fn with_embed_settings(mut self, embeds: EmbedSettings) -> Self {
+        self.embeds = embeds;
         self
     }
 

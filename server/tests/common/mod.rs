@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use thehideout_server::config::S3Config;
+use thehideout_server::embeds::EmbedSettings;
 use thehideout_server::media::attachments::AttachmentSettings;
 use thehideout_server::snowflake::Snowflake;
 use thehideout_server::storage::Storage;
@@ -28,7 +29,7 @@ impl TestApp {
 
     /// Like `start`, with a custom gateway heartbeat interval.
     pub async fn start_with_heartbeat(heartbeat_interval: Duration) -> Self {
-        Self::start_inner(heartbeat_interval, None, AttachmentSettings::default()).await
+        Self::start_inner(heartbeat_interval, None, AttachmentSettings::default(), EmbedSettings::default()).await
     }
 
     /// Like `start`, with media storage on the real S3-compatible service from
@@ -47,10 +48,26 @@ impl TestApp {
                 config.endpoint
             )
         });
-        Self::start_inner(Duration::from_secs(30), Some(storage), settings).await
+        Self::start_inner(Duration::from_secs(30), Some(storage), settings, EmbedSettings::default()).await
     }
 
-    async fn start_inner(heartbeat_interval: Duration, storage: Option<Storage>, settings: AttachmentSettings) -> Self {
+    /// Like `start_with_storage`, with custom embed settings (loopback allowed
+    /// for the in-test sites, short timeouts, …).
+    pub async fn start_with_embeds(embeds: EmbedSettings) -> Self {
+        let config = S3Config::from_env().expect("S3 config");
+        let storage = Storage::s3(&config).expect("configure S3 storage");
+        storage.check().await.unwrap_or_else(|e| {
+            panic!("object storage at {} is not reachable ({e:#}); run `docker compose up -d`", config.endpoint)
+        });
+        Self::start_inner(Duration::from_secs(30), Some(storage), AttachmentSettings::default(), embeds).await
+    }
+
+    async fn start_inner(
+        heartbeat_interval: Duration,
+        storage: Option<Storage>,
+        settings: AttachmentSettings,
+        embeds: EmbedSettings,
+    ) -> Self {
         let session = SessionBuilder::new()
             .known_node("127.0.0.1:9042")
             .build()
@@ -65,6 +82,7 @@ impl TestApp {
         let mut state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, heartbeat_interval);
         state.storage = storage;
         state.attachments = settings;
+        state.embeds = embeds;
         let app = build_app(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

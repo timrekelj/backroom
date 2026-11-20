@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use thehideout_server::config::Config;
+use thehideout_server::embeds::EmbedSettings;
 use thehideout_server::media::{self, attachments::AttachmentSettings};
 use thehideout_server::snowflake::Snowflake;
 use thehideout_server::storage::Storage;
@@ -16,9 +17,18 @@ const PREPARED_STATEMENT_CACHE_SIZE: usize = 256;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load `.env` (current directory or a parent) before anything reads the
+    // environment, including RUST_LOG. Variables already set in the real
+    // environment win over the file. Reported once logging is up.
+    let dotenv = dotenvy::dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
+    match dotenv {
+        Ok(path) => tracing::info!(path = %path.display(), "loaded environment file"),
+        Err(e) if e.not_found() => {}
+        Err(e) => tracing::warn!(error = %e, "could not load .env file; continuing without it"),
+    }
 
     let config = Config::from_env()?;
     tracing::info!(?config, "starting thehideout-server");
@@ -54,6 +64,12 @@ async fn main() -> Result<()> {
     .with_attachment_settings(AttachmentSettings {
         max_upload_bytes: config.max_upload_bytes,
         ..Default::default()
+    })
+    .with_embed_settings({
+        let mut embeds = EmbedSettings::default();
+        embeds.enabled = config.embeds_enabled;
+        embeds.contact = config.embeds_contact.clone();
+        embeds
     });
     media::pending::spawn_sweeper(state.clone());
     let app = build_app(state);

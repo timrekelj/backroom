@@ -5,6 +5,7 @@ pub mod app;
 pub mod auth;
 pub mod config;
 pub mod convert;
+pub mod embeds;
 pub mod events;
 pub mod layout;
 pub mod media;

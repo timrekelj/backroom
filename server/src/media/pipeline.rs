@@ -123,6 +123,33 @@ pub fn inspect_attachment_image(data: &[u8]) -> Option<ImageInfo> {
     }
 }
 
+/// A link embed's preview image: lossless WebP fit within 400x400.
+pub struct EmbedThumbnail {
+    pub bytes: Bytes,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Decodes a png/jpeg/webp/gif (first frame, EXIF orientation honoured) and
+/// renders its embed thumbnail on a blocking thread, holding a decode slot.
+/// `None` if the data is not a decodable image of those formats or is too large to decode.
+pub async fn embed_thumbnail(data: Vec<u8>) -> Option<EmbedThumbnail> {
+    let _permit = acquire_decode_slot().await?;
+    tokio::task::spawn_blocking(move || {
+        let format = image::guess_format(&data).ok()?;
+        if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif) {
+            return None;
+        }
+        let image = fit(decode(&data, format).ok()?.into_rgba8(), ATTACHMENT_THUMBNAIL_EDGE);
+        let (width, height) = image.dimensions();
+        let bytes = encode_webp(&image).ok()?.bytes;
+        Some(EmbedThumbnail { bytes, width, height })
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Validates and processes `data` for `kind` on a blocking thread.
 pub async fn process(kind: MediaKind, data: Vec<u8>, content_type: String) -> Result<Processed, MediaError> {
     // Cheap checks first, before queueing for a decode slot.

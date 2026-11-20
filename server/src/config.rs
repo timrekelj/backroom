@@ -14,6 +14,10 @@ pub struct Config {
     pub s3: S3Config,
     /// Largest attachment upload in bytes (`THEHIDEOUT_MAX_UPLOAD_BYTES`).
     pub max_upload_bytes: u64,
+    /// Link embeds (`THEHIDEOUT_EMBEDS=on|off`, default on).
+    pub embeds_enabled: bool,
+    /// Contact shown in the embed fetcher's user agent (`THEHIDEOUT_EMBEDS_CONTACT`).
+    pub embeds_contact: Option<String>,
 }
 
 /// Connection settings of the S3-compatible object store holding media.
@@ -73,6 +77,11 @@ impl Config {
         if max_upload_bytes == 0 {
             bail!("THEHIDEOUT_MAX_UPLOAD_BYTES must be at least 1");
         }
+        let embeds_enabled = match var("THEHIDEOUT_EMBEDS", "on").to_lowercase().as_str() {
+            "on" | "true" | "1" | "yes" => true,
+            "off" | "false" | "0" | "no" => false,
+            other => bail!("invalid THEHIDEOUT_EMBEDS {other:?}, expected on or off"),
+        };
         Ok(Self {
             listen_addr,
             scylla_nodes,
@@ -81,6 +90,8 @@ impl Config {
             heartbeat_interval: Duration::from_secs(heartbeat_secs),
             s3: S3Config::from_env()?,
             max_upload_bytes,
+            embeds_enabled,
+            embeds_contact: env::var("THEHIDEOUT_EMBEDS_CONTACT").ok().filter(|s| !s.trim().is_empty()),
         })
     }
 }

@@ -40,6 +40,11 @@ pub const MIGRATIONS: &[(i32, &str, &str)] = &[
         "attachments",
         include_str!("../migrations/0007_attachments.cql"),
     ),
+    (
+        8,
+        "embeds",
+        include_str!("../migrations/0008_embeds.cql"),
+    ),
 ];
 
 /// Creates the keyspace if needed, selects it on the session, and applies any

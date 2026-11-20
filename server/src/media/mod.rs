@@ -15,7 +15,7 @@ pub use accounting::{Owner, delete_record, record, totals};
 pub use http::media_route;
 pub use pipeline::{
     ATTACHMENT_IMAGE_MAX_BYTES, ImageInfo, MAX_INPUT_BYTES, MediaError, Processed, acquire_decode_slot,
-    inspect_attachment_image, process,
+    inspect_attachment_image, process, EmbedThumbnail, embed_thumbnail,
 };
 pub use accounting::{KindTotals, totals_by_kind};
 
@@ -96,6 +96,7 @@ pub fn label_of_key(key: &str) -> Option<&'static str> {
         "guild-icons" => Some("guild_icon"),
         "emojis" => Some("emoji"),
         "attachments" => Some("attachment"),
+        "embeds" => Some("embed"),
         _ => None,
     }
 }
@@ -106,7 +107,7 @@ pub fn content_type_of_key(key: &str) -> &'static str {
 }
 
 /// Key prefixes the `/media` route serves.
-const KEY_PREFIXES: &[&str] = &["avatars", "guild-icons", "emojis"];
+const KEY_PREFIXES: &[&str] = &["avatars", "guild-icons", "emojis", "embeds"];
 /// Prefix of message attachment keys (`attachments/{channel_id}/{32 hex}` and
 /// `…/{32 hex}-thumb.webp`); the hex part is random, not a content hash.
 pub const ATTACHMENT_PREFIX: &str = "attachments";
@@ -139,6 +140,12 @@ pub fn attachment_key(channel_id: u64, id: &str) -> String {
 /// `attachments/{channel_id}/{id}-thumb.webp`.
 pub fn attachment_thumbnail_key(channel_id: u64, id: &str) -> String {
     format!("{ATTACHMENT_PREFIX}/{channel_id}/{id}{THUMB_SUFFIX}")
+}
+
+/// `embeds/{channel_id}/{32 hex}.webp`: a link embed's thumbnail. The hex part
+/// is random (like attachment ids), so the key is unguessable.
+pub fn embed_thumbnail_key(channel_id: u64) -> String {
+    format!("embeds/{channel_id}/{}.webp", random_attachment_id())
 }
 
 /// Whether `key` names an attachment object (file or thumbnail).
@@ -218,6 +225,25 @@ mod tests {
             "attachments/42/ZZ".to_owned(),
             format!("attachments/42/{}", "0".repeat(31)),
             format!("attachments/42/{}", "A".repeat(32)),
+        ] {
+            assert!(parse_key(&bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn embed_keys_roundtrip_and_odd_ones_are_rejected() {
+        let key = embed_thumbnail_key(42);
+        assert!(key.starts_with("embeds/42/") && key.ends_with(".webp"));
+        assert!(parse_key(&key).is_some());
+        assert_eq!(label_of_key(&key), Some("embed"));
+        let zeros = "0".repeat(32);
+        for bad in [
+            format!("embeds/42/{zeros}.gif"),
+            format!("embeds/42/{zeros}.png"),
+            format!("embeds/42/{zeros}"),
+            format!("embeds/x/{zeros}.webp"),
+            format!("embeds/42/../{zeros}.webp"),
+            format!("embeds/42/{zeros}.webp/y"),
         ] {
             assert!(parse_key(&bad).is_none(), "{bad}");
         }

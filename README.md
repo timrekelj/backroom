@@ -25,8 +25,14 @@ with a clear message if the object store is unreachable):
 cd server && cargo test
 ```
 
-Requires `buf` on `PATH` for protobuf codegen. Configuration is via env vars:
-`THEHIDEOUT_LISTEN_ADDR`, `THEHIDEOUT_SCYLLA_NODES`, `THEHIDEOUT_KEYSPACE`, `THEHIDEOUT_WORKER_ID`, `RUST_LOG`, and the object storage settings below.
+Requires `buf` on `PATH` for protobuf codegen.
+
+## Configuration
+
+Settings are environment variables. Copy `.env.example` to `.env` (gitignored)
+and edit it; the server loads the repo-root `.env`, and real environment
+variables override it. `.env.example` documents every variable and its default.
+Never commit `.env`.
 
 ## Media storage (S3)
 
