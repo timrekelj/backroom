@@ -7,6 +7,8 @@
 
 #![allow(dead_code)]
 
+#[path = "../src/account.rs"]
+mod account;
 #[path = "../src/admin.rs"]
 mod admin;
 #[path = "../src/apply.rs"]
@@ -638,7 +640,7 @@ impl Desk {
 
     fn pump(&mut self) {
         for cmd in std::mem::take(&mut self.ui.outbox) {
-            if matches!(cmd, Command::Login { .. } | Command::SignUp { .. }) {
+            if cmd.signed_out() {
                 self.backend.set_server(&self.ui.server_url());
             }
             self.backend.submit(cmd);
@@ -1953,4 +1955,165 @@ fn emojis_reactions_and_an_emoji_channel_icon_reach_a_second_client() {
     rt.block_on(server.cleanup());
     std::fs::remove_file(&alice.prefs).ok();
     std::fs::remove_file(&bob.prefs).ok();
+}
+
+/// An invite made on the server (as the `invite` CLI does) is looked up and accepted through
+/// the backend, which signs the new account in on a named device. Turning on an authenticator
+/// makes the next sign-in (another device) stop at the second factor, which a code from the
+/// authenticator completes; the first device then lists both sessions, itself as the current one.
+#[test]
+fn an_invite_then_two_factor_then_a_second_device() {
+    use thehideout_api::{InviteStatus, SecondFactorMethod};
+    use thehideout_server::services::invite::{NewInvite, create};
+    use totp_rs::{Algorithm, Secret, TOTP};
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(Server::start());
+    let (_, _token, code) = rt
+        .block_on(create(
+            &server.state,
+            NewInvite {
+                email: "erin@example.test".into(),
+                inviter_id: None,
+                guild_id: None,
+                guild_ids: Vec::new(),
+                make_admin: false,
+            },
+        ))
+        .expect("create an invite");
+
+    // Looked up, then accepted: the account is signed in and saved.
+    let mut desk = Peer::new(&server.url);
+    let preview = desk
+        .ask(Command::LookupInvite { code: code.to_lowercase() }, |r| match r {
+            Reply::InviteLookup(p) => Some(p.clone()),
+            _ => None,
+        })
+        .expect("look the invite up (the code's case is forgiven)");
+    assert_eq!(preview.status, InviteStatus::Pending);
+    assert_eq!(preview.masked_email, "e***@example.test");
+    let erin = desk
+        .ask(
+            Command::AcceptInvite {
+                code: code.clone(),
+                username: "erin".into(),
+                password: Some(PASSWORD.into()),
+            },
+            |r| match r {
+                Reply::Auth(a) => Some(a.clone()),
+                _ => None,
+            },
+        )
+        .expect("accept the invite");
+    assert_eq!(erin.me.username, "erin");
+    assert_eq!(erin.me.email.as_deref(), Some("erin@example.test"));
+    assert!(desk.saved().is_some(), "the new session is saved");
+    // The invite is spent.
+    let again = desk.ask(
+        Command::AcceptInvite { code, username: "erin2".into(), password: Some(PASSWORD.into()) },
+        |r| match r {
+            Reply::Auth(a) => Some(a.clone()),
+            _ => None,
+        },
+    );
+    assert!(matches!(again, Err(ApiError::Precondition(_))), "a used invite: {again:?}");
+
+    // Relaunched, the saved session resumes; there the authenticator is turned on.
+    let mut desk = Peer::with_prefs(desk.prefs.clone());
+    desk.backend.set_server(&server.url);
+    let resumed = desk.ask(Command::Resume, |r| match r {
+        Reply::Resume(r) => Some(r.clone()),
+        _ => None,
+    });
+    assert!(matches!(resumed, Ok(Some(_))), "the saved session resumes: {resumed:?}");
+    let setup = desk
+        .ask(Command::BeginTotpSetup, |r| match r {
+            Reply::TotpSetup(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("begin the authenticator setup");
+    assert!(setup.otpauth_uri.starts_with("otpauth://totp/"));
+    let totp = TOTP::new_unchecked(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        Secret::Encoded(setup.secret.clone()).to_bytes().expect("a base32 secret"),
+        None,
+        String::new(),
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let codes = desk
+        .ask(Command::ConfirmTotp { code: totp.generate(now) }, |r| match r {
+            Reply::RecoveryCodes { regenerated: false, result } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("confirm the authenticator");
+    assert_eq!(codes.len(), 10, "ten recovery codes");
+
+    // A second device: the password is not enough any more.
+    let mut laptop = Peer::new(&server.url);
+    let (challenge, methods) = laptop.ask(
+        Command::Login { username: "erin@example.test".into(), password: PASSWORD.into() },
+        |r| match r {
+            Reply::SecondFactor { challenge, methods } => Some((challenge.clone(), methods.clone())),
+            Reply::Auth(a) => panic!("signed in without the second factor: {a:?}"),
+            _ => None,
+        },
+    );
+    assert!(methods.contains(&SecondFactorMethod::Totp) && methods.contains(&SecondFactorMethod::RecoveryCode));
+    // A wrong code is refused and leaves the challenge open...
+    let wrong = laptop.ask(
+        Command::CompleteSecondFactor { challenge: challenge.clone(), code: "000000".into(), recovery: false },
+        |r| match r {
+            Reply::Auth(a) => Some(a.clone()),
+            _ => None,
+        },
+    );
+    assert_eq!(wrong.map(|s| s.me.id), Err(ApiError::Unauthenticated));
+    // ...and the next step's code (each step is accepted once; the setup used this one) completes it.
+    let second = laptop
+        .ask(
+            Command::CompleteSecondFactor { challenge, code: totp.generate(now + 30), recovery: false },
+            |r| match r {
+                Reply::Auth(a) => Some(a.clone()),
+                _ => None,
+            },
+        )
+        .expect("complete the second factor");
+    assert_eq!(second.me.id, erin.me.id);
+
+    // The first device sees both sessions, itself as the current one, and the authenticator on.
+    let info = desk
+        .ask(Command::LoadSecurity, |r| match r {
+            Reply::Security(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("the security lists");
+    assert_eq!(info.sessions.len(), 2, "two devices: {:?}", info.sessions);
+    assert_eq!(info.sessions.iter().filter(|s| s.current).count(), 1);
+    let label = backend::device_label();
+    assert!(info.sessions.iter().all(|s| s.device_name == label), "named after this computer: {:?}", info.sessions);
+    assert_eq!(info.totp, Some(true));
+    assert!(info.passkeys.is_empty());
+
+    // Signing the other device out leaves one.
+    let other = info.sessions.iter().find(|s| !s.current).unwrap().id;
+    desk.ask(Command::RevokeSession { id: other }, |r| match r {
+        Reply::SessionRevoked { id, result } if *id == other => Some(result.clone()),
+        _ => None,
+    })
+    .expect("revoke the other session");
+    let info = desk
+        .ask(Command::LoadSecurity, |r| match r {
+            Reply::Security(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("the security lists again");
+    assert_eq!(info.sessions.len(), 1);
+
+    rt.block_on(server.cleanup());
 }

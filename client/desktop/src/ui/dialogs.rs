@@ -120,6 +120,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, window_h: f32) {
         DialogKind::DeleteRole { guild, role } => delete_role(a, k, layer, d, guild, role),
         DialogKind::DeleteEmoji { guild, emoji } => delete_emoji(a, k, layer, d, guild, emoji),
         DialogKind::Invite { guild } => invite(a, k, layer, guild),
+        DialogKind::InviteByEmail { guild } => invite_by_email(a, k, layer, max_h, d, guild),
     }
 }
 
@@ -608,6 +609,145 @@ fn invite(a: &App, k: &Kit, layer: &mut Vec<El>, guild: u64) {
         .footer(
             Button::new("Done")
                 .on_press(close)
+                .build(k)
+                .key("dialog-submit"),
+        )
+        .on_close(close)
+        .build(k, layer);
+}
+
+/// Invite someone by email: the address, then the code that was sent (with copy), and this
+/// server's pending invites to send again or withdraw.
+fn invite_by_email(a: &App, k: &Kit, layer: &mut Vec<El>, max_h: f32, d: &DialogState, guild: u64) {
+    let t = theme_of(k);
+    let s = &a.state;
+    let name = s.guild(guild).map_or_else(String::new, |g| g.name.clone());
+    let busy = d.phase == Phase::Busy;
+    let input = TextInput::new(&d.input)
+        .placeholder("friend@example.com")
+        .on_edit(dialog_edit)
+        .on_submit(|a: &mut App, _| a.act(|s| s.submit_dialog()));
+    let mut body = col()
+        .key("dialog-field")
+        .w_full()
+        .gap(16.0)
+        .child(dialog_field(k, "Email", input, d.error.as_deref()));
+    let inv = &s.ui.invites;
+    if let Some(created) = &inv.created {
+        let code = created.code.clone().unwrap_or_default();
+        let copy_code = code.clone();
+        body = body.child(
+            col()
+                .key("invite-created")
+                .w_full()
+                .gap(8.0)
+                .padding(12.0)
+                .radius(radius::MD)
+                .fill(t.success_bg.color())
+                .child(
+                    text(format!("Invite sent to {}. The email has a link; they can also paste this code under \u{201c}I have an invite\u{201d}:", created.email))
+                        .font(type_::at(k, type_::CONTROL))
+                        .color(t.text.color())
+                        .wrap()
+                        .w_full(),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .gap(8.0)
+                        .center_y()
+                        .child(
+                            row()
+                                .key("invite-created-code")
+                                .grow(1.0)
+                                .h(32.0)
+                                .px(12.0)
+                                .center_y()
+                                .radius(radius::MD)
+                                .fill(t.surface_raised.color())
+                                .border(1.0, t.control_border.color())
+                                .label(format!("Invite code {code}"))
+                                .child(text(code).font(type_::at(k, type_::CODE)).color(t.text.color()).a11y_hidden()),
+                        )
+                        .child(
+                            Button::new("Copy")
+                                .icon(&COPY)
+                                .variant(Variant::Secondary)
+                                .build(k)
+                                .key("invite-created-copy")
+                                .on_press_tx(move |a: &mut App, tx| {
+                                    tx.copy(copy_code.clone());
+                                    a.state.toast(ToastKind::Success, "Invite code copied");
+                                }),
+                        ),
+                ),
+        );
+    }
+    let pending: Vec<_> = inv.list.iter().filter(|i| i.status == thehideout_api::InviteStatus::Pending).collect();
+    let mut list = col().key("invite-pending").w_full().gap(2.0).child(
+        text("Pending invites").font(type_::at(k, type_::LABEL)).color(t.text_muted.color()),
+    );
+    if let Some(e) = &inv.error {
+        list = list.child(text(e.clone()).font(type_::at(k, type_::CONTROL)).color(t.danger.color()).wrap().w_full());
+    } else if !inv.loaded {
+        list = list.child(text("Loading\u{2026}").font(type_::at(k, type_::CONTROL)).color(t.text_muted.color()));
+    } else if pending.is_empty() {
+        list = list.child(text("No pending invites.").key("invite-pending-empty").font(type_::at(k, type_::CONTROL)).color(t.text_muted.color()));
+    }
+    for i in pending {
+        let id = i.id;
+        let row_busy = inv.busy.contains(&id);
+        let expires = crate::format::day_label(crate::format::day_of(s.tz, crate::format::unix(i.expires_at)), s.today);
+        let by = i.inviter.as_ref().map_or_else(String::new, |u| format!(" \u{00b7} by {}", u.username));
+        list = list.child(
+            row()
+                .key(format!("invite-row-{id}"))
+                .w_full()
+                .min_h(metrics_of(k).row_h() + 8.0)
+                .px(8.0)
+                .gap(8.0)
+                .center_y()
+                .radius(radius::MD)
+                .hover(t.hover.color())
+                .child(
+                    col()
+                        .grow(1.0)
+                        .shrink()
+                        .min_w(0.0)
+                        .child(text(i.email.clone()).font(type_::at(k, type_::CONTROL_STRONG)).color(t.text.color()).max_lines(1))
+                        .child(text(format!("Expires {expires}{by}")).font(type_::at(k, type_::CAPTION)).color(t.text_muted.color()).max_lines(1)),
+                )
+                .child(
+                    Button::new("Resend")
+                        .variant(Variant::Ghost)
+                        .size(Size::Sm)
+                        .disabled(row_busy)
+                        .on_press(move |a: &mut App| a.act(|s| s.resend_invite(id)))
+                        .build(k)
+                        .key(format!("invite-resend-{id}")),
+                )
+                .child(
+                    Button::new("Withdraw")
+                        .variant(Variant::Ghost)
+                        .size(Size::Sm)
+                        .disabled(row_busy)
+                        .on_press(move |a: &mut App| a.act(|s| s.revoke_invite(id)))
+                        .build(k)
+                        .key(format!("invite-revoke-{id}")),
+                ),
+        );
+    }
+    body = body.child(list);
+    Dialog::new("dlg", "Invite people by email")
+        .description(format!("They get an email to make an account and join {name}. Invites last 7 days."))
+        .open(true)
+        .body_max_h(max_h)
+        .child(body)
+        .footer(Button::new("Done").variant(Variant::Secondary).on_press(close).build(k).key("dialog-cancel"))
+        .footer(
+            Button::new(if busy { "Sending\u{2026}" } else { "Send invite" })
+                .disabled(busy)
+                .on_press(|a: &mut App| a.act(|s| s.submit_dialog()))
                 .build(k)
                 .key("dialog-submit"),
         )

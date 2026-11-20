@@ -71,7 +71,7 @@ impl App {
             saver.save_embeds(&self.state.ui.attach.embeds_collapsed);
         }
         for cmd in std::mem::take(&mut self.state.outbox) {
-            if matches!(cmd, Command::Login { .. } | Command::SignUp { .. }) {
+            if cmd.signed_out() {
                 self.backend.set_server(&self.state.server_url());
             }
             self.backend.submit(cmd);
@@ -225,6 +225,12 @@ pub fn poll(a: &mut App, clock: f64, tx: &mut Tx) -> bool {
     changed || ticked || playing
 }
 
+/// A link the system opened the app with (`thehideout://invite/<token>`, once the scheme is
+/// registered with the system): signed out, it opens that invite.
+pub fn on_open_url(a: &mut App, url: &str, _tx: &mut Tx) {
+    a.act(|s| s.open_link(url));
+}
+
 /// Keys no focused control took: Cmd/Ctrl+W closes the window, Cmd/Ctrl+Q quits, Alt+Up and
 /// Alt+Down move between channels, Escape leaves the settings, Cmd/Ctrl+Shift+A opens the admin dashboard (admins only). (Escape belongs to an open modal
 /// or menu first.)
@@ -306,6 +312,7 @@ pub fn view(a: &App, cx: &mut Cx<App>) -> El {
     };
     let screen = screen.absolute(0.0, 0.0).w_full().h_full().transition(fade);
     ui::dialogs::build(a, k, &mut layer, lay.height);
+    ui::security::dialogs(a, k, &mut layer, lay.height);
     ui::emoji::build(a, k, &mut layer);
     ui::attach::lightbox_layer(a, k, &mut layer, (lay.width, lay.height));
     layer.push(ui::toasts::build(a, k));

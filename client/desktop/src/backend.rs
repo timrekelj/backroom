@@ -8,9 +8,10 @@ use std::path::PathBuf;
 
 use thehideout_api::{
     ActivityPoint, AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, ApiError, AuditEntry,
-    Channel, ChannelIconRef, DmChannel, Emoji, GatewayUpdate, Guild, GuildLayout, Member, Message,
-    Overview, Page, Paged, PaletteColor, PendingAttachment, Permissions, ReactionEmoji, Role, RoleList, Section,
-    User,
+    Channel, ChannelIconRef, DeviceSession, DmChannel, Emoji, GatewayUpdate, Guild, GuildLayout,
+    Invite, InvitePreview, Member, Message, NewInvite, Overview, Page, Paged, PaletteColor, Passkey,
+    PendingAttachment, Permissions, ReactionEmoji, Role, RoleList, SecondFactorMethod, Section,
+    TotpSetup, User,
 };
 
 /// What a picked picture is for.
@@ -28,14 +29,114 @@ pub enum ImagePurpose {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
-    SignUp {
-        username: String,
-        password: String,
-    },
+    // ---- signing in: no session yet, sent to the auth form's server --------------------------
+    /// `username` is a username or an email.
     Login {
         username: String,
         password: String,
     },
+    /// Emails a sign-in code; always succeeds (whether or not the address has an account).
+    RequestEmailCode {
+        email: String,
+    },
+    VerifyEmailCode {
+        email: String,
+        code: String,
+    },
+    /// Answers a `Reply::SecondFactor` challenge with an authenticator or (`recovery`) a recovery code.
+    CompleteSecondFactor {
+        challenge: String,
+        code: String,
+        recovery: bool,
+    },
+    /// Emails a password reset code; always succeeds.
+    RequestPasswordReset {
+        email: String,
+    },
+    ResetPassword {
+        email: String,
+        code: String,
+        new_password: String,
+    },
+    /// Starts a passkey sign-in: `Reply::PasskeyCeremony` brings the page to open in the browser,
+    /// then the backend waits (polling once a second, up to 2 minutes) and answers `Auth`.
+    BeginPasskeyLogin {
+        username: String,
+    },
+    /// Stops waiting for the passkey ceremony under way (sign-in or a new passkey); nothing more
+    /// is reported for it.
+    CancelPasskey,
+    /// What an invite (its code or link) is for.
+    LookupInvite {
+        code: String,
+    },
+    /// Creates the invite's account and signs in (`Auth`); `password: None` = passwordless.
+    AcceptInvite {
+        code: String,
+        username: String,
+        password: Option<String>,
+    },
+    // ---- account security -------------------------------------------------------------------
+    /// Passkeys, sessions and whether an authenticator app is on: `Reply::Security`.
+    LoadSecurity,
+    /// `current` is "" for an account without a password; other sessions are signed out.
+    ChangePassword {
+        current: String,
+        new: String,
+    },
+    /// Sends a code to `email` (also adds an email to an account without one).
+    ChangeEmail {
+        email: String,
+        password: String,
+    },
+    ConfirmEmailChange {
+        code: String,
+    },
+    BeginTotpSetup,
+    ConfirmTotp {
+        code: String,
+    },
+    /// With an authenticator or a recovery code.
+    DisableTotp {
+        code: String,
+    },
+    RegenerateRecoveryCodes {
+        code: String,
+    },
+    /// Adds a passkey through the browser ceremony: `PasskeyCeremony`, then `PasskeyAdded`.
+    BeginPasskeyRegistration {
+        name: String,
+    },
+    RenamePasskey {
+        id: u64,
+        name: String,
+    },
+    DeletePasskey {
+        id: u64,
+    },
+    RevokeSession {
+        id: u64,
+    },
+    RevokeOtherSessions,
+    // ---- invites ----------------------------------------------------------------------------
+    CreateInvite {
+        invite: NewInvite,
+    },
+    /// A page of invites: all (`guild: None`, admins) or one server's. `epoch` as for the admin lists.
+    ListInvites {
+        epoch: u64,
+        guild: Option<u64>,
+        page_token: Option<String>,
+        limit: u32,
+    },
+    RevokeInvite {
+        id: u64,
+    },
+    /// Emails the invite again with a new code and expiry.
+    ResendInvite {
+        id: u64,
+    },
+    // ---- the rest -----------------------------------------------------------------------------
     /// Me, guilds, DMs and every guild's channels, in one answer.
     LoadInitial,
     /// `LoadInitial` again after a gateway gap: same data, but it must not reset the UI.
@@ -289,6 +390,57 @@ pub struct Initial {
 
 type R<T> = Result<T, ApiError>;
 
+impl Command {
+    /// Whether the command is answered without a session, by the server in the auth form's field.
+    pub fn signed_out(&self) -> bool {
+        matches!(
+            self,
+            Command::Login { .. }
+                | Command::RequestEmailCode { .. }
+                | Command::VerifyEmailCode { .. }
+                | Command::CompleteSecondFactor { .. }
+                | Command::RequestPasswordReset { .. }
+                | Command::ResetPassword { .. }
+                | Command::BeginPasskeyLogin { .. }
+                | Command::LookupInvite { .. }
+                | Command::AcceptInvite { .. }
+        )
+    }
+}
+
+/// What this device is called in the account's session list (and a new passkey's default name):
+/// the computer's name, else "thehideout desktop on <OS>".
+pub fn device_label() -> String {
+    let host = gethostname::gethostname().to_string_lossy().trim().trim_end_matches(".local").to_owned();
+    let os = match std::env::consts::OS {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    };
+    if host.is_empty() || host == "localhost" {
+        format!("thehideout desktop on {os}")
+    } else {
+        host.chars().take(64).collect()
+    }
+}
+
+/// The Security page's lists.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct SecurityInfo {
+    pub passkeys: Vec<Passkey>,
+    pub sessions: Vec<DeviceSession>,
+    /// Whether an authenticator app is on; `None` when the server didn't say.
+    pub totp: Option<bool>,
+}
+
+/// What a `RevokeInvite` / `ResendInvite` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InviteAction {
+    Revoke,
+    Resend,
+}
+
 /// A guild's roles and the role ids each member holds.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct GuildAccess {
@@ -300,8 +452,56 @@ pub struct GuildAccess {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
-    /// Answer to `SignUp` and `Login`.
+    /// A sign-in finished: `Login`, `VerifyEmailCode`, `CompleteSecondFactor`, `AcceptInvite` or
+    /// a passkey. Its error belongs to whatever step the form is on.
     Auth(R<Session>),
+    /// `Login` / `VerifyEmailCode` for an account with an authenticator app: answer with
+    /// `CompleteSecondFactor`.
+    SecondFactor {
+        challenge: String,
+        methods: Vec<SecondFactorMethod>,
+    },
+    /// Answer to `RequestEmailCode` and `RequestPasswordReset`.
+    CodeSent(R<()>),
+    PasswordReset(R<()>),
+    /// A passkey ceremony page to open in the browser (or why it couldn't start).
+    PasskeyCeremony(R<String>),
+    InviteLookup(R<InvitePreview>),
+    Security(R<SecurityInfo>),
+    PasswordChanged(R<()>),
+    /// Answer to `ChangeEmail`: the code is on its way.
+    EmailChangeStarted(R<()>),
+    EmailChanged(R<User>),
+    TotpSetup(R<TotpSetup>),
+    /// Answer to `ConfirmTotp` and (`regenerated`) `RegenerateRecoveryCodes`.
+    RecoveryCodes {
+        regenerated: bool,
+        result: R<Vec<String>>,
+    },
+    TotpDisabled(R<()>),
+    PasskeyAdded(R<Passkey>),
+    PasskeyRenamed(R<Passkey>),
+    PasskeyDeleted {
+        id: u64,
+        result: R<()>,
+    },
+    SessionRevoked {
+        id: u64,
+        result: R<()>,
+    },
+    /// How many sessions `RevokeOtherSessions` signed out.
+    OthersRevoked(R<u32>),
+    InviteCreated(R<Invite>),
+    Invites {
+        epoch: u64,
+        guild: Option<u64>,
+        result: R<Paged<Invite>>,
+    },
+    InviteSaved {
+        id: u64,
+        action: InviteAction,
+        result: R<Invite>,
+    },
     Initial(R<Initial>),
     /// Answer to `Refresh`.
     Refreshed(R<Initial>),

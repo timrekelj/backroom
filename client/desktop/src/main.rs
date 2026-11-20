@@ -6,7 +6,10 @@
 
 #![forbid(unsafe_code)]
 
+mod account;
 mod admin;
+#[cfg(test)]
+mod account_tests;
 #[cfg(test)]
 mod admin_tests;
 mod app;
@@ -58,5 +61,6 @@ fn main() {
         ..AppSpec::new("thehideout", (1280.0, 800.0), app::init, app::view)
     })
     .titlebar(Titlebar::new(ui::shell::TITLEBAR))
+    .on_open_url(app::on_open_url)
     .run();
 }

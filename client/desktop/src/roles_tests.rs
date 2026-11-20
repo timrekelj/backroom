@@ -1144,7 +1144,8 @@ fn the_guild_menu_opens_server_settings_and_escape_leaves_them() {
     let mut rt: Runtime<App> = runtime(app);
     click(&mut rt, "guild-header");
     settle(&mut rt, 8);
-    click(&mut rt, "guild-menu-item3");
+    // Invite people, Invite people by email, Create channel, Create section, Server settings.
+    click(&mut rt, "guild-menu-item4");
     settle(&mut rt, 8);
     assert!(rt.state.state.ui.server_settings.is_some());
     assert!(

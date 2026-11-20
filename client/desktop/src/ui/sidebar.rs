@@ -110,7 +110,7 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
                 .color(t.text_muted.color())
                 .a11y_hidden(),
         );
-    let menu = Menu::new("guild-menu")
+    let mut menu = Menu::new("guild-menu")
         .trigger(trigger)
         .item(
             MenuItem::new("Invite people")
@@ -118,7 +118,18 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
                 .on_select(move |a: &mut App| {
                     a.act(|s| s.open_dialog(DialogKind::Invite { guild: id }))
                 }),
-        )
+        );
+    // Only for those who may: inviting by email makes accounts.
+    if a.state.can_invite(id) {
+        menu = menu.item(
+            MenuItem::new("Invite people by email\u{2026}")
+                .icon(thehideout_design::icons::catalog::by_name("envelope-simple").unwrap_or(&USER_PLUS))
+                .on_select(move |a: &mut App| {
+                    a.act(|s| s.open_dialog(DialogKind::InviteByEmail { guild: id }))
+                }),
+        );
+    }
+    let menu = menu
         .item(
             MenuItem::new("Create channel")
                 .icon(&PLUS)

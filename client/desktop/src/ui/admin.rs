@@ -1,5 +1,5 @@
 //! The site-admin dashboard: a full-window page like the settings (nav on the left: Overview,
-//! Servers, Files, Users, Audit log), with the page on the inset panel. Every page is a header,
+//! Servers, Files, Users, Invites, Audit log), with the page on the inset panel. Every page is a header,
 //! optional controls and a body that scrolls under the scroll-edge hairlines; the lists are
 //! virtual rows that ask for their next page as the end comes into view. The overview is stat
 //! cards, a storage bar split by kind and the activity chart. Cards and rows are told apart by
@@ -8,7 +8,8 @@
 use rune::{El, GrowthSpec, ScrollSpec, TextEdit, TextStyle, col, el, row, text};
 use rune_kit::{Kit, Select};
 use thehideout_api::{
-    AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, AuditEntry, StorageBreakdown,
+    AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, AuditEntry, InviteStatus,
+    StorageBreakdown,
 };
 use thehideout_design::metrics_of;
 use thehideout_design::components::avatar::picture;
@@ -22,9 +23,10 @@ use thehideout_design::{palette_color, radius, theme_of, type_};
 
 use super::server_settings::tile;
 use super::settings::{header, nav_shell};
+use crate::account::invite_status_label;
 use crate::admin::{
-    AdminPage, AdminState, Confirm, FILE_KINDS, RANGES, file_title, has_thumbnail, kind_label,
-    storage_parts,
+    AdminPage, AdminState, Confirm, FILE_KINDS, INVITE_STATUSES, RANGES, file_title, has_thumbnail,
+    kind_label, storage_parts,
 };
 use crate::app::App;
 use crate::format::{bytes, clock_label, day_label, day_of, unix};
@@ -69,6 +71,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32, compact: bool) -> 
         AdminPage::Servers => "Servers",
         AdminPage::Files => "Files",
         AdminPage::Users => "Users",
+        AdminPage::Invites => "Invites",
         AdminPage::Audit => "Audit log",
     };
     let parts = if ad.unavailable {
@@ -79,6 +82,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32, compact: bool) -> 
             AdminPage::Servers => servers(k, ad, compact),
             AdminPage::Files => files(k, layer, ad, compact),
             AdminPage::Users => users(k, ad, compact),
+            AdminPage::Invites => invites(a, k, layer, ad, compact),
             AdminPage::Audit => audit(k, ad, compact),
         }
     };
@@ -157,6 +161,7 @@ fn nav(k: &Kit, page: AdminPage) -> El {
         (AdminPage::Servers, "Servers", icon("hard-drives")),
         (AdminPage::Files, "Files", icon("files")),
         (AdminPage::Users, "Users", &USERS),
+        (AdminPage::Invites, "Invites", icon("envelope-simple")),
         (AdminPage::Audit, "Audit log", icon("clipboard-text")),
     ] {
         rows.push(
@@ -1308,6 +1313,265 @@ fn user_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
     line
 }
 
+// ---- invites ---------------------------------------------------------------------------------
+
+const INVITE_SERVERS_W: f32 = 180.0;
+const INVITE_STATUS_W: f32 = 96.0;
+const INVITE_BY_W: f32 = 110.0;
+const INVITE_EXPIRES_W: f32 = 110.0;
+const INVITE_ACTIONS_W: f32 = 168.0;
+
+fn invite_email_edit(a: &mut App) -> &mut TextEdit {
+    match a.state.ui.admin.as_mut().and_then(|ad| ad.invite_form.as_mut()) {
+        Some(f) => &mut f.email,
+        None => &mut a.state.ui.idle_composer,
+    }
+}
+
+fn invites(a: &App, k: &Kit, layer: &mut Vec<El>, ad: &AdminState, compact: bool) -> Parts {
+    let t = theme_of(k);
+    let feed = &ad.invites;
+    let labels: Vec<&str> = std::iter::once("All").chain(INVITE_STATUSES.iter().map(|s| invite_status_label(*s))).collect();
+    let picked = ad.invite_filter.and_then(|f| INVITE_STATUSES.iter().position(|s| *s == f)).map_or(0, |i| i + 1);
+    let filter = Segmented::new(&labels, picked)
+        .label("Show invites")
+        .on_pick(|a: &mut App, i| a.act(|s| s.filter_invites(if i == 0 { None } else { Some(INVITE_STATUSES[i - 1]) })))
+        .build(k);
+    let mut controls = col().w_full().gap(12.0).child(
+        row()
+            .w_full()
+            .gap(12.0)
+            .center_y()
+            .child(col().key("admin-invite-filter").w(420.0).shrink().child(filter))
+            .child(el().grow(1.0))
+            .child(
+                Button::new("Create invite")
+                    .icon(&thehideout_design::icons::PLUS)
+                    .on_press(|a: &mut App| a.act(|s| s.open_invite_form()))
+                    .build(k)
+                    .key("admin-invite-create"),
+            ),
+    );
+    if let Some(created) = &ad.invite_created {
+        let code = created.code.clone().unwrap_or_default();
+        let copy = code.clone();
+        controls = controls.child(
+            row()
+                .key("admin-invite-created")
+                .w_full()
+                .gap(12.0)
+                .px(12.0)
+                .py(8.0)
+                .center_y()
+                .radius(radius::MD)
+                .fill(t.success_bg.color())
+                .child(
+                    text(format!("Invite sent to {}. Code: {code}", created.email))
+                        .font(type_::at(k, type_::CONTROL))
+                        .color(t.text.color())
+                        .grow(1.0)
+                        .wrap(),
+                )
+                .child(
+                    Button::new("Copy code")
+                        .icon(&icons::COPY)
+                        .variant(Variant::Secondary)
+                        .size(Size::Sm)
+                        .build(k)
+                        .key("admin-invite-copy")
+                        .on_press_tx(move |a: &mut App, tx| {
+                            tx.copy(copy.clone());
+                            a.state.toast(thehideout_design::components::ToastKind::Success, "Invite code copied");
+                        }),
+                )
+                .child(
+                    IconButton::new(&icons::X, "Dismiss")
+                        .size(Size::Sm)
+                        .on_press(|a: &mut App| a.act(|s| s.dismiss_invite_created()))
+                        .build(k),
+                ),
+        );
+    }
+    let mut head = vec![head_cell(k, "Email", None, false)];
+    if !compact {
+        head.push(head_cell(k, "Servers", Some(INVITE_SERVERS_W), false));
+    }
+    head.push(head_cell(k, "Status", Some(INVITE_STATUS_W), false));
+    if !compact {
+        head.push(head_cell(k, "Invited by", Some(INVITE_BY_W), false));
+    }
+    head.push(head_cell(k, "Expires", Some(INVITE_EXPIRES_W), false));
+    head.push(head_cell(k, "", Some(INVITE_ACTIONS_W), true));
+    let shown = a.state.admin_invite_rows().len();
+    let body = if !feed.loaded && feed.error.is_none() {
+        loading(k)
+    } else if shown == 0 && feed.error.is_none() {
+        blank(
+            k,
+            catalog::by_name("envelope-simple").unwrap_or(&WARNING),
+            if feed.items.is_empty() { "No invites yet" } else { "No invites like that" },
+            "Invites you and server members send show up here.",
+        )
+    } else {
+        let list = rows(
+            "admin-invite-rows",
+            shown,
+            row_h(k),
+            k,
+            |s, i| s.admin_invite_rows().get(i).map_or_else(String::new, |r| format!("invite-row-{}", r.id)),
+            move |a, k, i| invite_row(a, k, i, compact),
+        );
+        col().w_full().max_w(MAX_W).px(pad(k) - 8.0).pb(pad(k)).child(list).children(list_foot(k, feed.pending, &feed.error))
+    };
+    invite_form(k, layer, ad);
+    Parts { controls: Some(controls), head: Some(table_head(head)), body: col().w_full().items_center().child(body) }
+}
+
+fn invite_row(a: &App, k: &Kit, i: usize, compact: bool) -> El {
+    let t = theme_of(k);
+    let rows = a.state.admin_invite_rows();
+    let (Some(r), Some(ad)) = (rows.get(i), a.state.admin()) else {
+        return el().key(format!("invite-gone-{i}")).h(row_h(k));
+    };
+    let id = r.id;
+    let busy = ad.invite_busy.contains(&id);
+    let mut who = row().gap(8.0).center_y().child(text(r.email.clone()).font(type_::at(k, type_::CONTROL_STRONG)).color(t.text.color()).max_lines(1).shrink());
+    if r.make_admin {
+        who = who.child(Badge::new("Admin").variant(BadgeVariant::Accent).build(k));
+    }
+    let servers = r.guild_ids.iter().map(|g| ad.guild_name(*g).map_or_else(|| format!("server {g}"), str::to_owned)).collect::<Vec<_>>().join(", ");
+    let status = match r.status {
+        InviteStatus::Pending => BadgeVariant::Info,
+        InviteStatus::Accepted => BadgeVariant::Success,
+        InviteStatus::Expired => BadgeVariant::Warning,
+        _ => BadgeVariant::Neutral,
+    };
+    let cell = |w: f32, s: String| {
+        row().w(w).shrink().child(text(s.clone()).font(type_::at(k, type_::CONTROL)).color(t.text_muted.color()).max_lines(1).help_when_truncated(s))
+    };
+    let expires = day_label(day_of(a.state.tz, unix(r.expires_at)), a.state.today);
+    let mut line = row()
+        .key(format!("invite-row-{id}"))
+        .role("row")
+        .label(format!("{}, {}", r.email, invite_status_label(r.status)))
+        .w_full()
+        .min_h(row_h(k))
+        .px(8.0)
+        .py(6.0)
+        .gap(12.0)
+        .center_y()
+        .radius(radius::MD)
+        .hover(t.hover.color())
+        .child(row().grow(1.0).shrink().min_w(0.0).child(who));
+    if !compact {
+        line = line.child(cell(INVITE_SERVERS_W, if servers.is_empty() { "\u{2013}".into() } else { servers }));
+    }
+    line = line.child(row().w(INVITE_STATUS_W).shrink().child(Badge::new(invite_status_label(r.status)).variant(status).build(k)));
+    if !compact {
+        line = line.child(cell(INVITE_BY_W, r.inviter.as_ref().map_or_else(|| "Server".to_owned(), |u| u.username.clone())));
+    }
+    line = line.child(cell(INVITE_EXPIRES_W, expires));
+    let mut actions = row().w(INVITE_ACTIONS_W).shrink().gap(4.0).justify_end();
+    if matches!(r.status, InviteStatus::Pending | InviteStatus::Expired) {
+        actions = actions.child(
+            Button::new("Resend")
+                .variant(Variant::Ghost)
+                .size(Size::Sm)
+                .disabled(busy)
+                .on_press(move |a: &mut App| a.act(|s| s.admin_resend_invite(id)))
+                .build(k)
+                .key(format!("admin-invite-resend-{id}")),
+        );
+    }
+    if r.status == InviteStatus::Pending {
+        actions = actions.child(
+            Button::new("Withdraw")
+                .variant(Variant::Ghost)
+                .size(Size::Sm)
+                .disabled(busy)
+                .on_press(move |a: &mut App| a.act(|s| s.admin_revoke_invite(id)))
+                .build(k)
+                .key(format!("admin-invite-revoke-{id}")),
+        );
+    }
+    line.child(actions)
+}
+
+/// "Create invite": an email, the servers to join (every server the dashboard knows) and whether
+/// the new account is a site admin.
+fn invite_form(k: &Kit, layer: &mut Vec<El>, ad: &AdminState) {
+    let Some(f) = &ad.invite_form else { return };
+    let t = theme_of(k);
+    let input = TextInput::new(&f.email)
+        .placeholder("friend@example.com")
+        .large()
+        .on_edit(invite_email_edit)
+        .on_submit(|a: &mut App, _| a.act(|s| s.submit_invite_form()));
+    let mut servers = row().key("admin-invite-servers").w_full().flex_wrap().gap(8.0);
+    for (id, name) in &ad.known_guilds {
+        let id = *id;
+        let on = f.guilds.contains(&id);
+        servers = servers.child(
+            row()
+                .key(format!("admin-invite-server-{id}"))
+                .gap(8.0)
+                .px(10.0)
+                .h(32.0)
+                .center_y()
+                .radius(radius::MD)
+                .fill(if on { t.accent_subtle.color() } else { t.hover.color() })
+                .child(Checkbox::new(on).label(name.clone()).hide_label().on_toggle(move |a: &mut App| a.act(|s| s.toggle_invite_guild(id))).build(k))
+                .child(text(name.clone()).font(type_::at(k, type_::CONTROL)).color(t.text.color()).a11y_hidden()),
+        );
+    }
+    if ad.known_guilds.is_empty() {
+        servers = servers.child(muted(k, "No servers yet."));
+    }
+    let admin = row()
+        .key("admin-invite-admin")
+        .w_full()
+        .gap(12.0)
+        .center_y()
+        .child(
+            col()
+                .grow(1.0)
+                .shrink()
+                .gap(2.0)
+                .child(text("Make them a site admin").font(type_::at(k, type_::CONTROL_STRONG)).color(t.text.color()))
+                .child(text("They will see this dashboard, delete anyone's files and manage admins.").font(type_::at(k, type_::CAPTION)).color(t.text_muted.color()).wrap()),
+        )
+        .child(
+            thehideout_design::components::switch(f.make_admin)
+                .label("Make them a site admin")
+                .hide_label()
+                .on_toggle(|a: &mut App| a.act(|s| s.toggle_invite_admin()))
+                .build(k)
+                .key("admin-invite-admin-switch"),
+        );
+    let body = col()
+        .key("admin-invite-form")
+        .w_full()
+        .gap(16.0)
+        .child(dialog_field(k, "Email", input, f.error.as_deref()).w_full())
+        .child(col().w_full().gap(6.0).child(text("Servers to join").font(type_::at(k, type_::LABEL)).color(t.text_muted.color())).child(servers))
+        .child(admin);
+    let close = |a: &mut App| a.act(|s| s.close_invite_form());
+    Dialog::new("admin-invite-dlg", "Create invite")
+        .description("They get an email with a link and a code to make their account. Invites last 7 days.")
+        .open(true)
+        .child(body)
+        .footer(Button::new("Cancel").variant(Variant::Secondary).on_press(close).build(k).key("admin-cancel"))
+        .footer(
+            Button::new(if f.busy { "Sending\u{2026}" } else { "Send invite" })
+                .disabled(f.busy)
+                .on_press(|a: &mut App| a.act(|s| s.submit_invite_form()))
+                .build(k)
+                .key("admin-submit"),
+        )
+        .on_close(close)
+        .build(k, layer);
+}
+
 // ---- audit log -------------------------------------------------------------------------------
 
 const AUDIT_ACTOR_W: f32 = 160.0;
@@ -1368,6 +1632,10 @@ pub fn action_label(action: &str) -> &str {
         "file.delete" => "Deleted a file",
         "admin.grant" => "Made admin",
         "admin.revoke" => "Removed admin",
+        "invite.create" => "Invited",
+        "invite.resend" => "Resent an invite",
+        "invite.revoke" => "Withdrew an invite",
+        "invite.accept" => "Accepted an invite",
         other => other,
     }
 }

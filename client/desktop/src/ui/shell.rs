@@ -1,14 +1,15 @@
 //! The main screen: rail, sidebar and the inset panel holding the header, transcript, composer
 //! and the member panel. Works from 800x600 up; the transcript takes whatever width is left.
 
-use rune::{El, col, el, row, text};
+use rune::{El, col, el, icon, row, text};
 use rune_kit::Kit;
 use thehideout_design::metrics_of;
-use thehideout_design::components::{Avatar, ChannelHeader, IconButton};
-use thehideout_design::icons::{GEAR, HASH, USERS, catalog};
+use thehideout_design::components::{Avatar, Button, ChannelHeader, IconButton, Size, Variant};
+use thehideout_design::icons::{GEAR, HASH, USERS, X, catalog};
 use thehideout_design::{palette_color, radius, theme_of, type_};
 
 use super::{admin, composer, members, rail, server_settings, settings, sidebar, transcript};
+use crate::account::SecKind;
 use crate::app::App;
 use crate::state::{DialogKind, Place};
 
@@ -83,6 +84,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32, lay: Layout) -> El
                 .min_w(0.0)
                 .h_full()
                 .child(header(a, k, lay))
+                .children(email_banner(a, k))
                 .child(transcript::build(a, k))
                 .child(composer::build(a, k)),
         )
@@ -104,6 +106,57 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32, lay: Layout) -> El
         .fill(t.bg.color())
         .pt(bar)
         .child(body)
+}
+
+/// A legacy account (no email) is asked to add one: a quiet wash under the header, with the
+/// way to do it and a dismiss for this session.
+fn email_banner(a: &App, k: &Kit) -> Option<El> {
+    if !a.state.wants_email() {
+        return None;
+    }
+    let t = theme_of(k);
+    let glyph = catalog::by_name("envelope-simple").unwrap_or(&thehideout_design::icons::INFO);
+    Some(
+        row()
+            .key("email-banner")
+            .role("status")
+            .w_full()
+            .px(12.0)
+            .child(
+                row()
+                    .w_full()
+                    .px(12.0)
+                    .py(8.0)
+                    .gap(10.0)
+                    .center_y()
+                    .radius(radius::MD)
+                    .fill(t.info_bg.color())
+                    .child(icon(glyph, thehideout_design::icon::SM).color(t.info.color()).a11y_hidden())
+                    .child(
+                        text("Add an email to your account, so you can sign in with a code and get back in if you forget your password.")
+                            .font(type_::at(k, type_::CONTROL))
+                            .color(t.text.color())
+                            .wrap()
+                            .grow(1.0)
+                            .shrink(),
+                    )
+                    .child(
+                        Button::new("Add email")
+                            .variant(Variant::Secondary)
+                            .size(Size::Sm)
+                            .on_press(|a: &mut App| a.act(|s| s.open_sec(SecKind::Email { sent: false })))
+                            .build(k)
+                            .key("email-banner-add"),
+                    )
+                    .child(
+                        IconButton::new(&X, "Dismiss")
+                            .size(Size::Sm)
+                            .on_press(|a: &mut App| a.act(|s| s.dismiss_email_banner()))
+                            .build(k)
+                            .key("email-banner-dismiss"),
+                    ),
+            ),
+    )
 }
 
 fn header(a: &App, k: &Kit, lay: Layout) -> El {

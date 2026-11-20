@@ -141,7 +141,16 @@ fn wrong_password_and_taken_name_show_inline_errors() {
     );
     assert_eq!(rt.state.state.auth.phase, Phase::Idle);
 
+    // Accounts come from invites: the invite tab, its code, then a name that is taken.
+    settle(&mut rt, 30);
     click(&mut rt, "segment1");
+    settle(&mut rt, 30);
+    assert_eq!(rt.state.state.auth.mode, crate::forms::AuthMode::Invite);
+    rt.update(|a, _| a.state.auth.invite.replace_text(crate::fake::account::INVITE_PENDING));
+    click(&mut rt, "auth-submit");
+    // The card grows to the account step; let it settle before pointing at its button.
+    settle(&mut rt, 40);
+    assert!(matches!(rt.state.state.auth.step, crate::forms::AuthStep::InviteAccept { .. }));
     rt.update(|a, _| {
         a.state.auth.username.replace_text("taken");
         a.state.auth.password.replace_text("secret123");

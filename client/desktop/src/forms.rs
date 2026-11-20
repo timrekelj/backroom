@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use rune::TextEdit;
-use thehideout_api::{ApiError, Channel, ChannelIconRef};
+use thehideout_api::{ApiError, Channel, ChannelIconRef, InvitePreview, SecondFactorMethod};
 use thehideout_design::components::EmojiPickerState;
 
 use crate::emoji::IconEmoji;
@@ -17,16 +17,51 @@ pub enum Phase {
     Busy,
 }
 
+/// The auth card's two tabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthMode {
+    /// "Sign in": an existing account.
     Login,
-    SignUp,
+    /// "I have an invite": accounts are invite-only.
+    Invite,
+}
+
+/// Where the auth card is within its tab.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthStep {
+    /// Username or email, and the password.
+    Password,
+    /// "Email me a code instead": the email, then (`sent`) the 6-digit code.
+    EmailCode { sent: bool },
+    /// "Use a passkey": the username, then (`waiting`) the browser ceremony.
+    Passkey { waiting: bool },
+    /// "Forgot password?": the email, then (`sent`) the code and a new password.
+    Reset { sent: bool },
+    /// The account has an authenticator app: a 6-digit code, or (`recovery`) a recovery code.
+    /// `locked`: too many wrong answers, the sign-in has to start again.
+    SecondFactor {
+        challenge: String,
+        methods: Vec<SecondFactorMethod>,
+        recovery: bool,
+        wrong: u32,
+        locked: bool,
+    },
+    /// "I have an invite": the code or the link from the email.
+    InviteCode,
+    /// The invite is valid: choose a username and a password.
+    InviteAccept { preview: InvitePreview, code: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthField {
     Username,
     Password,
+    /// The email field (code, reset).
+    Email,
+    /// The 6-digit or recovery code.
+    Code,
+    /// The invite code or link.
+    Invite,
     /// Under the button: the problem isn't one field's.
     Form,
 }
@@ -37,35 +72,105 @@ pub struct AuthError {
     pub message: String,
 }
 
+/// Seconds before "Resend code" may be pressed again.
+pub const RESEND_SECS: f64 = 30.0;
+/// Wrong second-factor answers before the server drops the sign-in (it allows five).
+pub const SECOND_FACTOR_TRIES: u32 = 5;
+
 pub struct Auth {
     pub mode: AuthMode,
+    pub step: AuthStep,
+    /// Username or email (sign-in), the username (passkey), or the new username (invite).
     pub username: TextEdit,
+    /// The password, or the new account's password (invite) or new password (reset).
     pub password: TextEdit,
+    pub email: TextEdit,
+    pub code: TextEdit,
+    pub recovery: TextEdit,
+    pub invite: TextEdit,
+    /// Invite: add a passkey right after the account is made.
+    pub add_passkey: bool,
     pub phase: Phase,
     pub error: Option<AuthError>,
+    /// A note that isn't an error ("We sent a code to ...").
+    pub notice: Option<String>,
+    /// When "Resend code" may be pressed again (the app clock); stamped by the next tick.
+    pub resend_at: Option<f64>,
+    pub resend_due: bool,
     pub server: TextEdit,
     pub server_open: bool,
+}
+
+fn focused(mut e: TextEdit) -> TextEdit {
+    e.focused = true;
+    e
 }
 
 impl Auth {
     pub fn new(server: &str) -> Auth {
         Auth {
             mode: AuthMode::Login,
-            username: { let mut e = TextEdit::new(""); e.focused = true; e },
+            step: AuthStep::Password,
+            username: focused(TextEdit::new("")),
             password: TextEdit::new("").secure(),
+            email: TextEdit::new(""),
+            code: TextEdit::new(""),
+            recovery: TextEdit::new(""),
+            invite: TextEdit::new(""),
+            add_passkey: false,
             phase: Phase::Idle,
             error: None,
+            notice: None,
+            resend_at: None,
+            resend_due: false,
             server: TextEdit::new(server),
             server_open: false,
         }
     }
+
+    /// Moves to `step` with nothing typed for it yet and the first field focused.
+    pub fn go(&mut self, step: AuthStep) {
+        self.error = None;
+        self.notice = None;
+        self.phase = Phase::Idle;
+        self.code.clear();
+        self.recovery.clear();
+        for e in [&mut self.username, &mut self.password, &mut self.email, &mut self.code, &mut self.recovery, &mut self.invite] {
+            e.focused = false;
+        }
+        match &step {
+            AuthStep::Password | AuthStep::Passkey { .. } => self.username.focused = true,
+            AuthStep::EmailCode { sent: false } | AuthStep::Reset { sent: false } => self.email.focused = true,
+            AuthStep::EmailCode { sent: true } | AuthStep::Reset { sent: true } => self.code.focused = true,
+            AuthStep::SecondFactor { recovery: true, .. } => self.recovery.focused = true,
+            AuthStep::SecondFactor { .. } => self.code.focused = true,
+            AuthStep::InviteCode => self.invite.focused = true,
+            AuthStep::InviteAccept { .. } => {
+                self.username.clear();
+                self.password.clear();
+                self.username.focused = true;
+            }
+        }
+        self.step = step;
+    }
+
+    pub fn fail(&mut self, field: AuthField, message: impl Into<String>) {
+        self.phase = Phase::Idle;
+        self.error = Some(AuthError { field, message: message.into() });
+    }
+
+    pub fn error_for(&self, field: AuthField) -> Option<&str> {
+        self.error.as_ref().filter(|e| e.field == field).map(|e| e.message.as_str())
+    }
 }
 
-/// What an `ApiError` means on the auth form.
+/// What an `ApiError` means on the auth form. Wrong credentials never say which part was wrong,
+/// so they reveal nothing about whether an account exists.
 pub fn auth_error(e: &ApiError) -> AuthError {
     let (field, message) = match e {
-        ApiError::Unauthenticated => (AuthField::Form, "Wrong username or password.".to_owned()),
+        ApiError::Unauthenticated => (AuthField::Form, "Those details didn't work. Check them and try again.".to_owned()),
         ApiError::AlreadyExists => (AuthField::Username, "That username is taken.".to_owned()),
+        ApiError::InviteRequired => (AuthField::Form, "You need an invite to make an account.".to_owned()),
         ApiError::InvalidArgument(m) => (AuthField::Form, sentence(m)),
         ApiError::RateLimited => (AuthField::Form, "Too many attempts. Try again in a moment.".to_owned()),
         ApiError::Network(_) => (AuthField::Form, "Can't reach the server.".to_owned()),
@@ -104,6 +209,8 @@ pub enum DialogKind {
     DeleteRole { guild: u64, role: u64 },
     /// A confirmation: no field, only "Delete emoji".
     DeleteEmoji { guild: u64, emoji: u64 },
+    /// Invite someone to the server by email (needs INVITE_PEOPLE).
+    InviteByEmail { guild: u64 },
 }
 
 /// The look and place fields of the channel dialogs (create and settings): where the channel

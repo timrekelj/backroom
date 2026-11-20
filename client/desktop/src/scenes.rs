@@ -1,7 +1,6 @@
 //! Headless scenes for `--scene NAME --snap out.png`: each boots the fake backend, signs in
 //! where the scene needs it and sets one situation up. `NAME-light` is the light twin.
 
-use thehideout_api::ApiError;
 use thehideout_design::components::ToastKind;
 use thehideout_design::{AccentPreset, Appearance, BackgroundPreset, Density, TextSize, ThemeSpec};
 
@@ -15,7 +14,10 @@ use crate::fake::{
 };
 use crate::format::Tz;
 use crate::server_settings::ServerPage;
-use crate::state::{AppState, AuthMode, DialogKind, Menu, auth_error};
+use crate::account::SecKind;
+use crate::fake::account::INVITE_PENDING;
+use crate::forms::AuthStep;
+use crate::state::{AppState, AuthMode, DialogKind, Menu};
 
 /// A signed-in app on the fake world, in the given theme, with The Hideout's #general open.
 pub fn booted(dark: bool) -> (App, FakeBackend) {
@@ -57,13 +59,121 @@ fn auth_login(a: &mut App, dark: bool) {
     a.state.auth.password.focused = true;
 }
 
-fn auth_signup_error(a: &mut App, dark: bool) {
+/// "Email me a code": the code was sent and is half typed.
+fn auth_code(a: &mut App, dark: bool) {
     *a = signed_out(dark);
-    a.state.set_auth_mode(AuthMode::SignUp);
+    a.act(|s| s.auth_go(AuthStep::EmailCode { sent: false }));
+    a.state.auth.email.replace_text("tim@example.com");
+    a.act(|s| s.submit_auth());
+    a.pump();
+    a.state.auth.code.replace_text("123");
+}
+
+/// Dora has an authenticator app: the second step, after one wrong code.
+fn auth_second_factor(a: &mut App, dark: bool) {
+    *a = signed_out(dark);
+    a.state.auth.username.replace_text("dora");
+    a.state.auth.password.replace_text("hunter22");
+    a.act(|s| s.submit_auth());
+    a.pump();
+    a.state.auth.code.replace_text("111111");
+    a.act(|s| s.submit_auth());
+    a.pump();
+}
+
+/// "I have an invite" with the link from the email pasted.
+fn auth_invite_lookup(a: &mut App, dark: bool) {
+    *a = signed_out(dark);
+    a.act(|s| s.set_auth_mode(AuthMode::Invite));
+    a.state.auth.invite.replace_text("https://hideout.example/invite/tok-wxyz");
+}
+
+/// The invite looked up: who sent it and where it leads, a name and password being chosen.
+fn auth_invite_accept(a: &mut App, dark: bool) {
+    *a = signed_out(dark);
+    a.act(|s| s.set_auth_mode(AuthMode::Invite));
+    a.state.auth.invite.replace_text(INVITE_PENDING);
+    a.act(|s| s.submit_auth());
+    a.pump();
+    a.state.auth.username.replace_text("erin");
+    a.state.auth.password.replace_text("correct horse");
+    a.state.auth.add_passkey = true;
+}
+
+/// A passkey sign-in waiting for the browser.
+fn auth_passkey_waiting(a: &mut App, dark: bool) {
+    *a = signed_out(dark);
+    a.act(|s| s.auth_go(AuthStep::Passkey { waiting: false }));
+    a.state.auth.username.replace_text("tim");
+    a.act(|s| s.submit_auth());
+    a.pump();
+}
+
+/// Bruno's account has no email: the prompt under the channel header.
+fn add_email_banner(a: &mut App, dark: bool) {
+    *a = booted_as(dark, "bruno").0;
+}
+
+/// Settings → Security with its lists in.
+fn security_page(dark: bool) -> App {
+    let (mut app, _fake) = booted(dark);
+    app.act(|s| s.open_security());
+    app.pump();
+    app
+}
+
+fn settings_security(a: &mut App, dark: bool) {
+    *a = security_page(dark);
+}
+
+/// The authenticator setup: QR code, key and the code half typed.
+fn settings_security_totp_setup(a: &mut App, dark: bool) {
+    let mut app = security_page(dark);
+    app.act(|s| s.open_sec(SecKind::TotpSetup { setup: None }));
+    app.pump();
+    if let Some(d) = app.state.ui.security.dialog.as_mut() {
+        d.code.replace_text("482");
+    }
+    *a = app;
+}
+
+/// The setup confirmed: the recovery codes, shown once.
+fn settings_security_recovery_codes(a: &mut App, dark: bool) {
+    let mut app = security_page(dark);
+    app.act(|s| s.open_sec(SecKind::TotpSetup { setup: None }));
+    app.pump();
+    if let Some(d) = app.state.ui.security.dialog.as_mut() {
+        d.code.replace_text("123456");
+    }
+    app.act(|s| s.submit_sec());
+    app.pump();
+    *a = app;
+}
+
+/// The server's invite dialog: an invite just sent (its code to copy) and the pending ones.
+fn invite_by_email(a: &mut App, dark: bool) {
+    let (mut app, _fake) = booted(dark);
+    app.act(|s| s.open_dialog(DialogKind::InviteByEmail { guild: 1 }));
+    app.pump();
+    if let Some(d) = app.state.ui.dialog.as_mut() {
+        d.input.replace_text("dana@example.com");
+    }
+    app.act(|s| s.submit_dialog());
+    app.pump();
+    *a = app;
+}
+
+fn admin_invites(a: &mut App, dark: bool) {
+    *a = admin_at(dark, AdminPage::Invites);
+}
+
+/// The invite looked up and an account being chosen, the name already taken.
+fn auth_signup_error(a: &mut App, dark: bool) {
+    auth_invite_accept(a, dark);
     a.state.auth.username.replace_text("taken");
-    a.state.auth.username.focused = false;
     a.state.auth.password.replace_text("secret123");
-    a.state.auth.error = Some(auth_error(&ApiError::AlreadyExists));
+    a.act(|s| s.submit_auth());
+    a.pump();
 }
 
 /// The busy main screen: a read channel, a channel with unread messages (one mentions you), a
@@ -617,10 +727,32 @@ fn video_embed(a: &mut App, dark: bool) {
 type Scene = (&'static str, fn(&mut App));
 
 pub const SCENES: &[Scene] = &[
-    ("auth-login", |a| auth_login(a, true)),
-    ("auth-login-light", |a| auth_login(a, false)),
+    ("auth-signin", |a| auth_login(a, true)),
+    ("auth-signin-light", |a| auth_login(a, false)),
     ("auth-signup-error", |a| auth_signup_error(a, true)),
     ("auth-signup-error-light", |a| auth_signup_error(a, false)),
+    ("auth-code", |a| auth_code(a, true)),
+    ("auth-code-light", |a| auth_code(a, false)),
+    ("auth-second-factor", |a| auth_second_factor(a, true)),
+    ("auth-second-factor-light", |a| auth_second_factor(a, false)),
+    ("auth-invite-lookup", |a| auth_invite_lookup(a, true)),
+    ("auth-invite-lookup-light", |a| auth_invite_lookup(a, false)),
+    ("auth-invite-accept", |a| auth_invite_accept(a, true)),
+    ("auth-invite-accept-light", |a| auth_invite_accept(a, false)),
+    ("auth-passkey-waiting", |a| auth_passkey_waiting(a, true)),
+    ("auth-passkey-waiting-light", |a| auth_passkey_waiting(a, false)),
+    ("add-email-banner", |a| add_email_banner(a, true)),
+    ("add-email-banner-light", |a| add_email_banner(a, false)),
+    ("settings-security", |a| settings_security(a, true)),
+    ("settings-security-light", |a| settings_security(a, false)),
+    ("settings-security-totp-setup", |a| settings_security_totp_setup(a, true)),
+    ("settings-security-totp-setup-light", |a| settings_security_totp_setup(a, false)),
+    ("settings-security-recovery-codes", |a| settings_security_recovery_codes(a, true)),
+    ("settings-security-recovery-codes-light", |a| settings_security_recovery_codes(a, false)),
+    ("invite-by-email", |a| invite_by_email(a, true)),
+    ("invite-by-email-light", |a| invite_by_email(a, false)),
+    ("admin-invites", |a| admin_invites(a, true)),
+    ("admin-invites-light", |a| admin_invites(a, false)),
     ("main", |a| main_(a, true)),
     ("main-light", |a| main_(a, false)),
     ("main-members", |a| main_members(a, true)),

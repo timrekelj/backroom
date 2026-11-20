@@ -254,6 +254,8 @@ Every control takes `&Kit`, and shows `State::{Rest, Hover, Pressed, Focus, Disa
 | `UnreadDot` / `MentionPill` | own | Unread: quiet 6pt dot in `text`. Mention: accent pill, tabular count, `99+` cap. |
 | `Kbd` | own | 18pt keycaps, `radius-xs`, raised fill, 1px `border_subtle`. |
 | `tooltip(..)` | `rune_kit::Tooltip` | Standard appearance: overlay surface, 1px `border_subtle`, `radius-sm`, popover shadow, optional `Kbd`. |
+| `CodeInput` | own | A one-time code, one character per cell (6 by default): 40x48 cells (`em`-scaled), `radius-md`, `surface_raised` with the `control_border` edge; the next cell takes the 2px focus edge, invalid makes every edge `danger`. One field lies over the cells and takes the keys, so typing advances, Backspace steps back and a paste fills them all; the caller filters in `on_change` (`digits_only`) and may submit once full. |
+| `QrCode` | own (`qrcode` crate, no image features) | A QR code drawn as run-length strips of elements (crisp at any scale), EC level M, 3-module quiet zone, `radius-md`. Always the light look's `text` on its `surface`, in dark too: inverted codes fail in many authenticator apps. |
 | chat components | `components/chat/` | See "Chat components" below. |
 
 ## Chat components (`components/chat/`)

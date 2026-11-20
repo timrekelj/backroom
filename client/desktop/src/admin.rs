@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use rune::TextEdit;
 use thehideout_api::{
     ActivityPoint, AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, ApiError, AuditEntry,
-    Overview, Paged, StorageBreakdown, User,
+    Invite, InviteStatus, NewInvite, Overview, Paged, StorageBreakdown, User,
 };
 use thehideout_design::components::{ChartDay, ToastKind};
 
@@ -36,7 +36,22 @@ pub enum AdminPage {
     Servers,
     Files,
     Users,
+    Invites,
     Audit,
+}
+
+/// The statuses the Invites filter offers, after "All".
+pub const INVITE_STATUSES: [InviteStatus; 4] =
+    [InviteStatus::Pending, InviteStatus::Accepted, InviteStatus::Expired, InviteStatus::Revoked];
+
+/// The admin's "Create invite" dialog: an email, the servers to pre-join and whether the new
+/// account is a site admin.
+pub struct InviteForm {
+    pub email: TextEdit,
+    pub guilds: Vec<u64>,
+    pub make_admin: bool,
+    pub error: Option<String>,
+    pub busy: bool,
 }
 
 /// One paged list: what is loaded, where the next page starts, and what is in flight. `epoch`
@@ -146,6 +161,15 @@ pub struct AdminState {
     pub kind_menu: bool,
     pub selected: HashSet<String>,
     pub audit: Feed<AuditEntry>,
+    pub invites: Feed<Invite>,
+    /// The Invites page shows only this status (`None`: all). The server lists them all; the
+    /// filter is applied to what is loaded.
+    pub invite_filter: Option<InviteStatus>,
+    pub invite_filter_menu: bool,
+    pub invite_form: Option<InviteForm>,
+    /// The invite just made or sent again, with its code (shown once above the list).
+    pub invite_created: Option<Invite>,
+    pub invite_busy: HashSet<u64>,
     pub page_size: u32,
     /// Pages whose data the user changed meanwhile: reloaded when next opened.
     pub stale: HashSet<AdminPage>,
@@ -187,6 +211,12 @@ impl AdminState {
             kind_menu: false,
             selected: HashSet::new(),
             audit: Feed::default(),
+            invites: Feed::default(),
+            invite_filter: None,
+            invite_filter_menu: false,
+            invite_form: None,
+            invite_created: None,
+            invite_busy: HashSet::new(),
             page_size: PAGE_SIZE,
             stale: HashSet::new(),
             confirm: None,
@@ -342,6 +372,7 @@ impl AppState {
             AdminPage::Servers => ad.servers.reset(),
             AdminPage::Files => ad.files.reset(),
             AdminPage::Users => ad.users.reset(),
+            AdminPage::Invites => ad.invites.reset(),
             AdminPage::Audit => ad.audit.reset(),
         }
     }
@@ -417,6 +448,27 @@ impl AppState {
                     queued = true;
                 }
             }
+            AdminPage::Invites => {
+                if let Some((epoch, page_token)) = ad.invites.due() {
+                    self.outbox.push(Command::ListInvites {
+                        epoch,
+                        guild: None,
+                        page_token,
+                        limit: size,
+                    });
+                    queued = true;
+                }
+                // Server names for the rows and the create dialog's choices.
+                if let Some((epoch, page_token)) = ad.servers.due() {
+                    self.outbox.push(Command::AdminGuilds {
+                        epoch,
+                        query: String::new(),
+                        page_token,
+                        limit: size,
+                    });
+                    queued = true;
+                }
+            }
             AdminPage::Audit => {
                 if let Some((epoch, page_token)) = ad.audit.due() {
                     self.outbox.push(Command::AdminAudit {
@@ -448,6 +500,7 @@ impl AppState {
             AdminPage::Servers => ad.servers.reset(),
             AdminPage::Files => ad.files.reset(),
             AdminPage::Users => ad.users.reset(),
+            AdminPage::Invites => ad.invites.reset(),
             AdminPage::Audit => ad.audit.reset(),
         }
         self.want_admin();
@@ -813,11 +866,16 @@ impl AppState {
             return;
         };
         let before = ad.servers.items.len();
-        if let Some(err) = ad.servers.accept(epoch, result) {
-            if matches!(err, Some(ApiError::Unimplemented)) {
-                ad.unavailable = true;
+        match ad.servers.accept(epoch, result) {
+            // An answer to an older list.
+            None => return,
+            Some(Some(err)) => {
+                if matches!(err, ApiError::Unimplemented) {
+                    ad.unavailable = true;
+                }
+                return;
             }
-            return;
+            Some(None) => {}
         }
         let fresh: Vec<(u64, String)> = ad.servers.items[before.min(ad.servers.items.len())..]
             .iter()
@@ -826,9 +884,12 @@ impl AppState {
         for (id, name) in fresh {
             ad.remember_guild(id, &name);
         }
-        // On the Files page the whole server list is fetched for the filter.
-        if ad.page == AdminPage::Files {
-            self.want_admin();
+        // On the Files and Invites pages the whole server list is fetched (filter, choices).
+        if matches!(ad.page, AdminPage::Files | AdminPage::Invites)
+            && let Some((epoch, page_token)) = ad.servers.due()
+        {
+            let (limit, query) = (ad.page_size, ad.server_search.text.trim().to_owned());
+            self.outbox.push(Command::AdminGuilds { epoch, query, page_token, limit });
         }
     }
 
@@ -886,6 +947,133 @@ impl AppState {
         };
         if let Some(Some(ApiError::Unimplemented)) = ad.audit.accept(epoch, result) {
             ad.unavailable = true;
+        }
+    }
+
+    // ---- invites -----------------------------------------------------------------------------
+
+    pub fn admin_invites_replied(&mut self, epoch: u64, result: Result<Paged<Invite>, ApiError>) {
+        let Some(ad) = self.ui.admin.as_mut() else {
+            return;
+        };
+        if let Some(Some(ApiError::Unimplemented)) = ad.invites.accept(epoch, result) {
+            ad.unavailable = true;
+        }
+    }
+
+    /// The invites the page shows: the loaded ones that pass the status filter.
+    pub fn admin_invite_rows(&self) -> Vec<&Invite> {
+        self.admin().map_or_else(Vec::new, |ad| {
+            ad.invites.items.iter().filter(|i| ad.invite_filter.is_none_or(|f| i.status == f)).collect()
+        })
+    }
+
+    pub fn filter_invites(&mut self, status: Option<InviteStatus>) {
+        if let Some(ad) = self.ui.admin.as_mut() {
+            ad.invite_filter = status;
+            ad.invite_filter_menu = false;
+        }
+    }
+
+    pub fn open_invite_form(&mut self) {
+        if let Some(ad) = self.ui.admin.as_mut() {
+            let mut email = TextEdit::new("");
+            email.focused = true;
+            ad.invite_form = Some(InviteForm { email, guilds: Vec::new(), make_admin: false, error: None, busy: false });
+        }
+    }
+
+    pub fn close_invite_form(&mut self) {
+        if let Some(ad) = self.ui.admin.as_mut() {
+            ad.invite_form = None;
+        }
+    }
+
+    pub fn toggle_invite_guild(&mut self, guild: u64) {
+        if let Some(f) = self.ui.admin.as_mut().and_then(|ad| ad.invite_form.as_mut()) {
+            match f.guilds.iter().position(|g| *g == guild) {
+                Some(i) => {
+                    f.guilds.remove(i);
+                }
+                None => f.guilds.push(guild),
+            }
+        }
+    }
+
+    pub fn toggle_invite_admin(&mut self) {
+        if let Some(f) = self.ui.admin.as_mut().and_then(|ad| ad.invite_form.as_mut()) {
+            f.make_admin = !f.make_admin;
+        }
+    }
+
+    pub fn submit_invite_form(&mut self) {
+        let Some(f) = self.ui.admin.as_mut().and_then(|ad| ad.invite_form.as_mut()) else {
+            return;
+        };
+        if f.busy {
+            return;
+        }
+        let email = f.email.text.trim().to_owned();
+        if !crate::account::looks_like_email(&email) {
+            f.error = Some("Enter their email address".into());
+            return;
+        }
+        f.error = None;
+        f.busy = true;
+        let invite = NewInvite { email, guild_id: None, guild_ids: f.guilds.clone(), make_admin: f.make_admin };
+        self.outbox.push(Command::CreateInvite { invite });
+    }
+
+    /// Whether the admin's create dialog is waiting for `CreateInvite`.
+    pub fn admin_invite_busy(&self) -> bool {
+        self.admin().and_then(|ad| ad.invite_form.as_ref()).is_some_and(|f| f.busy)
+    }
+
+    pub fn admin_invite_created(&mut self, result: Result<Invite, ApiError>) {
+        let Some(ad) = self.ui.admin.as_mut() else {
+            return;
+        };
+        match result {
+            Ok(invite) => {
+                ad.invite_form = None;
+                ad.invites.items.retain(|i| i.id != invite.id);
+                ad.invites.items.insert(0, Invite { code: None, ..invite.clone() });
+                ad.stale.insert(AdminPage::Audit);
+                let email = invite.email.clone();
+                ad.invite_created = Some(invite);
+                self.toast(ToastKind::Success, format!("Invited {email}"));
+            }
+            Err(e) => {
+                if let Some(f) = ad.invite_form.as_mut() {
+                    f.busy = false;
+                    f.error = Some(match e {
+                        ApiError::AlreadyExists => "Someone with that email already has an account".into(),
+                        other => error_text(&other),
+                    });
+                }
+            }
+        }
+    }
+
+    pub fn admin_revoke_invite(&mut self, id: u64) {
+        if let Some(ad) = self.ui.admin.as_mut()
+            && ad.invite_busy.insert(id)
+        {
+            self.outbox.push(Command::RevokeInvite { id });
+        }
+    }
+
+    pub fn admin_resend_invite(&mut self, id: u64) {
+        if let Some(ad) = self.ui.admin.as_mut()
+            && ad.invite_busy.insert(id)
+        {
+            self.outbox.push(Command::ResendInvite { id });
+        }
+    }
+
+    pub fn dismiss_invite_created(&mut self) {
+        if let Some(ad) = self.ui.admin.as_mut() {
+            ad.invite_created = None;
         }
     }
 
@@ -948,7 +1136,7 @@ impl AppState {
                     .take(THUMB_ROWS)
                     .filter_map(|e| e.actor.as_ref()?.avatar.clone()),
             ),
-            AdminPage::Overview => {}
+            AdminPage::Overview | AdminPage::Invites => {}
         }
         keys
     }

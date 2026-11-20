@@ -16,14 +16,23 @@ use std::sync::{Arc, Mutex};
 
 use rune::Waker;
 use rune::prefs::Prefs;
-use thehideout_api::{ApiError, Client, Event, Gateway, GatewayHandle, GatewayUpdate, LoginOutcome};
+use std::time::Duration;
 
-use crate::backend::{Backend, Command, GuildAccess, Initial, Reply, Session};
+use thehideout_api::{
+    ApiError, Client, Event, Gateway, GatewayHandle, GatewayUpdate, LoginOutcome, SecondFactor, User,
+};
+
+use crate::backend::{
+    Backend, Command, GuildAccess, Initial, InviteAction, Reply, SecurityInfo, Session, device_label,
+};
 
 pub const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
 pub const SERVER_ENV: &str = "THEHIDEOUT_SERVER_URL";
 const APP_ID: &str = "thehideout";
 const PAGE: u32 = 50;
+/// A passkey ceremony is polled once a second for up to two minutes.
+const PASSKEY_POLL: Duration = Duration::from_secs(1);
+const PASSKEY_POLLS: u32 = 120;
 
 /// The server to talk to when the auth form's field is empty: the environment, else the default.
 pub fn default_server() -> String {
@@ -91,6 +100,8 @@ struct Shared {
     store: Store,
     /// Uploads under way by the client's id, so one can be stopped.
     uploads: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
+    /// Bumped by every passkey ceremony and by `CancelPasskey`: a poll of an older one stops.
+    passkey: AtomicU64,
 }
 
 impl Shared {
@@ -125,6 +136,45 @@ impl Shared {
         self.client().set_token(None);
         self.store.clear();
         self.push(Reply::Gateway(GatewayUpdate::AuthExpired));
+    }
+
+    /// The form's server, normalised, and a client for it without a token (sign-in calls).
+    fn signed_out_client(&self) -> (String, Client) {
+        let url = normalize(&self.server.lock().unwrap());
+        (url.clone(), Client::new(url))
+    }
+
+    /// A sign-in landed: `client` becomes the session's, the previous user's gateway is gone and
+    /// the session is saved for the next launch.
+    fn establish(&self, client: Client, url: &str, token: String, me: User) -> Session {
+        self.new_generation();
+        *self.client.lock().unwrap() = client;
+        self.store.save(url, &token);
+        Session { token, me }
+    }
+
+    /// Polls a passkey ceremony page's result once a second, until it is there, fails, is
+    /// cancelled (`None`) or two minutes pass.
+    async fn wait_ceremony<T, Fut>(&self, ticket: u64, mut finish: impl FnMut() -> Fut) -> Option<Result<T, ApiError>>
+    where
+        Fut: Future<Output = Result<Option<T>, ApiError>>,
+    {
+        for _ in 0..PASSKEY_POLLS {
+            tokio::time::sleep(PASSKEY_POLL).await;
+            if self.passkey.load(Ordering::SeqCst) != ticket {
+                return None;
+            }
+            let result = finish().await;
+            if self.passkey.load(Ordering::SeqCst) != ticket {
+                return None;
+            }
+            match result {
+                Ok(Some(done)) => return Some(Ok(done)),
+                Ok(None) => {}
+                Err(e) => return Some(Err(e)),
+            }
+        }
+        Some(Err(ApiError::Other("the passkey wasn't confirmed within two minutes".into())))
     }
 
     /// Starts the gateway for the current session unless one is already running.
@@ -188,6 +238,7 @@ impl RealBackend {
                 gateway: Mutex::new(None),
                 store,
                 uploads: Mutex::new(HashMap::new()),
+                passkey: AtomicU64::new(0),
             }),
             sent: Vec::new(),
         }
@@ -276,31 +327,108 @@ impl RealBackend {
         self.shared.uploads.lock().unwrap().insert(id, handle.abort_handle());
     }
 
-    /// A sign-in: a fresh client for the form's server, then `auth` on it; on success the session
-    /// is saved and the previous user's gateway is gone.
-    fn authenticate(&mut self, username: String, password: String, sign_up: bool) {
+    /// A sign-in step on a fresh client for the form's server: a session (saved, and the client
+    /// becomes the session's), a second-factor challenge, or the error.
+    fn sign_in<Fut>(&mut self, run: impl FnOnce(Client) -> Fut + Send + 'static)
+    where
+        Fut: Future<Output = Result<LoginOutcome, ApiError>> + Send + 'static,
+    {
         let shared = Arc::clone(&self.shared);
         self.runtime().spawn(async move {
-            let url = normalize(&shared.server.lock().unwrap());
-            let client = Client::new(url.clone());
-            let result = if sign_up {
-                client.sign_up(&username, &password).await
-            } else {
-                // Second factors have no UI yet: report them as an error for now.
-                client.login(&username, &password).await.and_then(|outcome| match outcome {
-                    LoginOutcome::Session { token, user } => Ok((token, user)),
-                    LoginOutcome::SecondFactor { .. } => {
-                        Err(ApiError::Precondition("two-factor sign-in is not supported by this app yet".into()))
-                    }
-                })
+            let (url, client) = shared.signed_out_client();
+            let reply = match run(client.clone()).await {
+                Ok(LoginOutcome::Session { token, user }) => Reply::Auth(Ok(shared.establish(client, &url, token, user))),
+                Ok(LoginOutcome::SecondFactor { challenge, methods }) => Reply::SecondFactor { challenge, methods },
+                Err(e) => Reply::Auth(Err(e)),
             };
-            let reply = result.map(|(token, me)| {
-                shared.new_generation();
-                *shared.client.lock().unwrap() = client;
-                shared.store.save(&url, &token);
-                Session { token, me }
-            });
-            shared.push(Reply::Auth(reply));
+            shared.push(reply);
+        });
+    }
+
+    /// A call that needs no session (codes, invites) on the form's server.
+    fn signed_out<T: Send + 'static, Fut>(
+        &mut self,
+        run: impl FnOnce(Client) -> Fut + Send + 'static,
+        make: impl FnOnce(Result<T, ApiError>) -> Reply + Send + 'static,
+    ) where
+        Fut: Future<Output = Result<T, ApiError>> + Send + 'static,
+    {
+        let shared = Arc::clone(&self.shared);
+        self.runtime().spawn(async move {
+            let (_, client) = shared.signed_out_client();
+            shared.push(make(run(client).await));
+        });
+    }
+
+    /// `call` for a signed-in check of a code or password: the server answers a wrong code with
+    /// `Unauthenticated` too, so the session only ends when `GetMe` agrees it is gone.
+    fn call_checked<T: Send + 'static>(
+        &mut self,
+        fut: impl Future<Output = Result<T, ApiError>> + Send + 'static,
+        make: impl FnOnce(Result<T, ApiError>) -> Reply + Send + 'static,
+    ) {
+        let shared = Arc::clone(&self.shared);
+        let generation = shared.generation();
+        let client = shared.client();
+        self.runtime().spawn(async move {
+            let result = fut.await;
+            if matches!(result, Err(ApiError::Unauthenticated)) && client.get_me().await == Err(ApiError::Unauthenticated) {
+                if shared.generation() == generation {
+                    shared.expire();
+                }
+                return;
+            }
+            if shared.generation() == generation {
+                shared.push(make(result));
+            }
+        });
+    }
+
+    /// A passkey sign-in: the ceremony page goes to the app to open, then its result is polled.
+    fn passkey_login(&mut self, username: String) {
+        let shared = Arc::clone(&self.shared);
+        let ticket = shared.passkey.fetch_add(1, Ordering::SeqCst) + 1;
+        self.runtime().spawn(async move {
+            let (url, client) = shared.signed_out_client();
+            let ceremony = match client.begin_passkey_login(&username, &device_label(), None).await {
+                Ok(c) => c,
+                Err(e) => return shared.push(Reply::PasskeyCeremony(Err(e))),
+            };
+            shared.push(Reply::PasskeyCeremony(Ok(ceremony.url.clone())));
+            let done = shared.wait_ceremony(ticket, || client.finish_passkey_login(&ceremony.id, None)).await;
+            match done {
+                None => {}
+                Some(Ok((token, me))) => {
+                    let session = shared.establish(client.clone(), &url, token, me);
+                    shared.push(Reply::Auth(Ok(session)));
+                }
+                Some(Err(e)) => shared.push(Reply::Auth(Err(e))),
+            }
+        });
+    }
+
+    /// Adds a passkey to the signed-in account through the browser ceremony.
+    fn passkey_register(&mut self, name: String) {
+        let shared = Arc::clone(&self.shared);
+        let ticket = shared.passkey.fetch_add(1, Ordering::SeqCst) + 1;
+        let generation = shared.generation();
+        let client = shared.client();
+        self.runtime().spawn(async move {
+            let ceremony = match client.begin_passkey_registration(&name, None).await {
+                Ok(c) => c,
+                Err(ApiError::Unauthenticated) => return shared.expire(),
+                Err(e) => return shared.push(Reply::PasskeyCeremony(Err(e))),
+            };
+            shared.push(Reply::PasskeyCeremony(Ok(ceremony.url.clone())));
+            let done = shared.wait_ceremony(ticket, || client.finish_passkey_registration(&ceremony.id, None)).await;
+            if shared.generation() != generation {
+                return;
+            }
+            match done {
+                None => {}
+                Some(Err(ApiError::Unauthenticated)) => shared.expire(),
+                Some(result) => shared.push(Reply::PasskeyAdded(result)),
+            }
         });
     }
 
@@ -386,8 +514,103 @@ impl Backend for RealBackend {
         self.sent.push(cmd.clone());
         let client = self.shared.client();
         match cmd {
-            Command::SignUp { username, password } => self.authenticate(username, password, true),
-            Command::Login { username, password } => self.authenticate(username, password, false),
+            Command::Login { username, password } => {
+                self.sign_in(move |c| async move { c.login_on(&username, &password, &device_label()).await })
+            }
+            Command::RequestEmailCode { email } => {
+                self.signed_out(move |c| async move { c.request_email_code(&email).await }, Reply::CodeSent)
+            }
+            Command::VerifyEmailCode { email, code } => {
+                self.sign_in(move |c| async move { c.verify_email_code(&email, &code, &device_label()).await })
+            }
+            Command::CompleteSecondFactor { challenge, code, recovery } => self.sign_in(move |c| async move {
+                let answer = if recovery { SecondFactor::RecoveryCode(&code) } else { SecondFactor::Totp(&code) };
+                let (token, user) = c.complete_second_factor(&challenge, answer).await?;
+                Ok(LoginOutcome::Session { token, user })
+            }),
+            Command::RequestPasswordReset { email } => {
+                self.signed_out(move |c| async move { c.request_password_reset(&email).await }, Reply::CodeSent)
+            }
+            Command::ResetPassword { email, code, new_password } => self.signed_out(
+                move |c| async move { c.reset_password(&email, &code, &new_password).await },
+                Reply::PasswordReset,
+            ),
+            Command::BeginPasskeyLogin { username } => self.passkey_login(username),
+            Command::CancelPasskey => {
+                self.shared.passkey.fetch_add(1, Ordering::SeqCst);
+            }
+            Command::LookupInvite { code } => {
+                self.signed_out(move |c| async move { c.lookup_invite(&code).await }, Reply::InviteLookup)
+            }
+            Command::AcceptInvite { code, username, password } => self.sign_in(move |c| async move {
+                let (token, user) = c.accept_invite(&code, &username, password.as_deref(), &device_label()).await?;
+                Ok(LoginOutcome::Session { token, user })
+            }),
+            Command::LoadSecurity => {
+                self.call(
+                    async move {
+                        let (passkeys, sessions) = tokio::join!(client.list_passkeys(), client.list_sessions());
+                        // The API has no "is an authenticator on?": starting a setup answers it
+                        // (refused when one is on; a setup that is never confirmed lapses).
+                        let totp = match client.begin_totp_setup().await {
+                            Ok(_) => Some(false),
+                            Err(ApiError::Precondition(_)) => Some(true),
+                            Err(_) => None,
+                        };
+                        Ok(SecurityInfo { passkeys: passkeys?, sessions: sessions?, totp })
+                    },
+                    Reply::Security,
+                );
+            }
+            Command::ChangePassword { current, new } => {
+                self.call(async move { client.change_password(&current, &new).await }, Reply::PasswordChanged);
+            }
+            Command::ChangeEmail { email, password } => {
+                self.call(async move { client.change_email(&email, &password).await }, Reply::EmailChangeStarted);
+            }
+            Command::ConfirmEmailChange { code } => {
+                self.call_checked(async move { client.confirm_email_change(&code).await }, Reply::EmailChanged);
+            }
+            Command::BeginTotpSetup => self.call(async move { client.begin_totp_setup().await }, Reply::TotpSetup),
+            Command::ConfirmTotp { code } => self.call_checked(
+                async move { client.confirm_totp(&code).await },
+                |result| Reply::RecoveryCodes { regenerated: false, result },
+            ),
+            Command::DisableTotp { code } => {
+                self.call_checked(async move { client.disable_totp(&code).await }, Reply::TotpDisabled);
+            }
+            Command::RegenerateRecoveryCodes { code } => self.call_checked(
+                async move { client.regenerate_recovery_codes(&code).await },
+                |result| Reply::RecoveryCodes { regenerated: true, result },
+            ),
+            Command::BeginPasskeyRegistration { name } => self.passkey_register(name),
+            Command::RenamePasskey { id, name } => {
+                self.call(async move { client.rename_passkey(id, &name).await }, Reply::PasskeyRenamed);
+            }
+            Command::DeletePasskey { id } => {
+                self.call(async move { client.delete_passkey(id).await }, move |result| Reply::PasskeyDeleted { id, result });
+            }
+            Command::RevokeSession { id } => {
+                self.call(async move { client.revoke_session(id).await }, move |result| Reply::SessionRevoked { id, result });
+            }
+            Command::RevokeOtherSessions => {
+                self.call(async move { client.revoke_other_sessions().await }, Reply::OthersRevoked);
+            }
+            Command::CreateInvite { invite } => {
+                self.call(async move { client.create_invite(&invite).await }, Reply::InviteCreated);
+            }
+            Command::ListInvites { epoch, guild, page_token, limit } => self.call(
+                async move { client.list_invites(guild, page_token.as_deref(), limit).await },
+                move |result| Reply::Invites { epoch, guild, result },
+            ),
+            Command::RevokeInvite { id } => self.call(
+                async move { client.revoke_invite(id).await },
+                move |result| Reply::InviteSaved { id, action: InviteAction::Revoke, result },
+            ),
+            Command::ResendInvite { id } => self.call(
+                async move { client.resend_invite(id).await },
+                move |result| Reply::InviteSaved { id, action: InviteAction::Resend, result },
+            ),
             Command::Resume => self.resume(),
             Command::LoadInitial => self.load_initial(),
             Command::Refresh => {

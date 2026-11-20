@@ -17,8 +17,8 @@ use crate::backend::{Command, Session};
 use crate::emoji::{PickerUi, Reduced, SuggestUi};
 use crate::format::{Tz, unix};
 pub use crate::forms::{
-    Auth, AuthError, AuthField, AuthMode, ChannelForm, DialogKind, DialogState, Phase, auth_error,
-    check_name, sentence,
+    Auth, AuthError, AuthMode, ChannelForm, DialogKind, DialogState, Phase, auth_error, check_name,
+    sentence,
 };
 use crate::layout::{self, Item};
 use crate::look::Look;
@@ -207,6 +207,8 @@ pub enum Marker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     Appearance,
+    /// Email, password, two-factor, passkeys and signed-in devices.
+    Security,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,6 +315,10 @@ pub struct Ui {
     pub edges: Edges,
     /// Attachments, the lightbox, players, downloads and folded embeds.
     pub attach: AttachUi,
+    /// The Security page, its dialogs and the add-email prompt.
+    pub security: crate::account::SecurityUi,
+    /// The server invite dialog's list.
+    pub invites: crate::account::InvitesUi,
 }
 
 /// One `ScrollEdges` per scrolling region of the window; their values live here so a rebuilt view
@@ -365,6 +371,8 @@ impl Ui {
             reduced: Reduced::default(),
             edges: Edges::default(),
             attach: AttachUi::default(),
+            security: Default::default(),
+            invites: Default::default(),
         }
     }
 }
@@ -982,41 +990,6 @@ impl AppState {
 
     // ---- auth --------------------------------------------------------------------------------
 
-    pub fn set_auth_mode(&mut self, mode: AuthMode) {
-        if self.auth.phase == Phase::Idle {
-            self.auth.mode = mode;
-            self.auth.error = None;
-        }
-    }
-
-    pub fn submit_auth(&mut self) {
-        if self.auth.phase == Phase::Busy {
-            return;
-        }
-        let username = self.auth.username.text.trim().to_owned();
-        let password = self.auth.password.text.clone();
-        let invalid = if username.is_empty() {
-            Some((AuthField::Username, "Enter your username."))
-        } else if password.is_empty() {
-            Some((AuthField::Password, "Enter your password."))
-        } else {
-            None
-        };
-        if let Some((field, message)) = invalid {
-            self.auth.error = Some(AuthError {
-                field,
-                message: message.into(),
-            });
-            return;
-        }
-        self.auth.error = None;
-        self.auth.phase = Phase::Busy;
-        self.outbox.push(match self.auth.mode {
-            AuthMode::Login => Command::Login { username, password },
-            AuthMode::SignUp => Command::SignUp { username, password },
-        });
-    }
-
     pub fn sign_out(&mut self) {
         // `reset` starts from a fresh state, outbox included, so the command goes in after it.
         self.reset(None);
@@ -1041,6 +1014,10 @@ impl AppState {
                 Some(c) => (c.name.clone(), Some(ChannelForm::of(c))),
                 None => return,
             },
+            DialogKind::InviteByEmail { guild } => {
+                self.invite_dialog_opened(guild);
+                (String::new(), None)
+            }
             _ => (String::new(), None),
         };
         let mut input = TextEdit::new(&text);
@@ -1070,6 +1047,26 @@ impl AppState {
     /// Enter or the primary button. Validates first; an invalid form shows its error and sends
     /// nothing.
     pub fn submit_dialog(&mut self) {
+        if let Some((DialogKind::InviteByEmail { guild }, value)) = self
+            .ui
+            .dialog
+            .as_ref()
+            .filter(|d| d.phase != Phase::Busy)
+            .map(|d| (d.kind, d.input.text.clone()))
+        {
+            let result = self.invite_command(guild, value);
+            if let Some(d) = &mut self.ui.dialog {
+                match result {
+                    Ok(cmd) => {
+                        d.error = None;
+                        d.phase = Phase::Busy;
+                        self.outbox.push(cmd);
+                    }
+                    Err(e) => fail(d, e),
+                }
+            }
+            return;
+        }
         let Some(d) = &mut self.ui.dialog else { return };
         if d.phase == Phase::Busy {
             return;
@@ -1080,6 +1077,7 @@ impl AppState {
                 self.ui.dialog = None;
                 return;
             }
+            DialogKind::InviteByEmail { .. } => return,
             DialogKind::CreateGuild => match check_name(&value, 2, 32, "Give the server a name") {
                 Ok(()) => Command::CreateGuild { name: value },
                 Err(e) => return fail(d, e),
@@ -1222,6 +1220,11 @@ impl AppState {
             changed = true;
         }
         soon(clock + crate::format::until_next_day(self.tz, now) as f64);
+        let (resend, at) = self.tick_resend(clock);
+        changed |= resend;
+        if let Some(at) = at {
+            soon(at);
+        }
         while let Some(front) = self.ui.toasts.front_mut() {
             match front.until {
                 None => front.until = Some(clock + TOAST_SECS),

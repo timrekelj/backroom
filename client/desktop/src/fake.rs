@@ -23,6 +23,9 @@ use crate::layout;
 #[path = "fake_files.rs"]
 mod files;
 
+#[path = "fake_account.rs"]
+pub mod account;
+
 /// The bytes of a generated file (tests compare downloads with them).
 #[cfg(test)]
 pub fn files_fixture_bytes(key: &str) -> Vec<u8> {
@@ -138,6 +141,8 @@ struct World {
     files: files::Files,
     /// The site-admin side (users, servers, files, activity, audit).
     admin: AdminWorld,
+    /// Sign-in methods, invites, sessions and the Security page.
+    account: account::Accounts,
 }
 
 impl Default for World {
@@ -169,6 +174,10 @@ impl World {
         ];
         // The one site admin among the four (sign in as cvetka to see the dashboard).
         users[CVETKA as usize - 1].is_admin = true;
+        // Bruno's account predates emails (a legacy account); the others have one.
+        for u in users.iter_mut().filter(|u| u.id != BRUNO) {
+            u.email = Some(format!("{}@example.com", u.username));
+        }
         let ch = |id: u64, guild: u64, position: i32, name: &str| Channel {
             id,
             guild_id: guild,
@@ -295,6 +304,7 @@ impl World {
             fail_reactions: 0,
             files: files::Files::default(),
             admin: AdminWorld::empty(),
+            account: account::Accounts::new(),
         };
         f.admin = AdminWorld::new(&f.users, &f.guilds);
         f.seed_structure();
@@ -1090,34 +1100,12 @@ impl World {
             Ok(replies) => return replies,
             Err(cmd) => cmd,
         };
+        let cmd = match self.account_command(cmd) {
+            Ok(replies) => return replies,
+            Err(cmd) => cmd,
+        };
         let me = self.me.id;
         match cmd {
-            Command::SignUp { username, password } => {
-                let r = if username.chars().count() < 3 {
-                    Err(ApiError::InvalidArgument(
-                        "username must be at least 3 characters".into(),
-                    ))
-                } else if username.eq_ignore_ascii_case("taken")
-                    || self.find_user(&username).is_some()
-                {
-                    Err(ApiError::AlreadyExists)
-                } else if password.chars().count() < 6 {
-                    Err(ApiError::InvalidArgument(
-                        "password must be at least 6 characters".into(),
-                    ))
-                } else {
-                    Ok(self.session_for(&username))
-                };
-                vec![Reply::Auth(r)]
-            }
-            Command::Login { username, password } => {
-                let r = if password == "wrong" {
-                    Err(ApiError::Unauthenticated)
-                } else {
-                    Ok(self.session_for(&username))
-                };
-                vec![Reply::Auth(r)]
-            }
             Command::Resume => vec![Reply::Resume(Ok(None))],
             Command::LoadInitial => vec![
                 Reply::Initial(Ok(self.initial())),
@@ -1887,6 +1875,8 @@ impl World {
                 .collect()
             }
             Command::SignOut => vec![Reply::SignedOut],
+            // Sign-in, security and invites: `account_command` answered them above.
+            other => unreachable!("answered by fake_account: {other:?}"),
         }
     }
 }
@@ -2092,11 +2082,22 @@ impl World {
             .into_iter()
             .partition(|(t, _)| *t <= now);
         self.queue = later;
-        due.into_iter().map(|(_, r)| r).collect()
+        let mut out: Vec<Reply> = due.into_iter().map(|(_, r)| r).collect();
+        // The passkey ceremony "finishes in the browser" a moment after it starts.
+        if self.account.ceremony.as_ref().is_some_and(|(t, _)| *t <= now)
+            && let Some((_, reply)) = self.account.ceremony.take()
+        {
+            out.push(reply);
+        }
+        out
     }
 
     fn due(&self) -> Option<f64> {
-        self.queue.iter().map(|(t, _)| *t).reduce(f64::min)
+        self.queue
+            .iter()
+            .map(|(t, _)| *t)
+            .chain(self.account.ceremony.as_ref().map(|(t, _)| *t))
+            .reduce(f64::min)
     }
 }
 
@@ -2430,30 +2431,17 @@ mod tests {
     #[test]
     fn auth_rules() {
         let mut f = World::new();
-        let r = run(
-            &mut f,
-            Command::Login {
-                username: "tim".into(),
-                password: "wrong".into(),
-            },
-        );
+        let login = |username: &str, password: &str| Command::Login { username: username.into(), password: password.into() };
+        let r = run(&mut f, login("tim", "wrong"));
         assert_eq!(r, vec![Reply::Auth(Err(ApiError::Unauthenticated))]);
-        let r = run(
-            &mut f,
-            Command::SignUp {
-                username: "taken".into(),
-                password: "secret1".into(),
-            },
-        );
-        assert_eq!(r, vec![Reply::Auth(Err(ApiError::AlreadyExists))]);
-        let r = run(
-            &mut f,
-            Command::Login {
-                username: "tim".into(),
-                password: "anything".into(),
-            },
-        );
+        let r = run(&mut f, login("nobody@example.com", "x"));
+        assert_eq!(r, vec![Reply::Auth(Err(ApiError::Unauthenticated))], "an unknown email looks like a wrong password");
+        let r = run(&mut f, login("tim", "anything"));
         assert!(matches!(&r[0], Reply::Auth(Ok(s)) if s.me.id == TIM));
+        let r = run(&mut f, login("tim@example.com", "anything"));
+        assert!(matches!(&r[0], Reply::Auth(Ok(s)) if s.me.id == TIM), "an email signs in too");
+        let r = run(&mut f, login(account::DORA, "anything"));
+        assert!(matches!(&r[0], Reply::SecondFactor { .. }), "dora has an authenticator app");
     }
 
     #[test]

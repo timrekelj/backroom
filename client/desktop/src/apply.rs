@@ -10,6 +10,7 @@ use thehideout_api::{
 };
 use thehideout_design::components::{ConnectionStatus, ToastKind};
 
+use crate::account::SecReply;
 use crate::backend::{Command, GuildAccess, Initial, Reply, Session};
 use crate::layout;
 use crate::server_settings::{ROLES_CONFLICT_TOAST, RoleForm, error_text};
@@ -32,8 +33,35 @@ pub fn apply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
 
 fn apply_reply(s: &mut AppState, reply: Reply, tx: &mut Tx) {
     match reply {
-        Reply::Auth(Ok(session)) => signed_in(s, session),
-        Reply::Auth(Err(e)) => auth_failed(s, &e),
+        Reply::Auth(Ok(session)) => {
+            s.auth_succeeded(&session);
+            signed_in(s, session)
+        }
+        // A refused sign-in stays on its step with what was typed (a resumed or loading session
+        // that fails resets below instead).
+        Reply::Auth(Err(e)) => s.auth_refused(&e),
+        Reply::SecondFactor { challenge, methods } => s.second_factor(challenge, methods),
+        Reply::CodeSent(r) => s.code_sent(r),
+        Reply::PasswordReset(r) => s.password_reset(r),
+        Reply::PasskeyCeremony(r) => s.passkey_ceremony(r, tx),
+        Reply::InviteLookup(r) => s.invite_looked_up(r),
+        Reply::Security(r) => s.security_loaded(r),
+        Reply::PasswordChanged(r) => s.sec_replied(SecReply::PasswordChanged(r)),
+        Reply::EmailChangeStarted(r) => s.sec_replied(SecReply::EmailChangeStarted(r)),
+        Reply::EmailChanged(r) => s.sec_replied(SecReply::EmailChanged(r)),
+        Reply::TotpSetup(r) => s.sec_replied(SecReply::TotpSetup(r)),
+        Reply::RecoveryCodes { regenerated, result } => {
+            s.sec_replied(SecReply::RecoveryCodes { regenerated, result })
+        }
+        Reply::TotpDisabled(r) => s.sec_replied(SecReply::TotpDisabled(r)),
+        Reply::PasskeyAdded(r) => s.sec_replied(SecReply::PasskeyAdded(r)),
+        Reply::PasskeyRenamed(r) => s.sec_replied(SecReply::PasskeyRenamed(r)),
+        Reply::PasskeyDeleted { id, result } => s.sec_replied(SecReply::PasskeyDeleted { id, result }),
+        Reply::SessionRevoked { id, result } => s.sec_replied(SecReply::SessionRevoked { id, result }),
+        Reply::OthersRevoked(r) => s.sec_replied(SecReply::OthersRevoked(r)),
+        Reply::InviteCreated(r) => s.invite_created(r),
+        Reply::Invites { epoch, guild, result } => s.invites_listed(epoch, guild, result),
+        Reply::InviteSaved { id, action, result } => s.invite_saved(id, action, result),
         Reply::Initial(Ok(init)) => {
             initial(s, init);
             // Auth fades into the shell; everything inside it rides that one entrance.
@@ -461,6 +489,7 @@ fn initial(s: &mut AppState, init: Initial) {
         Some(g) => s.go_guild(g),
         None => s.go_home(),
     }
+    s.after_initial();
 }
 
 /// The lists again after a gateway gap. Unlike `initial`, the place, the selection and the

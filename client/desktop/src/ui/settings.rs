@@ -1,5 +1,5 @@
 //! The settings page: a full-window view that replaces the shell, a nav on the left (Appearance
-//! is the only page for now) and the page on an inset panel, laid out like the main screen.
+//! and Security, see `security.rs`) and the page on an inset panel, laid out like the main screen.
 //!
 //! Every control applies at once. Each press asks Rune for its calm colour spring
 //! (`tx.color_motion`), so a change of look is colours crossing and nothing else moving. Presets
@@ -43,6 +43,7 @@ fn resize(a: &mut App, tx: &mut Tx, f: impl FnOnce(&mut Look)) {
 pub fn build(a: &App, k: &Kit, section: Section, bar: f32) -> El {
     let page = match section {
         Section::Appearance => appearance(a, k),
+        Section::Security => super::security::page(a, k),
     };
     frame(a, k, bar, nav(k, section), page)
 }
@@ -96,7 +97,14 @@ fn nav(k: &Kit, section: Section) -> El {
                 .selected(section == Section::Appearance)
                 .highlight_group("settings-nav")
                 .on_press(|a: &mut App| a.act(|s| s.ui.settings = Some(Section::Appearance)))
-                .build(k),
+                .build(k)
+                .key("settings-nav-appearance"),
+            NavRow::new("Security", thehideout_design::icons::catalog::by_name("shield-check").unwrap_or(&icons::SHIELD))
+                .selected(section == Section::Security)
+                .highlight_group("settings-nav")
+                .on_press(|a: &mut App| a.act(|s| s.open_security()))
+                .build(k)
+                .key("settings-nav-security"),
         ],
     )
 }

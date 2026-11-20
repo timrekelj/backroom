@@ -26,12 +26,13 @@ pub struct PermRow {
     pub help: &'static str,
 }
 
-pub const PERMISSION_ROWS: [PermRow; 5] = [
+pub const PERMISSION_ROWS: [PermRow; 6] = [
     PermRow { bit: Permissions::ADMINISTRATOR, name: "Administrator", help: "Grants every permission below. Give it only to people you trust completely." },
     PermRow { bit: Permissions::MANAGE_SERVER, name: "Manage server", help: "Rename the server and change its icon." },
     PermRow { bit: Permissions::MANAGE_CHANNELS, name: "Manage channels", help: "Create and edit channels and sections, and reorder the sidebar." },
     PermRow { bit: Permissions::MANAGE_ROLES, name: "Manage roles", help: "Create, edit, reorder and hand out roles below their own highest role." },
     PermRow { bit: Permissions::MANAGE_EMOJIS, name: "Manage emojis", help: "Add, rename and remove custom emojis." },
+    PermRow { bit: Permissions::INVITE_PEOPLE, name: "Invite people", help: "Invite people by email to make an account and join this server, and withdraw or resend this server's invites." },
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

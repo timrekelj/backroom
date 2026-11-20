@@ -12,6 +12,7 @@ pub mod emoji;
 pub mod emoji_settings;
 pub mod members;
 pub mod rail;
+pub mod security;
 pub mod server_settings;
 pub mod settings;
 pub mod shell;
