@@ -257,7 +257,7 @@ fn finish(
         .w_full()
         .radius(radius::LG)
         .fill(t.surface_raised.color())
-        .border(1.0, t.border_strong.color())
+        .border(1.0, t.control_border.color())
         .token_motion(motion::CONTROL);
     if focused {
         e = e.outline(1.0, -1.0, t.focus.color());

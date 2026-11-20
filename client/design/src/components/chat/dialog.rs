@@ -116,7 +116,7 @@ impl Dialog {
             .gap(16.0)
             .radius(radius::LG)
             .fill(t.surface_overlay.color())
-            .border(1.0, t.border.color())
+            .border(1.0, t.border_subtle.color())
             .child(
                 row()
                     .key("header")

@@ -165,7 +165,8 @@ fn build(t: &Theme, m: Metrics) -> Kit {
     p.surface_raised_hover = layer(2);
     p.surface_float = c(t.surface_overlay);
     p.surface_disabled = layer(1);
-    p.border_weak = c(t.border);
+    // Rune-kit's tooltip edge and menu separators: a floating edge, the quietest stroke.
+    p.border_weak = c(t.border_subtle);
     p.border_hover = c(t.border_strong);
     p.border_active = c(t.focus);
     p.border_disabled = c(t.border_subtle);
@@ -180,7 +181,7 @@ fn build(t: &Theme, m: Metrics) -> Kit {
     p.std_icon_strong = c(t.text);
     p.std_text = c(t.text);
 
-    // Flat: borders separate, shadows only float. Inputs take a strong 1px ring.
+    // Flat: borders separate, shadows only float. Inputs take a 1px `control_border` ring at rest.
     k.ring = None;
     let flat = || Vec::<Shadow>::new();
     let pop = shadows(Level::Popover, dark);
@@ -189,7 +190,7 @@ fn build(t: &Theme, m: Metrics) -> Kit {
     (e.switch_off, e.switch_on, e.knob) = (flat(), flat(), flat());
     (e.floating, e.md) = (pop.clone(), pop);
     e.overlay = shadows(Level::Modal, dark);
-    *e = std::mem::take(e).with_input(vec![ring(c(t.border_strong), 1.0)]);
+    *e = std::mem::take(e).with_input(vec![ring(c(t.control_border), 1.0)]);
 
     // A private copy of an unused glyph names this kit (see `identity`).
     let dash = k.glyph.dash;

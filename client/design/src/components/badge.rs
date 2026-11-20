@@ -38,13 +38,14 @@ impl Badge {
 
     pub fn build(self, k: &Kit) -> El {
         let t = theme_of(k);
-        let (fill, ink, border): (Tone, Tone, Tone) = match self.variant {
-            BadgeVariant::Neutral => (t.surface_raised, t.text_muted, t.border),
-            BadgeVariant::Accent => (t.accent_subtle, t.accent_text, t.accent_subtle),
-            BadgeVariant::Success => (t.success_bg, t.success, t.success_border),
-            BadgeVariant::Warning => (t.warning_bg, t.warning, t.warning_border),
-            BadgeVariant::Danger => (t.danger_bg, t.danger, t.danger_border),
-            BadgeVariant::Info => (t.info_bg, t.info, t.info_border),
+        // A wash and its ink say "label"; no edge.
+        let (fill, ink): (Tone, Tone) = match self.variant {
+            BadgeVariant::Neutral => (t.surface_raised, t.text_muted),
+            BadgeVariant::Accent => (t.accent_subtle, t.accent_text),
+            BadgeVariant::Success => (t.success_bg, t.success),
+            BadgeVariant::Warning => (t.warning_bg, t.warning),
+            BadgeVariant::Danger => (t.danger_bg, t.danger),
+            BadgeVariant::Info => (t.info_bg, t.info),
         };
         let m = metrics_of(k);
         let font = m.font(rune::TextStyle {
@@ -62,7 +63,6 @@ impl Badge {
             .center()
             .radius(radius::XS)
             .fill(fill.color())
-            .border(1.0, border.color())
             .child(text(self.label).font(font).color(ink.color()).a11y_hidden())
     }
 }

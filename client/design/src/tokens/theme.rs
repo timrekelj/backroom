@@ -50,8 +50,11 @@ theme! {
     border_subtle,
     /// Edges of panels, cards, secondary buttons.
     border,
-    /// Edges of inputs and anything that must read as a control.
+    /// Edges that must read on their own: an unchecked checkbox, hollow markers, a control's hover.
     border_strong,
+    /// A control's edge at rest (inputs, the composer, secondary buttons): quieter than
+    /// `border_strong`, since a fill or a label already says "control"; hover and focus go stronger.
+    control_border,
     text,
     text_muted,
     text_faint,
@@ -185,6 +188,15 @@ fn build(spec: &ThemeSpec, dark: bool) -> Theme {
         dark,
     );
 
+    // Between `border` and `border_strong`, at least 1.8:1 on every surface a control sits on
+    // (dialogs included); High contrast keeps the strong edge.
+    let control_border = if high {
+        border_strong
+    } else {
+        let mid = if dark { ramp.lit(0.45, 0.8) } else { ramp.step(5) };
+        fit(tint(mid, 0.5), &on4, 1.8_f32.max(ratio(border, &on3) + 0.02), dark)
+    };
+
     let accent_subtle = a.subtle;
     let accent_text = fit(
         a.text,
@@ -236,6 +248,7 @@ fn build(spec: &ThemeSpec, dark: bool) -> Theme {
         border_subtle,
         border,
         border_strong,
+        control_border,
         text,
         text_muted,
         text_faint,

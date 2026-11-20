@@ -320,7 +320,7 @@ fn block_el(cx: &mut Cx, b: &md::Block, depth: usize) -> El {
             .child(
                 el().w(3.0)
                     .radius(radius::XS)
-                    .fill(t.border_strong.color())
+                    .fill(t.border.color())
                     .a11y_hidden(),
             )
             .child(

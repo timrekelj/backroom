@@ -482,7 +482,7 @@ impl MessageGroup {
             .gap(2.0)
             .radius(radius::MD)
             .fill(t.surface_overlay.color())
-            .border(1.0, t.border.color())
+            .border(1.0, t.border_subtle.color())
             .child({
                 let b = IconButton::new(&SMILEY, "Add reaction").size(Size::Sm).build(k).key(format!("react-bar-{id}"));
                 match &self.add_reaction {

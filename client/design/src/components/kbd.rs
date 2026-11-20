@@ -42,7 +42,7 @@ impl Kbd {
                     .center()
                     .radius(radius::XS)
                     .fill(t.surface_raised.color())
-                    .border(1.0, t.border.color())
+                    .border(1.0, t.border_subtle.color())
                     .child(
                         text(key)
                             .font(font)

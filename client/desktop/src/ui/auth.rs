@@ -62,7 +62,7 @@ pub fn build(a: &App, k: &Kit) -> El {
         .gap(16.0)
         .radius(radius::LG)
         .fill(t.surface.color())
-        .border(1.0, t.border.color())
+        .border(1.0, t.border_subtle.color())
         .child(
             col()
                 .gap(4.0)

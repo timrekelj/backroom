@@ -75,7 +75,7 @@ pub(super) fn skin(k: &Kit, v: Variant) -> Skin {
                 hover: c(t.hover),
                 pressed: c(t.pressed),
             },
-            border: Some(c(t.border_strong)),
+            border: Some(c(t.control_border)),
             ink: c(t.text),
         },
         Variant::Ghost => Skin {

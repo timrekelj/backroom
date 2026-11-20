@@ -98,7 +98,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32, compact: bool) -> 
         .min_w(0.0)
         .h_full()
         .fill(t.surface.color())
-        .border(1.0, t.border.color())
+        .border(1.0, t.border_subtle.color())
         .radius(radius::LG)
         .clip_rounded(radius::LG)
         .child(top)

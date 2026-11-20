@@ -313,7 +313,7 @@ fn icon_row(a: &App, k: &Kit, f: &ChannelForm, guild: u64) -> El {
             if f.picker_open {
                 k.c.border_focus
             } else {
-                t.border_strong.color()
+                t.control_border.color()
             },
         )
         .focusable(true)
@@ -585,7 +585,7 @@ fn invite(a: &App, k: &Kit, layer: &mut Vec<El>, guild: u64) {
         .center_y()
         .radius(radius::MD)
         .fill(t.surface_raised.color())
-        .border(1.0, t.border_strong.color())
+        .border(1.0, t.control_border.color())
         .label(format!("Invite code {}", g.invite_code))
         .child(
             text(g.invite_code.clone())

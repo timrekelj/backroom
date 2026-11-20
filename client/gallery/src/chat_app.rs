@@ -318,7 +318,7 @@ pub fn preview(s: &G, k: &Kit, _layer: &mut Vec<El>) -> El {
         .h(640.0)
         .radius(radius::LG)
         .clip_rounded(radius::LG)
-        .border(1.0, t.border.color())
+        .border(1.0, t.border_subtle.color())
         .child(rail)
         .child(sidebar)
         .child(main)

@@ -34,7 +34,7 @@ impl ThemePreview {
         let t = theme_for(&self.spec, self.dark);
         let bar = |w: f32, c: rune::Color| el().w(w).h(4.0).radius(radius::XS).fill(c);
         let (w, h) = self.size;
-        let edge = if self.selected { (2.0, t.accent_text) } else { (1.0, t.border_strong) };
+        let edge = if self.selected { (2.0, t.accent_text) } else { (1.0, t.control_border) };
         let panel = col()
             .grow(1.0)
             .gap(5.0)

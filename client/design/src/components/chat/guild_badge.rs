@@ -259,7 +259,7 @@ impl RailTile {
             .radius(radius::LG)
             .child(icon(glyph, size::MD).color(ink).a11y_hidden());
         if self.outline {
-            face = face.border(1.0, t.border_strong.color());
+            face = face.border(1.0, t.control_border.color());
         }
         let surface = Surface {
             fill,

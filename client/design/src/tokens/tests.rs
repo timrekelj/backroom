@@ -120,6 +120,19 @@ fn borders_are_visible() {
                 name(t)
             );
             assert!(sub <= b && b <= strong, "{} border order on {sn}", name(t));
+            let ctl = contrast(c(t.control_border), c(s));
+            assert!(b <= ctl && ctl <= strong, "{} control_border order on {sn}", name(t));
+        }
+        // A control's edge at rest: at least 1.8:1 on every surface a control sits on, the
+        // dialog's overlay included. High keeps the strong edge: 4.5:1, 3:1 on the overlay.
+        for (sn, s) in surfaces(t).into_iter().chain([("surface_overlay", t.surface_overlay)]) {
+            let min_ctl = match (high(t), sn) {
+                (false, _) => 1.8,
+                (true, "surface_overlay") => 3.0,
+                (true, _) => 4.5,
+            };
+            let ctl = contrast(c(t.control_border), c(s));
+            assert!(ctl >= min_ctl, "{} control_border on {sn}: {ctl:.2}", name(t));
         }
         let f = contrast(c(t.focus), c(t.bg));
         assert!(f >= 3.0, "{} focus ring on bg: {f:.2}", name(t));

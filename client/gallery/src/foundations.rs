@@ -55,7 +55,7 @@ pub fn page(k: &Kit) -> El {
         .child(row().gap(20.0).child(left).child(right))
 }
 
-const SURFACES: [&str; 10] = [
+const SURFACES: [&str; 11] = [
     "bg",
     "surface",
     "surface_raised",
@@ -63,6 +63,7 @@ const SURFACES: [&str; 10] = [
     "border_subtle",
     "border",
     "border_strong",
+    "control_border",
     "text",
     "text_muted",
     "text_faint",
@@ -285,7 +286,7 @@ fn elevation(k: &Kit) -> El {
             } else {
                 t.surface_overlay.color()
             })
-            .border(1.0, t.border.color());
+            .border(1.0, t.border_subtle.color());
         for s in shadows(level, k.dark) {
             card = card.box_shadow(s);
         }

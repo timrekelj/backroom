@@ -40,7 +40,6 @@ impl EmptyState {
             .center()
             .radius(radius::LG)
             .fill(t.surface_raised.color())
-            .border(1.0, t.border.color())
             .child(
                 icon(self.glyph, crate::metrics_of(k).icon(size::MD))
                     .color(t.text_muted.color())

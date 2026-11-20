@@ -56,7 +56,7 @@ pub(super) fn frame(a: &App, k: &Kit, bar: f32, nav: El, page: El) -> El {
         .min_w(0.0)
         .h_full()
         .fill(t.surface.color())
-        .border(1.0, t.border.color())
+        .border(1.0, t.border_subtle.color())
         .radius(radius::LG)
         .clip_rounded(radius::LG)
         .child(a.state.ui.edges.page.wrap(

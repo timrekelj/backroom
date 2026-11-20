@@ -302,7 +302,7 @@ impl ColorSwatches {
                 .hover(t.hover.color());
             swatch = match tone {
                 Some(tone) => swatch.fill(tone.color()),
-                None => swatch.border(1.0, t.border_strong.color()),
+                None => swatch.border(1.0, t.control_border.color()),
             };
             if on {
                 // The selection ring sits outside the swatch so the colour stays whole.

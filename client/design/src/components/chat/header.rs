@@ -2,7 +2,7 @@
 //! search). The breadcrumb variant reads "Guild / # channel". `Metrics::header_h` tall, no rule under it (a scroll-edge hairline appears there while content is scrolled under).
 //! Static: nothing animates here.
 
-use rune::{col, icon, row, text, El, Icon};
+use rune::{icon, row, text, El, Icon};
 use rune_kit::Kit;
 
 use crate::icons::{CHEVRON_RIGHT, HASH};
@@ -88,15 +88,15 @@ impl ChannelHeader {
                 .color(t.text.color()),
         );
         if let (Some(topic), None) = (&self.topic, &self.guild) {
-            left = left
-                .child(col().w(1.0).h(16.0).fill(t.border_subtle.color()))
-                .child(
-                    text(topic.clone())
-                        .font(type_::at(k, type_::CONTROL))
-                        .color(t.text_muted.color())
-                        .max_lines(1)
-                        .shrink(),
-                );
+            // 16pt and the muted ink set the topic apart; no tick.
+            left = left.child(
+                text(topic.clone())
+                    .font(type_::at(k, type_::CONTROL))
+                    .color(t.text_muted.color())
+                    .max_lines(1)
+                    .shrink()
+                    .ml(8.0),
+            );
         }
         let mut r = row()
             .role("banner")

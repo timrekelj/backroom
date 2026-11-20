@@ -39,11 +39,11 @@ impl ConnectionPill {
 
     pub fn build(self, k: &Kit) -> El {
         let t = theme_of(k);
-        let (ink, bg, edge) = match self.status {
-            ConnectionStatus::Connected => (t.success, t.success_bg, t.success_border),
-            ConnectionStatus::Connecting => (t.text_muted, t.surface_raised, t.border),
-            ConnectionStatus::Reconnecting(_) => (t.warning, t.warning_bg, t.warning_border),
-            ConnectionStatus::Offline => (t.danger, t.danger_bg, t.danger_border),
+        let (ink, bg) = match self.status {
+            ConnectionStatus::Connected => (t.success, t.success_bg),
+            ConnectionStatus::Connecting => (t.text_muted, t.surface_raised),
+            ConnectionStatus::Reconnecting(_) => (t.warning, t.warning_bg),
+            ConnectionStatus::Offline => (t.danger, t.danger_bg),
         };
         let label = self.status.label();
         row()
@@ -55,7 +55,6 @@ impl ConnectionPill {
             .center_y()
             .radius(radius::SM)
             .fill(bg.color())
-            .border(1.0, edge.color())
             .token_motion(motion::CONTROL)
             .child(
                 el().key("dot")

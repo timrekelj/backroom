@@ -37,9 +37,10 @@ hue 75 to 55, chroma .006 to .0105.
 | `surface` | `#1e1a16` | `#fdfaf6` | panels, cards |
 | `surface_raised` | `#28231f` | `#fdfaf6` | inputs, raised controls |
 | `surface_overlay` | `#342f2c` | `#fdfaf6` | menus, popovers, tooltips, dialogs |
-| `border_subtle` | `#342f2c` | `#e1ddd9` | scroll-edge lines, the member panel's left edge, the title/topic tick |
-| `border` | `#46413e` | `#cecac5` | the inset panel outline, dialog and popover edges, badge edges |
-| `border_strong` | `#7b7672` | `#908b87` | input and control edges |
+| `border_subtle` | `#342f2c` | `#e1ddd9` | scroll-edge lines, the member panel's left edge, the inset panel and auth card outline, floating edges (dialog, toast, tooltip, hover actions), keycaps |
+| `border` | `#46413e` | `#cecac5` | the quote bar, the spoiler block, the gallery's theme previews |
+| `border_strong` | `#7b7672` | `#908b87` | edges that must read on their own: an unchecked checkbox, a hollow role dot; a control's hover (rune-kit) |
+| `control_border` | `#5e5854` | `#aeaaa6` | a control's edge at rest: inputs, the composer, Secondary buttons, the icon field and invite code, the rail's "+" tile, the "no colour" swatch |
 | `text` | `#eeeae6` | `#16120e` | primary text |
 | `text_muted` | `#aeaaa6` | `#645f5b` | secondary text |
 | `text_faint` | `#908b87` | `#726e6a` | placeholders, hints (still 4.5:1) |
@@ -61,7 +62,7 @@ hue 75 to 55, chroma .006 to .0105.
 Rules: red is for errors only (a mention is accent, not red). Never hard-code a colour in a screen; add a token.
 Contrast is enforced by tests (`cargo test -p thehideout-design`): `text`, `text_muted`, `text_faint`,
 `accent_text` and status text are at least 4.5:1 on `bg`/`surface`/`surface_raised`; ink on fills at least 4.5:1;
-`border` at least 1.3:1, `border_strong` at least 3:1 (non-text) on `bg`, `surface` and `surface_raised` in both themes, `focus` at least 3:1; every token stays in sRGB gamut. The tests run for **every** look (see Themes), including avatar ink, and keep the status hues at least 25 degrees from the accent.
+`border` at least 1.3:1, `border_strong` at least 3:1 (non-text) on `bg`, `surface` and `surface_raised` in both themes, `control_border` at least 1.8:1 on those and on `surface_overlay` (High: 4.5:1, 3:1 on the overlay) and between `border` and `border_strong`, `focus` at least 3:1; every token stays in sRGB gamut. The tests run for **every** look (see Themes), including avatar ink, and keep the status hues at least 25 degrees from the accent.
 
 ## Themes (`tokens/spec.rs`, `accent.rs`, `background.rs`)
 
@@ -112,7 +113,7 @@ Neutral is true grey (chroma 0). Cool is slate, hue 250 to 255, chroma .008 to .
 
 **Tint.** With `tint` on, `bg`, the surfaces, the borders and the inset layers move toward the accent hue by .006 of OKLab chroma (borders a little less), lightness untouched. It scales with the accent's own chroma, so Graphite stays grey. A test caps the shift.
 
-**Contrast.** `Contrast::High` raises text and edges against `bg`/`surface`/`surface_raised`: `text` 10:1, `text_muted` 8:1, `text_faint` 7:1, `accent_text` and status text 7:1, `border_subtle` 1.8:1, `border` 3:1, `border_strong` 4.5:1 (Standard: 7, 4.5, 4.5, 4.5, 4.5, 1.1, 1.3, 3). Tokens are authored for the default look; a `fit` step moves only a token whose contrast falls short on the chosen background, tint or level, by the least lightness that clears the bar (and eases chroma back into gamut), so the presets read as designed wherever they already pass and every combination passes by construction.
+**Contrast.** `Contrast::High` raises text and edges against `bg`/`surface`/`surface_raised`: `text` 10:1, `text_muted` 8:1, `text_faint` 7:1, `accent_text` and status text 7:1, `border_subtle` 1.8:1, `border` 3:1, `border_strong` 4.5:1 and `control_border` = `border_strong` (Standard: 7, 4.5, 4.5, 4.5, 4.5, 1.1, 1.3, 3). Tokens are authored for the default look; a `fit` step moves only a token whose contrast falls short on the chosen background, tint or level, by the least lightness that clears the bar (and eases chroma back into gamut), so the presets read as designed wherever they already pass and every combination passes by construction.
 
 **Tests** (`tokens/tests.rs`) build all 320 looks once (8 accents x 5 backgrounds x dark/light x tint on/off x Standard/High; `every_combination_is_covered` asserts the count and that `look_index` is a bijection) and check every rule above on each, the preset characters (Neutral is grey, Cool is blue-grey, Deep is under L .16, nothing is purple, Ocean is blue, Coral is pink-red, Graphite is grey), the tint cap, the serde round trip and the caches. They take about 30 ms.
 
@@ -143,17 +144,29 @@ Instrument Sans for UI, JetBrains Mono for code (ligatures off). Size / line hei
 ## Layout (`components/chat/mod.rs`)
 
 **Borders separate structure, not content.** Reach for spacing and a fill step first (`bg` against `surface`, a
-`hover` wash on `surface`); a stroke is for a control's edge (inputs, the composer card, a selected reaction), a
-floating thing (popover, dialog, tooltip), the inset panel's outline, and the one divider between two regions that
-would otherwise touch with no outline of their own (the member panel's left edge, `border_subtle`). Between two
-regions there is exactly one edge. There are no rules under headers, above footers, between settings rows or around
-cards; settings are told apart by 28pt of vertical rhythm, not lines.
+`hover` wash on `surface`). Then, per role, the quietest stroke that still works:
+
+| Role | Stroke |
+|---|---|
+| Control at rest (inputs, composer, Secondary button, icon field, invite code, rail "+", "no colour" swatch) | 1px `control_border` (1.8:1+); hover washes the fill, focus swaps the ring for `focus` (3:1+), invalid for `danger` |
+| Control whose edge is the whole control (unchecked checkbox, hollow role dot) | `border_strong` (3:1) |
+| Focus | `focus`, 3:1+ on `bg`; never weakened |
+| Selected (your reaction, picker tab, swatch, accent preset, theme preview) | `accent` / `text` / `accent_text`; never quieted |
+| Floating (dialog, toast, tooltip, chart tip, hover actions; rune-kit menus and popovers at half `border`) | the fill step and shadow carry it; 1px `border_subtle` edge (it melts into the overlay in dark, a hairline in light) |
+| Inset panel, auth card | 1px `border_subtle` outline (light `surface` is barely off `bg`) |
+| Region divider (member panel's left edge, scroll edges) | 1px `border_subtle`, exactly one between two regions |
+| Labels (badges, connection pill), empty-state tile, title/topic | none: a wash and its ink, or 16pt and muted ink |
+| Content markers (quote bar, date and "New" dividers, embed rail) | not borders: a `border` bar, a `border_subtle` line with a label, an accent line, the provider's colour |
+| Drop zones | transparent until a drag hovers, then `accent` |
+
+There are no rules under headers, above footers, between settings rows or around cards; settings are told apart by
+28pt of vertical rhythm, not lines.
 
 The shell insets the rail, sidebar and panel 8pt from the window's top and bottom, then lines up headers and footers on one y:
 `header_h()` = 48 (Compact 40) for the sidebar title, the channel header and the member panel title (their titles share a baseline);
 `footer_h()` = 64 (Compact 52) for the sidebar's user strip and the composer zone (a multi-line composer grows its zone upward; at rest
 they match). The composer card floats in its zone with 12pt on every side. Headers and the footer carry **no divider at
-rest**; the sidebar sits on `bg` and the panel's own 1pt `border` outline is the only edge between them. Widths: the
+rest**; the sidebar sits on `bg` and the panel's own 1pt `border_subtle` outline is the only edge between them. Widths: the
 sidebar is 240 from 1100pt up and 208 below; the member panel is only offered from 1000pt. In the transcript a group's
 rows sit 2pt apart and groups ~16pt apart (1pt and ~10pt Compact). Every size here is a `Metrics` method; see Density and text size.
 
@@ -233,14 +246,14 @@ Every control takes `&Kit`, and shows `State::{Rest, Hover, Pressed, Focus, Disa
 | `IconButton` | own | Same variants/sizes, square (24 / 32), a label is required. Ghost by default; `.selected(true)` on a Ghost toggle is the quiet `accent_subtle` fill with an `accent_text` icon (never a bordered box). |
 | `Segmented` | own | One-of-N switch: one container filled with `bg` (no border), 32pt, the selected segment a filled `surface_raised` tile. |
 | `ScrollEdges`, `scroll_edges` | own | The scroll-edge hairlines (see Scroll edges under Layout). |
-| `TextInput` | `rune_kit` | 28pt (`.large()` = 32pt, the Md control height, used in dialogs and the auth card), `radius-md`, 1px `border_strong` ring; focus swaps it for `focus`; invalid uses `danger`. |
+| `TextInput` | `rune_kit` | 28pt (`.large()` = 32pt, the Md control height, used in dialogs and the auth card), `radius-md`, 1px `control_border` ring at rest, a `hover` wash on hover; focus swaps the ring for `focus`; invalid uses `danger`. |
 | `switch(on)` | `rune_kit::Switch` `.web()` | 24x16, 4pt corners, accent when on. |
 | `Checkbox` | own | 16x16, `radius-sm`, off: `border_strong`; on / mixed: accent fill with `accent_fg` mark. |
 | `Avatar` | own | Sizes 20/24/32/40, rounded squares (radius sm/sm/md/lg), initials on one of eight warm fills chosen by FNV-1a of the user id (all take the same ink at 4.5:1+), `Presence::{None, Online, Idle, Offline}` dot (offline is hollow). `.image(Some(pixels))` draws the user's picture (`rune::Pixels`, cropped to fill) over the initials, which stay visible while it decodes and if it never does; `GuildBadge` and `MemberRow` take it the same way. |
-| `Badge` | own | 18pt, `radius-xs`, `Neutral`, `Accent`, `Success`, `Warning`, `Danger`, `Info`. |
+| `Badge` | own | 18pt, `radius-xs`, `Neutral`, `Accent`, `Success`, `Warning`, `Danger`, `Info`: a wash and its ink, no edge. |
 | `UnreadDot` / `MentionPill` | own | Unread: quiet 6pt dot in `text`. Mention: accent pill, tabular count, `99+` cap. |
-| `Kbd` | own | 18pt keycaps, `radius-xs`, raised fill, 1px border. |
-| `tooltip(..)` | `rune_kit::Tooltip` | Standard appearance: overlay surface, 1px border, `radius-sm`, popover shadow, optional `Kbd`. |
+| `Kbd` | own | 18pt keycaps, `radius-xs`, raised fill, 1px `border_subtle`. |
+| `tooltip(..)` | `rune_kit::Tooltip` | Standard appearance: overlay surface, 1px `border_subtle`, `radius-sm`, popover shadow, optional `Kbd`. |
 | chat components | `components/chat/` | See "Chat components" below. |
 
 ## Chat components (`components/chat/`)
@@ -257,7 +270,7 @@ Data in, callbacks out: no app state types, every one takes the `Kit` like the c
 | `MessageGroup`, `ChatMessage` | Avatar (`.avatars(..)` supplies pictures by author id), author (`.name_colors(..)`: the colour of their role, as `palette_text`), time, one or more bodies (`.mention_ink(..)` colours `@name` chips of coloured members). `MessageGroup::runs` splits a transcript: same author, at most 5 minutes (`GROUP_WINDOW_SECS`) apart. Follow-ups show their time in the gutter on hover. Bodies are markup (see "Message markup"). `links::<S>()` makes links and spoilers pressable. | `Sent`, `Pending` (body at 0.55, no spinner), `Failed` ("Failed to send · Retry"), mentions you (`accent_wash` + 2pt accent bar), hover (row highlight + floating reply/copy/more) |
 | `DateDivider`, `NewMessagesDivider` | A hairline with the date; an accent line with a "New" tag. | static |
 | `Composer` | The message box: "+", a field that grows to 8 lines then scrolls, smiley, Send. `bind` wires the field and send; Enter sends, Shift+Enter breaks the line; whitespace never sends. | empty (Send ghost, disabled), text (Send primary), focused (focus ring), disabled with a reason |
-| `ChannelHeader` | `#` + name + topic + trailing IconButtons; `breadcrumb` gives "Guild / # channel". No rule under it. | static |
+| `ChannelHeader` | `#` + name + topic + trailing IconButtons; `breadcrumb` gives "Guild / # channel". No rule under it and no tick before the topic: 16pt and muted ink. | static |
 | `MemberRow` | Avatar (with a picture if given) and presence, the name (in a role colour if given), crown for the owner. | online, idle, offline (faint), hover |
 | `EmptyState` | Icon tile, title, body, optional action `Button`. | static |
 | `EmojiPicker`, `EmojiSuggest`, `EmojiSet` | See "Emojis" below. | rest, hover, highlighted, searching |
@@ -287,7 +300,7 @@ unchanged (no live preview). Selecting message text copies it as drawn (markers 
 | `__underline__` | underline (Discord's meaning; `___x___` is underline + italic) |
 | `` `code` ``, ``` ``a ` b`` ``` | inline mono chip; nothing inside is parsed (no mentions, links or markup) |
 | ```` ```rust ```` fence ```` ``` ````, or ` ```one line``` ` | mono block on a `bg` fill, no border, `radius-md`; syntax-coloured when Rune knows the language (`rune_kit::syntax`), plain otherwise; an unclosed fence runs to the end |
-| `> quote`, `>>> quote to the end` | 3pt `border_strong` bar, content indented; holds any block |
+| `> quote`, `>>> quote to the end` | 3pt `border` bar, content indented; holds any block |
 | `- item`, `* item`, `1. item`; two-space indent nests | bullets (`•`, then `◦`) or numbers (the first number sets the start) |
 | `#`, `##`, `###` + space at line start | 16/15/14pt, semibold; `####` and a mid-line `#` stay text |
 | `\|\|spoiler\|\|` | a block in `border` the text colour hides; click reveals it (state per message, local to the UI, not app state); a link inside stays inert until revealed |
@@ -381,7 +394,7 @@ that loads or reconnects never plays an entrance. Reduced motion is Rune's: trav
 | Lightbox opens or closes | scrim and picture opacity | `motion-overlay` |
 | Upload progresses | the chip's bar width | `motion-control` |
 | Toast shown or dismissed | opacity and 8pt rise; fade out | `motion-overlay` in, `motion-control` out |
-| Connection status changes | pill fill, border, dot and label colour | `motion-control` |
+| Connection status changes | pill fill, dot and label colour | `motion-control` |
 | Content scrolls under a header, or more lies below | the scroll-edge line's opacity (live value, no view run) | `motion-control` |
 
 Never animates: date and "New" dividers, channel header, empty states, member rows, avatars, the `Failed` line,

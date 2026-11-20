@@ -50,7 +50,7 @@ impl Toast {
             .center_y()
             .radius(radius::MD)
             .fill(t.surface_overlay.color())
-            .border(1.0, t.border.color())
+            .border(1.0, t.border_subtle.color())
             .transition(enter)
             .child(icon(glyph, crate::metrics_of(k).icon(size::SM)).color(ink.color()).a11y_hidden())
             .child(

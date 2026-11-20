@@ -258,7 +258,7 @@ fn context(k: &Kit) -> El {
         .center_y()
         .radius(radius::LG)
         .fill(t.surface_raised.color())
-        .border(1.0, t.border_strong.color())
+        .border(1.0, t.control_border.color())
         .child(IconButton::new(&icons::PLUS, "Add").build(k))
         .child(IconButton::new(&icons::PAPERCLIP, "Attach").build(k))
         .child(IconButton::new(&icons::SMILEY, "Emoji").build(k))
