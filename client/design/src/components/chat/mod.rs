@@ -15,10 +15,10 @@
 //! | [`Dialog`], [`Toast`], [`ConnectionStatus`] | `dialog`, `toast`, `connection` |
 
 /// Height of every panel header (sidebar title, channel header, member panel title). One value, so
-/// the hairlines under them sit on one y across the window.
+/// their titles share a baseline and the scroll-edge hairlines under them sit on one y.
 pub const HEADER_H: f32 = 48.0;
-/// Height of the zone under the transcript and of the sidebar's user strip: the hairlines above
-/// them line up for the same reason.
+/// Height of the zone under the transcript and of the sidebar's user strip: the scroll-edge
+/// hairlines above them line up for the same reason.
 pub const FOOTER_H: f32 = 64.0;
 /// Height of a sidebar row (nav, channel, DM) and of a member row.
 pub const ROW_H: f32 = 32.0;

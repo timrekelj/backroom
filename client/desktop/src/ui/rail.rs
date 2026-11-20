@@ -1,4 +1,4 @@
-//! The guild rail: Home on top, a divider, one badge per server (unread dot, mention count) and
+//! The guild rail: Home on top, a 4pt gap (no rule), one badge per server (unread dot, mention count) and
 //! the "+" menu directly under the last server. Home and every server share the rail bar for
 //! the selected state; nothing in here travels.
 
@@ -6,7 +6,6 @@ use rune::{col, el, El, ScrollSpec};
 use rune_kit::{Kit, Menu, MenuItem};
 use thehideout_design::components::{GuildBadge, RailTile};
 use thehideout_design::icons::{self, HOUSE, LINK, PLUS};
-use thehideout_design::theme_of;
 
 use crate::app::App;
 use crate::state::{DialogKind, Menu as MenuState, Place};
@@ -14,11 +13,10 @@ use crate::state::{DialogKind, Menu as MenuState, Place};
 pub const WIDTH: f32 = 64.0;
 /// Space between tiles: the mention pill overhangs a face by 2pt, so 12 leaves 10 clear.
 const GAP: f32 = 12.0;
-/// The tiles' face side, and the divider's width under Home.
+/// The tiles' face side, and the width of the spacer under Home.
 const FACE: f32 = 40.0;
 
 pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
-    let t = theme_of(k);
     let s = &a.state;
     let mut guilds = col().key("guilds").w_full().gap(GAP).items_start().pb(4.0);
     for g in &s.data.guilds {
@@ -73,13 +71,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
         .gap(GAP)
         .items_start()
         .child(home(a, k))
-        .child(
-            el().key("rail-divider")
-                .w(FACE)
-                .h(1.0)
-                .ml(8.0)
-                .fill(t.border.color()),
-        )
+        .child(el().key("rail-divider").w(FACE).h(4.0))
         .child(
             col()
                 .grow(1.0)

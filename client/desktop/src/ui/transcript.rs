@@ -318,10 +318,8 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
         start = i;
     }
 
-    col()
+    let scroller = col()
         .key(format!("tx-{channel}"))
-        .w_full()
-        .h_full()
         .scroll(ScrollSpec { stick_bottom: true })
         .scroll_anchor()
         .on_at_bottom_if(|a: &mut App, at| {
@@ -335,7 +333,9 @@ fn viewport(a: &App, k: &Kit, channel: u64, list: &[Item]) -> El {
             }
             true
         })
-        .child(c)
+        .child(c);
+    // Hairlines under the header and over the composer, only while messages are cut off there.
+    col().w_full().h_full().child(s.ui.edges.transcript.wrap(k, scroller))
 }
 
 /// Grey bars where messages will be. Shown only for loads slower than the placeholder delay.

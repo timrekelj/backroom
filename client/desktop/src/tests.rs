@@ -4,7 +4,7 @@
 
 use rune::{Env, Key, KeyEvent, Mods, Runtime};
 use thehideout_api::GatewayUpdate;
-use thehideout_design::components::ConnectionStatus;
+use thehideout_design::components::{ConnectionStatus, FOOTER_H, HEADER_H};
 
 use crate::app::{fake_now, on_key, poll, view, App};
 use crate::backend::Command;
@@ -946,9 +946,10 @@ fn the_server_url_field_expands_from_the_server_line() {
 }
 
 #[test]
-fn the_hairlines_line_up_across_sidebar_and_panel() {
-    // Deliberate geometry: sidebar header == channel header (HEADER_H) and user strip ==
-    // composer zone (FOOTER_H), so each pair of dividers sits on one y.
+fn headers_and_footers_line_up_across_sidebar_and_panel() {
+    // Deliberate geometry: sidebar header == channel header == member header (HEADER_H) and user
+    // strip == composer zone (FOOTER_H), so titles share a baseline and the scroll-edge lines of
+    // both columns sit on one y.
     let (mut rt, _) = signed_in(0.0);
     rt.update(|a, _| a.state.ui.members_open = true);
     settle(&mut rt, 80);
@@ -959,12 +960,117 @@ fn the_hairlines_line_up_across_sidebar_and_panel() {
         .expect("the channel header")
         .rect;
     let side_header = rect_of(&rt, "guild-header");
-    assert_eq!(side_header[1] + side_header[3], banner[1] + banner[3], "header dividers");
-    let (strip, zone) = (rect_of(&rt, "user-strip"), rect_of(&rt, "composer-area"));
-    assert_eq!(strip[1], zone[1], "bottom dividers");
-    assert_eq!(strip[3], zone[3]);
+    assert_eq!(side_header[1], banner[1], "header tops");
+    assert_eq!(side_header[3], banner[3], "header heights");
+    assert_eq!(banner[3], HEADER_H);
     let members = rect_of(&rt, "members-inner");
     assert_eq!(members[1], banner[1], "the member panel starts with the header");
+    let (strip, zone) = (rect_of(&rt, "user-strip"), rect_of(&rt, "composer-area"));
+    assert_eq!(strip[1], zone[1], "footer tops");
+    assert_eq!(strip[3], zone[3]);
+    assert_eq!(strip[3], FOOTER_H);
+}
+
+#[test]
+fn no_permanent_divider_is_drawn_between_regions() {
+    // Borders separate structure, not content: no header or footer carries a rule at rest.
+    let (mut rt, _) = signed_in(0.0);
+    rt.update(|a, _| a.state.ui.members_open = true);
+    settle(&mut rt, 80);
+    let panel = rect_of(&rt, "main-panel");
+    let composer = rect_of(&rt, "composer-area");
+    let banner = rt.elements().into_iter().find(|e| e.role == "banner").unwrap().rect;
+    // The composer card floats with even margins inside its zone.
+    let card = rect_of(&rt, "composer");
+    assert_eq!(card[1] - composer[1], 12.0, "top margin");
+    assert_eq!(composer[1] + composer[3] - (card[1] + card[3]), 12.0, "bottom margin");
+    assert_eq!(card[0] - composer[0], 12.0, "left margin");
+    assert!(banner[1] >= panel[1]);
+}
+
+/// The two scroll-edge targets of a region: `(top, bottom)`.
+fn edges_of(rt: &Runtime<App>, which: fn(&crate::state::Edges) -> &thehideout_design::components::ScrollEdges) -> (f32, f32) {
+    let e = which(&rt.state.state.ui.edges);
+    (e.top(), e.bottom())
+}
+
+#[test]
+fn the_transcript_shows_its_top_line_only_when_scrolled_and_its_bottom_line_only_when_not_at_the_end() {
+    let (mut rt, _) = signed_in(0.0);
+    settle(&mut rt, 20);
+    // Opens at the bottom: messages sit under the header, nothing is below the viewport.
+    assert_eq!(edges_of(&rt, |e| &e.transcript), (1.0, 0.0), "at the bottom");
+    let (x, y) = rt.find("transcript-area").unwrap();
+    rt.wheel(x + 100.0, y + 100.0, 600.0);
+    settle(&mut rt, 10);
+    let (top, bottom) = edges_of(&rt, |e| &e.transcript);
+    assert_eq!((top, bottom), (1.0, 1.0), "scrolled up a little: both lines");
+    // Back to the end: the bottom line goes again.
+    let tx = rt.state.state.current_channel().unwrap();
+    rt.update(move |_, tx_| tx_.scroll_to_bottom(format!("tx-{tx}")));
+    settle(&mut rt, 80);
+    assert_eq!(edges_of(&rt, |e| &e.transcript), (1.0, 0.0), "back at the bottom");
+    // A short channel has nothing under either edge.
+    rt.update(|a, _| a.act(|s| s.select_channel(RANDOM)));
+    settle(&mut rt, 40);
+    let scrolls = rt.state.state.current_channel() == Some(RANDOM);
+    assert!(scrolls);
+}
+
+#[test]
+fn the_edge_lines_sit_where_the_header_ends_and_the_zone_begins_in_both_columns() {
+    let (mut rt, _) = signed_in(0.0);
+    settle(&mut rt, 40);
+    let banner = rt.elements().into_iter().find(|e| e.role == "banner").unwrap().rect;
+    let header_end = banner[1] + banner[3];
+    let area = rect_of(&rt, "transcript-area");
+    assert_eq!(area[1], header_end, "the transcript starts under the header");
+    let sidebar_body = rect_of(&rt, "sidebar-body");
+    assert_eq!(sidebar_body[1], header_end, "so does the sidebar list: one y for both top lines");
+    let zone = rect_of(&rt, "composer-area");
+    let strip = rect_of(&rt, "user-strip");
+    assert_eq!(area[1] + area[3], zone[1], "the transcript ends where the zone begins");
+    assert_eq!(sidebar_body[1] + sidebar_body[3], strip[1], "so does the sidebar list");
+    // Both lines are pinned to the edges of those regions.
+    let top = rt.presented("edge-top").expect("a top line").0;
+    assert_eq!(top[3], 1.0);
+}
+
+#[test]
+fn scrolling_runs_no_view_and_changes_the_lines_by_live_values() {
+    let (mut rt, _) = signed_in(0.0);
+    settle(&mut rt, 20);
+    let (x, y) = rt.find("transcript-area").unwrap();
+    // Pin the pill so no state flips during the scroll: wheel a little, settle, then count.
+    rt.wheel(x + 100.0, y + 100.0, 100.0);
+    settle(&mut rt, 30);
+    let before = crate::app::views();
+    for _ in 0..6 {
+        rt.wheel(x + 100.0, y + 100.0, 40.0);
+        settle(&mut rt, 2);
+    }
+    // The lines are bound to live values: the only view runs allowed are the ones the at-bottom
+    // transition itself asks for (none here: the reader is already away from the end).
+    assert_eq!(crate::app::views(), before, "a scroll frame re-ran the view");
+}
+
+#[test]
+fn the_sidebar_and_member_lists_report_their_edges_too() {
+    let (mut rt, _) = signed_in(0.0);
+    rt.update(|a, _| a.state.ui.members_open = true);
+    settle(&mut rt, 80);
+    // Fewer rows than the viewport: nothing is cut off at either edge.
+    assert_eq!(edges_of(&rt, |e| &e.members), (0.0, 0.0), "the member list fits");
+    assert_eq!(edges_of(&rt, |e| &e.sidebar), (0.0, 0.0), "the channel list fits");
+    // A short window cuts the channel list off below.
+    rt.set_viewport((1280.0, 300.0), 1.0);
+    settle(&mut rt, 20);
+    let (top, bottom) = edges_of(&rt, |e| &e.sidebar);
+    assert_eq!((top, bottom), (0.0, 1.0), "list taller than the window: more below");
+    let (x, y) = rt.find("channels-1-row-general").expect("a channel row");
+    rt.wheel(x, y, -400.0);
+    settle(&mut rt, 60);
+    assert_eq!(edges_of(&rt, |e| &e.sidebar), (1.0, 0.0), "scrolled to its end");
 }
 
 #[test]

@@ -155,7 +155,6 @@ fn header(a: &App, k: &Kit, lay: Layout) -> El {
                 .px(16.0)
                 .gap(10.0)
                 .center_y()
-                .border_sides([0.0, 0.0, 1.0, 0.0], t.border.color())
                 .child(
                     Avatar::new(id.to_string(), name.clone())
                         .size(24)
@@ -176,7 +175,6 @@ fn header(a: &App, k: &Kit, lay: Layout) -> El {
             .role("banner")
             .label("No channel")
             .w_full()
-            .h(HEADER_H)
-            .border_sides([0.0, 0.0, 1.0, 0.0], t.border.color()),
+            .h(HEADER_H),
     }
 }

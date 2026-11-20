@@ -5,8 +5,8 @@ a mapping onto `rune_kit::Kit`, and the basic controls. It is platform-neutral (
 
 **Direction.** Cozy and warm, but minimal and crisp, and still tool-like. OpenCode's radii, but warm
 greys instead of cool ones and one sage-teal accent. Dark is a dim lamp-lit room (warm near-black, never
-`#000`). Light is paper (warm off-white, never `#fff`). Borders separate surfaces; shadows are only
-for things that float.
+`#000`). Light is paper (warm off-white, never `#fff`). **Borders separate structure, not content: spacing and fills first, dividers only at scroll edges.**
+Shadows are only for things that float.
 
 Review it: `client/gallery/render.sh` renders `client/gallery/snapshots/{foundations,controls,icons,themes,chat,chat-dialog}-{dark,light}.png`, or run `cargo run -p thehideout-gallery` for a window with theme, tint and contrast toggles and a Themes page (every accent on every background; press a tile to apply it everywhere).
 
@@ -37,8 +37,8 @@ hue 75 to 55, chroma .006 to .0105.
 | `surface` | `#1e1a16` | `#fdfaf6` | panels, cards |
 | `surface_raised` | `#28231f` | `#fdfaf6` | inputs, raised controls |
 | `surface_overlay` | `#342f2c` | `#fdfaf6` | menus, popovers, tooltips, dialogs |
-| `border_subtle` | `#342f2c` | `#e1ddd9` | dividers inside a surface |
-| `border` | `#46413e` | `#cecac5` | panel, card, badge edges |
+| `border_subtle` | `#342f2c` | `#e1ddd9` | scroll-edge lines, the member panel's left edge, the title/topic tick |
+| `border` | `#46413e` | `#cecac5` | the inset panel outline, dialog and popover edges, badge edges |
 | `border_strong` | `#7b7672` | `#908b87` | input and control edges |
 | `text` | `#eeeae6` | `#16120e` | primary text |
 | `text_muted` | `#aeaaa6` | `#645f5b` | secondary text |
@@ -138,11 +138,37 @@ Instrument Sans for UI, JetBrains Mono for code (ligatures off). Size / line hei
 
 ## Layout (`components/chat/mod.rs`)
 
-The shell insets the rail, sidebar and panel 8pt from the window's top and bottom, then lines the hairlines up on one y:
-`HEADER_H` = 48 for the sidebar title, the channel header and the member panel title; `FOOTER_H` = 64 for the sidebar's
-user strip and the composer zone (a multi-line composer grows its zone upward; at rest they match). Every divider uses
-`border` (in both themes), so dark and light read equally. Widths: the sidebar is 240 from 1100pt up and 208 below;
-the member panel is only offered from 1000pt. In the transcript a group's rows sit 2pt apart and groups ~16pt apart.
+**Borders separate structure, not content.** Reach for spacing and a fill step first (`bg` against `surface`, a
+`hover` wash on `surface`); a stroke is for a control's edge (inputs, the composer card, a selected reaction), a
+floating thing (popover, dialog, tooltip), the inset panel's outline, and the one divider between two regions that
+would otherwise touch with no outline of their own (the member panel's left edge, `border_subtle`). Between two
+regions there is exactly one edge. There are no rules under headers, above footers, between settings rows or around
+cards; settings are told apart by 28pt of vertical rhythm, not lines.
+
+The shell insets the rail, sidebar and panel 8pt from the window's top and bottom, then lines up headers and footers on one y:
+`HEADER_H` = 48 for the sidebar title, the channel header and the member panel title (their titles share a baseline);
+`FOOTER_H` = 64 for the sidebar's user strip and the composer zone (a multi-line composer grows its zone upward; at rest
+they match). The composer card floats in its zone with 12pt on every side. Headers and the footer carry **no divider at
+rest**; the sidebar sits on `bg` and the panel's own 1pt `border` outline is the only edge between them. Widths: the
+sidebar is 240 from 1100pt up and 208 below; the member panel is only offered from 1000pt. In the transcript a group's
+rows sit 2pt apart and groups ~16pt apart.
+
+### Scroll edges (`components/scroll_edges.rs`)
+
+The only divider a panel has. `ScrollEdges::new()` holds two `Live<f32>` opacities; `edges.wrap(k, scroller)` (or
+`scroll_edges(k, &edges, scroller)`) wraps a scroll viewport in a box that fills the space between a header and a footer
+and pins a 1pt `border_subtle` line over its top and bottom edge:
+
+- the **top** line shows only while content is scrolled underneath the header (offset > 0.5pt from the top);
+- the **bottom** line shows only while there is more content below the viewport (not at the end).
+
+The viewport's `on_scroll_offset` (called in the frame that draws the scroll) only sets the two live values to 0 or 1,
+and the lines are `live_opacity` bindings smoothed on `motion-control`: a scroll runs **no view**, and the line fades
+in and out rather than popping. Keep one `ScrollEdges` per viewport in app state (the desktop's `ui.edges` has
+`transcript`, `sidebar`, `members` and `page`), so a rebuilt view binds the same values again; read `edges.top()` /
+`edges.bottom()` in tests. The line sits where the header ends and the footer begins, so the sidebar's and the panel's
+lines share one y. Used by the transcript, the sidebar list, the member list and both settings pages. A short list that
+fits shows neither line. A `--at 1` snapshot is needed to see the lines at rest (they fade in on the first frames).
 
 ## Spacing, radius, elevation, motion
 
@@ -159,7 +185,8 @@ Every control takes `&Kit`, and shows `State::{Rest, Hover, Pressed, Focus, Disa
 |---|---|---|
 | `Button` | own | `Variant::{Primary, Secondary, Ghost, Danger}`, `Size::{Sm 24 / radius-sm, Md 32 / radius-md}`, optional `.icon(..)`. One Primary per view. |
 | `IconButton` | own | Same variants/sizes, square (24 / 32), a label is required. Ghost by default; `.selected(true)` on a Ghost toggle is the quiet `accent_subtle` fill with an `accent_text` icon (never a bordered box). |
-| `Segmented` | own | One-of-N switch: one bordered container on `bg`, 32pt, the selected segment a filled `surface_raised` tile with no border of its own. |
+| `Segmented` | own | One-of-N switch: one container filled with `bg` (no border), 32pt, the selected segment a filled `surface_raised` tile. |
+| `ScrollEdges`, `scroll_edges` | own | The scroll-edge hairlines (see Scroll edges under Layout). |
 | `TextInput` | `rune_kit` | 28pt (`.large()` = 32pt, the Md control height, used in dialogs and the auth card), `radius-md`, 1px `border_strong` ring; focus swaps it for `focus`; invalid uses `danger`. |
 | `switch(on)` | `rune_kit::Switch` `.web()` | 24x16, 4pt corners, accent when on. |
 | `Checkbox` | own | 16x16, `radius-sm`, off: `border_strong`; on / mixed: accent fill with `accent_fg` mark. |
@@ -184,7 +211,7 @@ Data in, callbacks out: no app state types, every one takes the `Kit` like the c
 | `MessageGroup`, `ChatMessage` | Avatar (`.avatars(..)` supplies pictures by author id), author (`.name_colors(..)`: the colour of their role, as `palette_text`), time, one or more bodies (`.mention_ink(..)` colours `@name` chips of coloured members). `MessageGroup::runs` splits a transcript: same author, at most 5 minutes (`GROUP_WINDOW_SECS`) apart. Follow-ups show their time in the gutter on hover. Bodies are markup (see "Message markup"). `links::<S>()` makes links and spoilers pressable. | `Sent`, `Pending` (body at 0.55, no spinner), `Failed` ("Failed to send · Retry"), mentions you (`accent_wash` + 2pt accent bar), hover (row highlight + floating reply/copy/more) |
 | `DateDivider`, `NewMessagesDivider` | A hairline with the date; an accent line with a "New" tag. | static |
 | `Composer` | The message box: "+", a field that grows to 8 lines then scrolls, smiley, Send. `bind` wires the field and send; Enter sends, Shift+Enter breaks the line; whitespace never sends. | empty (Send ghost, disabled), text (Send primary), focused (focus ring), disabled with a reason |
-| `ChannelHeader` | `#` + name + topic + trailing IconButtons; `breadcrumb` gives "Guild / # channel". | static |
+| `ChannelHeader` | `#` + name + topic + trailing IconButtons; `breadcrumb` gives "Guild / # channel". No rule under it. | static |
 | `MemberRow` | Avatar (with a picture if given) and presence, the name (in a role colour if given), crown for the owner. | online, idle, offline (faint), hover |
 | `EmptyState` | Icon tile, title, body, optional action `Button`. | static |
 | `EmojiPicker`, `EmojiSuggest`, `EmojiSet` | See "Emojis" below. | rest, hover, highlighted, searching |
@@ -211,7 +238,7 @@ unchanged (no live preview). Selecting message text copies it as drawn (markers 
 | `**bold**`, `*italic*` or `_italic_`, `***both***`, `~~strike~~` | weight 600, italic, both, struck through |
 | `__underline__` | underline (Discord's meaning; `___x___` is underline + italic) |
 | `` `code` ``, ``` ``a ` b`` ``` | inline mono chip; nothing inside is parsed (no mentions, links or markup) |
-| ```` ```rust ```` fence ```` ``` ````, or ` ```one line``` ` | mono block, `radius-md`; syntax-coloured when Rune knows the language (`rune_kit::syntax`), plain otherwise; an unclosed fence runs to the end |
+| ```` ```rust ```` fence ```` ``` ````, or ` ```one line``` ` | mono block on a `bg` fill, no border, `radius-md`; syntax-coloured when Rune knows the language (`rune_kit::syntax`), plain otherwise; an unclosed fence runs to the end |
 | `> quote`, `>>> quote to the end` | 3pt `border_strong` bar, content indented; holds any block |
 | `- item`, `* item`, `1. item`; two-space indent nests | bullets (`•`, then `◦`) or numbers (the first number sets the start) |
 | `#`, `##`, `###` + space at line start | 16/15/14pt, semibold; `####` and a mid-line `#` stay text |
@@ -272,7 +299,7 @@ space): at most eight rows, the server's emojis ahead of Unicode ones on equal r
 Down, Tab and Enter (accept) and Escape (hide until the word changes); rows keep the composer focused when pressed.
 
 **Reactions.** Chips under the body: emoji, a rolling count (`RollingText`), 24pt high. Yours takes `accent_subtle`
-and an `accent` border. A new chip pops in on `motion::POP`; counts roll on their own spring (reduced motion crossfades).
+and an `accent` border; the others have no border, just a quiet `hover` fill (as does "+"). A new chip pops in on `motion::POP`; counts roll on their own spring (reduced motion crossfades).
 Press toggles yours; "+" (and the React button in the hover bar) asks the app for its picker, hung from the element
 keyed `react-add-<id>` / `react-bar-<id>`. At 20 different emojis "+" is disabled. The hover text names the emoji and
 your part (the server sends counts, not who reacted).
@@ -303,6 +330,7 @@ that loads or reconnects never plays an entrance. Reduced motion is Rune's: trav
 | Dialog opens or closes | scrim opacity; panel opacity and scale 0.98 to 1 | `motion-overlay` |
 | Toast shown or dismissed | opacity and 8pt rise; fade out | `motion-overlay` in, `motion-control` out |
 | Connection status changes | pill fill, border, dot and label colour | `motion-control` |
+| Content scrolls under a header, or more lies below | the scroll-edge line's opacity (live value, no view run) | `motion-control` |
 
 Never animates: date and "New" dividers, channel header, empty states, member rows, avatars, the `Failed` line,
 anything inside an existing message when it is edited, the order of a list, whole lists staggering in, scroll position

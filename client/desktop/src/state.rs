@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use rune::TextEdit;
 use thehideout_api::{Channel, ChannelIconRef, DmChannel, Emoji, Guild, GuildLayout, MAX_MESSAGE_CHARS, Message, PaletteColor, Permissions, Role, User};
-use thehideout_design::components::{ConnectionStatus, EmojiPickerState, ToastKind};
+use thehideout_design::components::{ConnectionStatus, EmojiPickerState, ScrollEdges, ToastKind};
 
 use crate::backend::{Command, Session};
 pub use crate::forms::{Auth, AuthError, AuthField, AuthMode, ChannelForm, DialogKind, DialogState, Phase, auth_error, check_name, sentence};
@@ -273,6 +273,19 @@ pub struct Ui {
     pub recents_dirty: bool,
     /// Whether the window is drawing with reduced motion (set by the view each frame).
     pub reduced: Reduced,
+    /// The scroll-edge hairlines of each scrolling region (see `ScrollEdges`).
+    pub edges: Edges,
+}
+
+/// One `ScrollEdges` per scrolling region of the window; their values live here so a rebuilt view
+/// binds the same lines again.
+#[derive(Clone, Default)]
+pub struct Edges {
+    pub transcript: ScrollEdges,
+    pub sidebar: ScrollEdges,
+    pub members: ScrollEdges,
+    /// The settings pages (user and server): only one is open at a time.
+    pub page: ScrollEdges,
 }
 
 impl Ui {
@@ -309,6 +322,7 @@ impl Ui {
             recents: Vec::new(),
             recents_dirty: false,
             reduced: Reduced::default(),
+            edges: Edges::default(),
         }
     }
 }

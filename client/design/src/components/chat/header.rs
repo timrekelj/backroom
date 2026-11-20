@@ -1,8 +1,8 @@
 //! ChannelHeader: `#` + channel name + muted topic, with trailing IconButtons (members toggle,
-//! search). The breadcrumb variant reads "Guild / # channel". `HEADER_H` tall with a bottom hairline.
+//! search). The breadcrumb variant reads "Guild / # channel". `HEADER_H` tall, no rule under it (a scroll-edge hairline appears there while content is scrolled under).
 //! Static: nothing animates here.
 
-use rune::{El, Icon, col, icon, row, text};
+use rune::{col, icon, row, text, El, Icon};
 use rune_kit::Kit;
 
 use super::HEADER_H;
@@ -90,7 +90,7 @@ impl ChannelHeader {
         );
         if let (Some(topic), None) = (&self.topic, &self.guild) {
             left = left
-                .child(col().w(1.0).h(16.0).fill(t.border.color()))
+                .child(col().w(1.0).h(16.0).fill(t.border_subtle.color()))
                 .child(
                     text(topic.clone())
                         .font(type_::CONTROL)
@@ -107,7 +107,6 @@ impl ChannelHeader {
             .px(16.0)
             .gap(12.0)
             .center_y()
-            .border_sides([0.0, 0.0, 1.0, 0.0], t.border.color())
             .child(left);
         if !self.actions.is_empty() {
             r = r.child(row().gap(4.0).center_y().children(self.actions));

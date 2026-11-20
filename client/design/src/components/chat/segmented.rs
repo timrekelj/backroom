@@ -65,8 +65,7 @@ impl Segmented {
             .gap(2.0)
             .center_y()
             .radius(radius::MD)
-            .fill(t.bg.color())
-            .border(1.0, t.border.color());
+            .fill(t.bg.color());
         if let Some(l) = self.label {
             root = root.label(l);
         }

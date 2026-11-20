@@ -668,8 +668,8 @@ fn profile(a: &App, k: &Kit, layer: &mut Vec<El>, d: &DialogState) {
         .padding(12.0)
         .center_y()
         .radius(radius::LG)
-        .border(1.0, if pick.drop_over { t.accent.color() } else { t.border_subtle.color() })
-        .fill(if pick.drop_over { t.accent_subtle.color() } else { rune::Color::TRANSPARENT })
+        .border(1.0, if pick.drop_over { t.accent.color() } else { rune::Color::TRANSPARENT })
+        .fill(if pick.drop_over { t.accent_subtle.color() } else { t.hover.color() })
         .child(preview)
         .child(
             col()

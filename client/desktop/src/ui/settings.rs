@@ -36,11 +36,11 @@ pub fn build(a: &App, k: &Kit, section: Section, bar: f32) -> El {
     let page = match section {
         Section::Appearance => appearance(a, k),
     };
-    frame(k, bar, nav(k, section), page)
+    frame(a, k, bar, nav(k, section), page)
 }
 
 /// The page shell both settings screens share: `nav` on the left, `page` on the inset panel.
-pub(super) fn frame(k: &Kit, bar: f32, nav: El, page: El) -> El {
+pub(super) fn frame(a: &App, k: &Kit, bar: f32, nav: El, page: El) -> El {
     let t = theme_of(k);
     let panel = col()
         .key("settings-panel")
@@ -51,16 +51,15 @@ pub(super) fn frame(k: &Kit, bar: f32, nav: El, page: El) -> El {
         .border(1.0, t.border.color())
         .radius(radius::LG)
         .clip_rounded(radius::LG)
-        .child(
+        .child(a.state.ui.edges.page.wrap(
+            k,
             col()
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
+                .key("settings-scroll")
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
                 .child(page),
-        );
+        ));
     let body = row()
         .key("settings-body")
         .w_full()
@@ -196,27 +195,23 @@ fn appearance(a: &App, k: &Kit) -> El {
     col().w_full().items_center().child(page)
 }
 
-/// A title, its description and the control, then a hairline.
+/// A title, its description and the control; settings are told apart by spacing, not rules.
 pub(super) fn setting(k: &Kit, title: &str, description: &str, control: El) -> El {
-    let t = theme_of(k);
     col()
         .w_full()
         .gap(12.0)
-        .py(16.0)
-        .border_sides([0.0, 0.0, 1.0, 0.0], t.border_subtle.color())
+        .py(14.0)
         .child(labels(k, title, description))
         .child(control)
 }
 
 /// Like `setting`, with the control to the right of the text.
 pub(super) fn toggle(k: &Kit, title: &str, description: &str, control: El) -> El {
-    let t = theme_of(k);
     row()
         .w_full()
         .gap(16.0)
-        .py(16.0)
+        .py(14.0)
         .center_y()
-        .border_sides([0.0, 0.0, 1.0, 0.0], t.border_subtle.color())
         .child(labels(k, title, description).grow(1.0))
         .child(control)
 }

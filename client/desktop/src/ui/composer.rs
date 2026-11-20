@@ -50,17 +50,17 @@ pub fn build(a: &App, k: &Kit) -> El {
         composer = composer.disabled_reason(reason);
     }
     let used = s.composer().text.chars().count();
-    // At rest exactly `FOOTER_H`, the height of the sidebar's user strip, so the hairline above
-    // them is one line across the window; a taller (multi-line) composer pushes it up.
+    // At rest exactly `FOOTER_H`, the height of the sidebar's user strip, so the scroll-edge line
+    // above them is one line across the window; a taller (multi-line) composer pushes it up. The
+    // card floats with 12pt on every side.
     let mut c = col()
         .key("composer-area")
         .w_full()
         .min_h(FOOTER_H)
-        .px(16.0)
+        .px(12.0)
         .py(12.0)
         .gap(4.0)
-        .justify_center()
-        .border_sides([1.0, 0.0, 0.0, 0.0], t.border.color());
+        .justify_center();
     if used + COUNTER_FROM >= MAX_MESSAGE_CHARS {
         let over = used > MAX_MESSAGE_CHARS;
         let ink = if over { t.danger } else { t.text_muted };

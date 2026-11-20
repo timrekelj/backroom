@@ -45,6 +45,7 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, bar: f32) -> El {
         ServerPage::Emojis => super::emoji_settings::page(a, k, ss),
     };
     frame(
+        a,
         k,
         bar,
         nav(a, k, ss, &name),
@@ -200,7 +201,7 @@ fn overview(a: &App, k: &Kit, ss: &ServerSettings) -> El {
     let zone_fill = if pick.drop_over {
         t.accent_subtle.color()
     } else {
-        rune::Color::TRANSPARENT
+        t.hover.color()
     };
     let mut actions = row().key("server-icon-actions").gap(8.0).center_y();
     if pick.draft.is_some() {
@@ -268,7 +269,7 @@ fn overview(a: &App, k: &Kit, ss: &ServerSettings) -> El {
             if pick.drop_over {
                 t.accent.color()
             } else {
-                t.border_subtle.color()
+                rune::Color::TRANSPARENT
             },
         )
         .fill(zone_fill)
@@ -422,8 +423,6 @@ fn roles(a: &App, k: &Kit, ss: &ServerSettings) -> El {
             .h(160.0)
             .center()
             .gap(6.0)
-            .radius(radius::LG)
-            .border(1.0, t.border_subtle.color())
             .child(
                 icon(&SHIELD, isize::MD)
                     .color(t.text_faint.color())
@@ -690,7 +689,6 @@ fn editor(a: &App, k: &Kit, ss: &ServerSettings, f: &RoleForm) -> El {
                 .gap(12.0)
                 .py(8.0)
                 .items_start()
-                .border_sides([0.0, 0.0, 1.0, 0.0], t.border_subtle.color())
                 .child(labels)
                 .child(sw),
         );
@@ -742,7 +740,7 @@ fn editor(a: &App, k: &Kit, ss: &ServerSettings, f: &RoleForm) -> El {
         .gap(16.0)
         .padding(16.0)
         .radius(radius::LG)
-        .border(1.0, t.border_subtle.color());
+        .fill(t.bg.color());
     if !editable && !creating {
         c = c.child(
             row()
@@ -837,8 +835,7 @@ fn chip(k: &Kit, role: &Role, removable: bool, guild: u64, user: u64) -> El {
         .gap(6.0)
         .center_y()
         .radius(radius::SM)
-        .fill(t.surface_raised.color())
-        .border(1.0, t.border.color())
+        .fill(t.hover.color())
         .child(role_dot(k, role.color, 8.0))
         .child(
             text(role.name.clone())
@@ -931,7 +928,6 @@ fn member_row(a: &App, k: &Kit, layer: &mut Vec<El>, ss: &ServerSettings, user: 
         .gap(12.0)
         .items_start()
         .opacity(if busy { 0.6 } else { 1.0 })
-        .border_sides([0.0, 0.0, 1.0, 0.0], t.border_subtle.color())
         .child(
             Avatar::new(user.to_string(), name.clone())
                 .size(32)

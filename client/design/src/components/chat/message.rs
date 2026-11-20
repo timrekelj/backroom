@@ -416,7 +416,7 @@ impl MessageGroup {
             chip = if c.me {
                 chip.fill(t.accent_subtle.color()).border(1.0, t.accent.color())
             } else {
-                chip.fill(t.surface_raised.color()).border(1.0, t.border_subtle.color()).hover(t.hover.color()).press(t.pressed.color())
+                chip.fill(t.hover.color()).hover(t.pressed.color()).press(t.pressed.color())
             };
             if let Some(h) = &self.react {
                 chip = h(chip, &m.id, &c.key);
@@ -431,7 +431,7 @@ impl MessageGroup {
             .size(28.0, 24.0)
             .center()
             .radius(radius::MD)
-            .border(1.0, t.border_subtle.color())
+            .fill(t.hover.color())
             .focusable(!full)
             .focus_ring(2.0, 1.0, k.c.border_focus)
             .help(if full { format!("A message can have {MAX_REACTIONS} different reactions") } else { "Add reaction".to_owned() })
@@ -439,7 +439,7 @@ impl MessageGroup {
         add = if full {
             add.layer_opacity(0.5).disabled(true)
         } else {
-            let a = add.hover(t.hover.color()).press(t.pressed.color());
+            let a = add.hover(t.pressed.color()).press(t.pressed.color());
             match &self.add_reaction {
                 Some(h) => h(a, &m.id, &format!("react-add-{}", m.id)),
                 None => a,

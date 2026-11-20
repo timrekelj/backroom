@@ -112,29 +112,27 @@ pub fn build(a: &App, k: &Kit, allowed: bool) -> El {
         .key("members-inner")
         .w(WIDTH)
         .h_full()
-        .border_sides([0.0, 0.0, 0.0, 1.0], t.border.color())
+        .border_sides([0.0, 0.0, 0.0, 1.0], t.border_subtle.color())
         .child(
             row()
                 .h(HEADER_H)
                 .px(16.0)
                 .center_y()
-                .border_sides([0.0, 0.0, 1.0, 0.0], t.border.color())
                 .child(
                     text(format!("Members \u{00b7} {}", list.len()))
                         .font(type_::CONTROL_STRONG)
                         .color(t.text_muted.color()),
                 ),
         )
-        .child(
+        .child(s.ui.edges.members.wrap(
+            k,
             col()
-                .grow(1.0)
-                .min_h(0.0)
-                .w_full()
+                .key("members-scroll")
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
                 .child(rows),
-        );
+        ));
     let inner = if open {
         inner
     } else {

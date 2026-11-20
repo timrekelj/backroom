@@ -223,7 +223,20 @@ pub fn on_key(a: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     true
 }
 
+#[cfg(test)]
+thread_local! {
+    static VIEWS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times the view has run on this thread (tests: a scroll must not add to it).
+#[cfg(test)]
+pub fn views() -> u64 {
+    VIEWS.with(|v| v.get())
+}
+
 pub fn view(a: &App, cx: &mut Cx<App>) -> El {
+    #[cfg(test)]
+    VIEWS.with(|v| v.set(v.get() + 1));
     let look = a.state.ui.look;
     let dark = look.spec.is_dark(cx.system_dark());
     let (k, t) = (kit_for(&look.spec, dark), theme_for(&look.spec, dark));

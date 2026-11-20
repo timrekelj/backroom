@@ -299,8 +299,7 @@ fn block_el(cx: &mut Cx, b: &md::Block, depth: usize) -> El {
                 .px(12.0)
                 .py(8.0)
                 .radius(radius::MD)
-                .fill(t.surface_raised.color())
-                .border(1.0, t.border_subtle.color())
+                .fill(t.bg.color())
                 .child(
                     text(code.clone())
                         .font(type_::CODE)

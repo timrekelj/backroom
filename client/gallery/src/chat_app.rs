@@ -250,7 +250,6 @@ pub fn preview(s: &G, k: &Kit, _layer: &mut Vec<El>) -> El {
                     .h(48.0)
                     .px(16.0)
                     .center_y()
-                    .border_sides([0.0, 0.0, 1.0, 0.0], t.border_subtle.color())
                     .child(
                         text("The Hideout".to_owned())
                             .font(type_::TITLE)

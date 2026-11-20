@@ -68,8 +68,7 @@ impl PickerTabs {
             .w_full()
             .h(32.0)
             .gap(4.0)
-            .center_y()
-            .border_sides([0.0, 0.0, 1.0, 0.0], t.border.color());
+            .center_y();
         for (i, (label, enabled)) in self.tabs.into_iter().enumerate() {
             let on = i == self.selected;
             let ink = if !enabled {

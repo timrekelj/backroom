@@ -38,10 +38,15 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
                 .w_full()
                 .h_full()
                 .transition(fade)
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
-                .child(content),
+                .child(a.state.ui.edges.sidebar.wrap(
+                    k,
+                    col()
+                        .key(format!("sidebar-scroll-{place}"))
+                        .scroll(ScrollSpec {
+                            stick_bottom: false,
+                        })
+                        .child(content),
+                )),
         );
     col()
         .key("sidebar")
@@ -55,21 +60,18 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
 
 fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
     let t = theme_of(k);
-    let line = |e: El| e.border_sides([0.0, 0.0, 1.0, 0.0], t.border.color());
     let Some(g) = a.state.current_guild() else {
-        return line(
-            row()
-                .key("sidebar-header")
-                .w_full()
-                .h(HEADER_H)
-                .px(16.0)
-                .center_y()
-                .child(
-                    text("Direct messages")
-                        .font(type_::TITLE)
-                        .color(t.text.color()),
-                ),
-        );
+        return row()
+            .key("sidebar-header")
+            .w_full()
+            .h(HEADER_H)
+            .px(16.0)
+            .center_y()
+            .child(
+                text("Direct messages")
+                    .font(type_::TITLE)
+                    .color(t.text.color()),
+            );
     };
     let (id, manage) = (g.id, a.state.can_manage_channels(g.id));
     let trigger = row()
@@ -140,7 +142,7 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
         .min_width(width - 16.0)
         .on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
         .build(k, layer);
-    line(row().w_full().child(menu))
+    row().w_full().child(menu)
 }
 
 fn home_rows(a: &App, k: &Kit) -> El {
@@ -193,7 +195,7 @@ fn dm_peer_id(s: &crate::state::AppState, dm: &thehideout_api::DmChannel) -> Str
 }
 
 /// The strip under the sidebar: your avatar (its dot is the connection), your name, and a gear
-/// menu. `FOOTER_H` tall, like the composer zone, so the hairlines above them line up. The
+/// menu. `FOOTER_H` tall, like the composer zone, so the edge lines above them line up. The
 /// connection pill appears only while something is wrong.
 fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
     let t = theme_of(k);
@@ -255,7 +257,6 @@ fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
         .px(12.0)
         .gap(10.0)
         .center_y()
-        .border_sides([1.0, 0.0, 0.0, 0.0], t.border.color())
         .child(
             Avatar::new(id, name)
                 .size(32)

@@ -120,13 +120,13 @@ pub fn page(a: &App, k: &Kit, ss: &ServerSettings) -> El {
             if page.drop_over {
                 t.accent.color()
             } else {
-                t.border_subtle.color()
+                rune::Color::TRANSPARENT
             },
         )
         .fill(if page.drop_over {
             t.accent_subtle.color()
         } else {
-            rune::Color::TRANSPARENT
+            t.hover.color()
         })
         .child(head)
         .child(

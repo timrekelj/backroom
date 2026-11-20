@@ -18,6 +18,7 @@ pub mod checkbox;
 pub mod icon_button;
 pub mod kbd;
 pub mod preview;
+pub mod scroll_edges;
 pub mod tooltip;
 pub mod unread;
 pub mod util;
@@ -30,6 +31,7 @@ pub use icon_button::IconButton;
 pub use kbd::Kbd;
 pub use preview::ThemePreview;
 pub use rune_kit::{State, TextInput};
+pub use scroll_edges::{ScrollEdges, scroll_edges};
 pub use unread::{MentionPill, UnreadDot};
 
 /// A `rune_kit::Switch` in the look thehideout uses: compact, crisp, accent when on.
