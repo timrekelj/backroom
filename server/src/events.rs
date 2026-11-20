@@ -25,6 +25,8 @@ const USER_CHANNEL_CAPACITY: usize = 64;
 #[derive(Debug, Clone)]
 pub enum EventPayload {
     MessageCreated(Message),
+    /// The full, current message after a change (see `publish_message_updated`).
+    MessageUpdated(Message),
     ChannelCreated(Channel),
     GuildMemberJoined(GuildMemberJoined),
     GuildUpdated(Guild),

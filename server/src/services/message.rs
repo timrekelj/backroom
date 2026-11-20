@@ -11,6 +11,7 @@ use crate::access::{ChannelAccess, require_channel_access};
 use crate::auth::{authenticate, internal};
 use crate::convert::{datetime_to_proto, id_from_db, id_to_db, snowflake_datetime};
 use crate::events::EventPayload;
+use crate::media::{self, Owner, pending};
 use crate::proto::thehideout::v1::*;
 use crate::services::emoji::emoji_exists;
 use crate::snowflake::{bucket_of, current_bucket};
@@ -18,6 +19,8 @@ use crate::validation::validate_unicode_emoji;
 
 const MAX_CONTENT_CHARS: usize = 4000;
 const MAX_NONCE_CHARS: usize = 64;
+/// Attachments one message may carry.
+pub const MAX_ATTACHMENTS: usize = 10;
 const DEFAULT_PAGE_SIZE: usize = 50;
 const MAX_PAGE_SIZE: usize = 100;
 
@@ -69,7 +72,11 @@ impl MessageService for MessageSvc {
             ChannelAccess::Dm => 0,
         };
 
-        if req.content.trim().is_empty() {
+        let attachment_ids: Vec<u64> = req.attachment_ids.iter().copied().collect();
+        if attachment_ids.len() > MAX_ATTACHMENTS {
+            return Err(ConnectError::invalid_argument("a message can have at most 10 attachments"));
+        }
+        if req.content.trim().is_empty() && attachment_ids.is_empty() {
             return Err(ConnectError::invalid_argument("message content must not be empty"));
         }
         if req.content.chars().count() > MAX_CONTENT_CHARS {
@@ -84,7 +91,13 @@ impl MessageService for MessageSvc {
         }
 
         let id = self.state.snowflake.next_id();
-        self.state
+        let claimed = if attachment_ids.is_empty() {
+            None
+        } else {
+            Some(self.claim_attachments(user_id, &access, req.channel_id, id, &attachment_ids).await?)
+        };
+        let inserted = self
+            .state
             .session
             .execute_unpaged(
                 "INSERT INTO messages (channel_id, bucket, id, guild_id, author_id, content, nonce) \
@@ -99,10 +112,22 @@ impl MessageService for MessageSvc {
                     nonce,
                 ),
             )
-            .await
-            .map_err(internal)?;
+            .await;
+        if let Err(e) = inserted {
+            if let Some(claimed) = &claimed {
+                self.release_attachments(req.channel_id, id, claimed).await;
+            }
+            return Err(internal(e));
+        }
+        if let Some(claimed) = &claimed {
+            for p in &claimed.pendings {
+                if let Some(hour) = p.sweep_hour {
+                    pending::forget_sweep(&self.state, hour, p.id).await;
+                }
+            }
+        }
 
-        let message = row_to_message(
+        let mut message = row_to_message(
             req.channel_id,
             (
                 id_to_db(id),
@@ -113,6 +138,7 @@ impl MessageService for MessageSvc {
                 None,
             ),
         );
+        message.attachments = claimed.map(|c| c.attachments).unwrap_or_default();
         let event = EventPayload::MessageCreated(message.clone());
         match &access {
             ChannelAccess::Guild(guild_id) => self.state.events.publish_to_guild(*guild_id, event),
@@ -148,8 +174,10 @@ impl MessageService for MessageSvc {
             .map(|row| row_to_message(req.channel_id, row))
             .collect();
         let mut reactions = self.load_reactions(req.channel_id, user_id, &messages).await?;
+        let mut attachments = self.load_attachments(req.channel_id, &messages).await?;
         for message in &mut messages {
             message.reactions = reactions.remove(&message.id).unwrap_or_default();
+            message.attachments = attachments.remove(&message.id).unwrap_or_default();
         }
         let next_before = has_more.then(|| messages.last().map(|m| m.id)).flatten();
         Response::ok(ListMessagesResponse {
@@ -265,6 +293,61 @@ impl MessageService for MessageSvc {
     }
 }
 
+/// Attachment row as read back by `load_attachments`.
+type AttachmentRow = (
+    i64,
+    i32,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<i32>,
+    Option<i32>,
+    Option<String>,
+    Option<bool>,
+);
+
+/// Pending uploads turned into a message's attachments.
+struct Claimed {
+    pendings: Vec<pending::Pending>,
+    attachments: Vec<Attachment>,
+    /// Keys whose bytes were counted, to uncount on failure.
+    accounted: Vec<String>,
+}
+
+fn pending_to_attachment(p: &pending::Pending) -> Attachment {
+    Attachment {
+        id: p.id,
+        filename: p.filename.clone(),
+        content_type: p.content_type.clone(),
+        size: p.size,
+        file: p.key.clone(),
+        width: p.width,
+        height: p.height,
+        thumbnail: p.thumbnail.clone(),
+        removed: false,
+        ..Default::default()
+    }
+}
+
+/// Reloads a message (reactions and attachments included) and publishes it as
+/// `message_updated` to the audience of its channel. Used whenever a message
+/// changes after creation (attachment removed, embeds resolved).
+pub async fn publish_message_updated(state: &AppState, channel_id: u64, message_id: u64) -> Result<(), ConnectError> {
+    let Some(message) = MessageSvc::new(state.clone()).load_message(channel_id, message_id, 0).await? else {
+        return Err(ConnectError::not_found("message not found"));
+    };
+    let guild_id = message.guild_id;
+    let event = EventPayload::MessageUpdated(message);
+    if guild_id == 0 {
+        state.events.publish_to_dm(channel_id, event);
+    } else {
+        state.events.publish_to_guild(guild_id, event);
+    }
+    Ok(())
+}
+
 /// Whether an LWT was applied (`[applied]` is its first column).
 fn applied(result: scylla::response::query_result::QueryResult) -> Result<bool, ConnectError> {
     let row = result
@@ -289,6 +372,191 @@ fn key_to_emoji(key: &str) -> Option<ReactionEmoji> {
 }
 
 impl MessageSvc {
+    /// Validates the caller's pending uploads for a new message, consumes them,
+    /// counts their bytes and writes the message's attachment rows (in the
+    /// message's partition, before the message row itself exists, so nobody
+    /// ever lists a message without its files).
+    async fn claim_attachments(
+        &self,
+        user_id: u64,
+        access: &ChannelAccess,
+        channel_id: u64,
+        message_id: u64,
+        ids: &[u64],
+    ) -> Result<Claimed, ConnectError> {
+        let bad = |what: &str| ConnectError::invalid_argument(format!("attachment {what}"));
+        let mut unique = HashSet::new();
+        if ids.iter().any(|id| *id == 0 || !unique.insert(*id)) {
+            return Err(ConnectError::invalid_argument("attachment_ids must be non-zero and distinct"));
+        }
+        let mut loaded: HashMap<u64, pending::Pending> =
+            pending::load(&self.state, user_id, ids).await?.into_iter().map(|p| (p.id, p)).collect();
+        let now = chrono::Utc::now();
+        let mut pendings = Vec::with_capacity(ids.len());
+        for id in ids {
+            match loaded.remove(id) {
+                Some(p) if p.channel_id == channel_id && p.expires_at > now => pendings.push(p),
+                _ => return Err(bad(&format!("{id} is not a pending upload of yours for this channel (or it expired)"))),
+            }
+        }
+        if !pending::consume(&self.state, user_id, ids).await? {
+            return Err(bad("was already used or expired"));
+        }
+
+        // Storage accounting happens here, not at upload: pending uploads are
+        // never counted, so expiry sweeps need no counter changes. Guild
+        // channels count against the guild; DM files only against the global
+        // totals, with the uploader as owner on the object row.
+        let owner = match access {
+            ChannelAccess::Guild(guild_id) => Owner { kind: "guild", id: *guild_id, guild_id: Some(*guild_id), label: "attachment" },
+            ChannelAccess::Dm => Owner { kind: "user", id: user_id, guild_id: None, label: "attachment" },
+        };
+        let mut claimed = Claimed {
+            pendings,
+            attachments: Vec::new(),
+            accounted: Vec::new(),
+        };
+        let result = async {
+            for p in &claimed.pendings {
+                media::record(&self.state, &p.key, owner, p.size).await?;
+                claimed.accounted.push(p.key.clone());
+                if let Some(thumbnail) = &p.thumbnail {
+                    media::record(&self.state, thumbnail, owner, p.thumbnail_bytes).await?;
+                    claimed.accounted.push(thumbnail.clone());
+                }
+            }
+            let mut batch = scylla::statement::batch::Batch::new(scylla::statement::batch::BatchType::Logged);
+            let mut values = Vec::with_capacity(claimed.pendings.len());
+            for (position, p) in claimed.pendings.iter().enumerate() {
+                batch.append_statement(
+                    "INSERT INTO message_attachments (channel_id, bucket, message_id, position, id, filename, \
+                     content_type, size, file, width, height, thumbnail, sha256, removed) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false)",
+                );
+                values.push((
+                    id_to_db(channel_id),
+                    bucket_of(message_id),
+                    id_to_db(message_id),
+                    position as i32,
+                    id_to_db(p.id),
+                    p.filename.as_str(),
+                    p.content_type.as_str(),
+                    p.size as i64,
+                    p.key.as_str(),
+                    p.width.map(|v| v as i32),
+                    p.height.map(|v| v as i32),
+                    p.thumbnail.as_deref(),
+                    p.sha256.as_str(),
+                ));
+            }
+            self.state.session.batch(&batch, values).await.map_err(internal)?;
+            Ok::<_, ConnectError>(())
+        }
+        .await;
+        if let Err(e) = result {
+            self.release_attachments(channel_id, message_id, &claimed).await;
+            return Err(e);
+        }
+        claimed.attachments = claimed.pendings.iter().map(pending_to_attachment).collect();
+        Ok(claimed)
+    }
+
+    /// Undoes [`Self::claim_attachments`] after a failed send, best effort: the
+    /// attachment rows and byte counters go; the objects are left to the
+    /// sweeper (their sweep rows are still registered and no longer accounted).
+    async fn release_attachments(&self, channel_id: u64, message_id: u64, claimed: &Claimed) {
+        for key in &claimed.accounted {
+            media::delete_record(&self.state, key).await;
+        }
+        for position in 0..claimed.pendings.len() {
+            if let Err(e) = self
+                .state
+                .session
+                .execute_unpaged(
+                    "DELETE FROM message_attachments WHERE channel_id = ? AND bucket = ? AND message_id = ? AND position = ?",
+                    (id_to_db(channel_id), bucket_of(message_id), id_to_db(message_id), position as i32),
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "releasing attachment rows failed");
+            }
+        }
+    }
+
+    /// The attachments of every message of a page: one query per bucket the
+    /// page touches, like reactions.
+    async fn load_attachments(&self, channel_id: u64, messages: &[Message]) -> Result<HashMap<u64, Vec<Attachment>>, ConnectError> {
+        let mut per_bucket: BTreeMap<i32, Vec<i64>> = BTreeMap::new();
+        for m in messages {
+            per_bucket.entry(bucket_of(m.id)).or_default().push(id_to_db(m.id));
+        }
+        let fetched = try_join_all(per_bucket.into_iter().map(|(bucket, ids)| async move {
+            self.state
+                .session
+                .execute_unpaged(
+                    "SELECT message_id, position, id, filename, content_type, size, file, width, height, thumbnail, removed \
+                     FROM message_attachments WHERE channel_id = ? AND bucket = ? AND message_id IN ?",
+                    (id_to_db(channel_id), bucket, ids),
+                )
+                .await
+                .map_err(internal)?
+                .into_rows_result()
+                .map_err(internal)?
+                .rows::<AttachmentRow>()
+                .map_err(internal)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(internal)
+        }))
+        .await?;
+        let mut rows: Vec<AttachmentRow> = fetched.into_iter().flatten().collect();
+        rows.sort_by_key(|r| (r.0, r.1));
+        let mut out: HashMap<u64, Vec<Attachment>> = HashMap::new();
+        for (message_id, _, id, filename, content_type, size, file, width, height, thumbnail, removed) in rows {
+            out.entry(id_from_db(message_id)).or_default().push(Attachment {
+                id: id_from_db(id),
+                filename: filename.unwrap_or_default(),
+                content_type: content_type.unwrap_or_default(),
+                size: size.unwrap_or(0).max(0) as u64,
+                file: file.unwrap_or_default(),
+                width: width.map(|v| v as u32),
+                height: height.map(|v| v as u32),
+                thumbnail: thumbnail.filter(|t| !t.is_empty()),
+                removed: removed.unwrap_or(false),
+                ..Default::default()
+            });
+        }
+        Ok(out)
+    }
+
+    /// One message with its reactions and attachments, as seen by `viewer`
+    /// (`0` = nobody: `me` is false everywhere).
+    async fn load_message(&self, channel_id: u64, message_id: u64, viewer: u64) -> Result<Option<Message>, ConnectError> {
+        let Some(row) = self
+            .state
+            .session
+            .execute_unpaged(
+                "SELECT id, guild_id, author_id, content, nonce, edited_at FROM messages \
+                 WHERE channel_id = ? AND bucket = ? AND id = ?",
+                (id_to_db(channel_id), bucket_of(message_id), id_to_db(message_id)),
+            )
+            .await
+            .map_err(internal)?
+            .into_rows_result()
+            .map_err(internal)?
+            .maybe_first_row::<MessageRow>()
+            .map_err(internal)?
+        else {
+            return Ok(None);
+        };
+        let mut messages = vec![row_to_message(channel_id, row)];
+        let mut reactions = self.load_reactions(channel_id, viewer, &messages).await?;
+        let mut attachments = self.load_attachments(channel_id, &messages).await?;
+        let mut message = messages.remove(0);
+        message.reactions = reactions.remove(&message.id).unwrap_or_default();
+        message.attachments = attachments.remove(&message.id).unwrap_or_default();
+        Ok(Some(message))
+    }
+
     fn throttle_reaction(&self, user_id: u64) -> Result<(), ConnectError> {
         self.state
             .limiter

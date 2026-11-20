@@ -12,6 +12,8 @@ pub struct Config {
     pub worker_id: u16,
     pub heartbeat_interval: Duration,
     pub s3: S3Config,
+    /// Largest attachment upload in bytes (`THEHIDEOUT_MAX_UPLOAD_BYTES`).
+    pub max_upload_bytes: u64,
 }
 
 /// Connection settings of the S3-compatible object store holding media.
@@ -65,6 +67,12 @@ impl Config {
         if heartbeat_secs == 0 {
             bail!("THEHIDEOUT_HEARTBEAT_SECS must be at least 1");
         }
+        let max_upload_bytes: u64 = var("THEHIDEOUT_MAX_UPLOAD_BYTES", "52428800")
+            .parse()
+            .context("invalid THEHIDEOUT_MAX_UPLOAD_BYTES")?;
+        if max_upload_bytes == 0 {
+            bail!("THEHIDEOUT_MAX_UPLOAD_BYTES must be at least 1");
+        }
         Ok(Self {
             listen_addr,
             scylla_nodes,
@@ -72,6 +80,7 @@ impl Config {
             worker_id,
             heartbeat_interval: Duration::from_secs(heartbeat_secs),
             s3: S3Config::from_env()?,
+            max_upload_bytes,
         })
     }
 }

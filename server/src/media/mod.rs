@@ -3,14 +3,20 @@
 //! square-WebP rules; emojis fit within 128x128 and may stay animated (GIF).
 
 mod accounting;
+pub mod attachments;
 mod http;
+pub mod pending;
 mod pipeline;
+pub mod sniff;
 
 use sha2::{Digest, Sha256};
 
 pub use accounting::{Owner, delete_record, record, totals};
 pub use http::media_route;
-pub use pipeline::{MAX_INPUT_BYTES, MediaError, Processed, process};
+pub use pipeline::{
+    ATTACHMENT_IMAGE_MAX_BYTES, ImageInfo, MAX_INPUT_BYTES, MediaError, Processed, acquire_decode_slot,
+    inspect_attachment_image, process,
+};
 pub use accounting::{KindTotals, totals_by_kind};
 
 /// What an image is used for; decides its processing rules and key prefix.
@@ -89,6 +95,7 @@ pub fn label_of_key(key: &str) -> Option<&'static str> {
         "avatars" => Some("avatar"),
         "guild-icons" => Some("guild_icon"),
         "emojis" => Some("emoji"),
+        "attachments" => Some("attachment"),
         _ => None,
     }
 }
@@ -100,6 +107,10 @@ pub fn content_type_of_key(key: &str) -> &'static str {
 
 /// Key prefixes the `/media` route serves.
 const KEY_PREFIXES: &[&str] = &["avatars", "guild-icons", "emojis"];
+/// Prefix of message attachment keys (`attachments/{channel_id}/{32 hex}` and
+/// `…/{32 hex}-thumb.webp`); the hex part is random, not a content hash.
+pub const ATTACHMENT_PREFIX: &str = "attachments";
+const THUMB_SUFFIX: &str = "-thumb.webp";
 const KEY_EXTENSIONS: &[&str] = &["webp", "gif"];
 const HASH_HEX_LEN: usize = 32;
 
@@ -112,20 +123,54 @@ pub fn make_key(kind: MediaKind, owner_id: u64, content: &[u8], ext: &str) -> St
     format!("{}/{owner_id}/{hash}.{ext}", kind.prefix())
 }
 
-/// The content hash of a well-formed key, or `None` if `key` is not exactly
-/// the shape [`make_key`] produces (this is what the public route accepts:
-/// no traversal, no odd characters).
+/// Random 128-bit hex id of a new attachment object.
+pub fn random_attachment_id() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `attachments/{channel_id}/{id}`.
+pub fn attachment_key(channel_id: u64, id: &str) -> String {
+    format!("{ATTACHMENT_PREFIX}/{channel_id}/{id}")
+}
+
+/// `attachments/{channel_id}/{id}-thumb.webp`.
+pub fn attachment_thumbnail_key(channel_id: u64, id: &str) -> String {
+    format!("{ATTACHMENT_PREFIX}/{channel_id}/{id}{THUMB_SUFFIX}")
+}
+
+/// Whether `key` names an attachment object (file or thumbnail).
+pub fn is_attachment_key(key: &str) -> bool {
+    key.starts_with("attachments/")
+}
+
+fn is_hex_id(s: &str) -> bool {
+    s.len() == HASH_HEX_LEN && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The content hash (or, for attachments, random id) of a well-formed key, or
+/// `None` if `key` is not exactly a shape this server produces (this is what
+/// the public route accepts: no traversal, no odd characters).
 pub fn parse_key(key: &str) -> Option<&str> {
     let mut parts = key.split('/');
     let (prefix, owner, file) = (parts.next()?, parts.next()?, parts.next()?);
-    if parts.next().is_some() || !KEY_PREFIXES.contains(&prefix) {
+    if parts.next().is_some() {
         return None;
     }
     if owner.is_empty() || owner.len() > 20 || !owner.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
+    if prefix == ATTACHMENT_PREFIX {
+        let id = file.strip_suffix(THUMB_SUFFIX).unwrap_or(file);
+        return is_hex_id(id).then_some(id);
+    }
+    if !KEY_PREFIXES.contains(&prefix) {
+        return None;
+    }
     let (hash, ext) = file.split_once('.')?;
-    let hash_ok = hash.len() == HASH_HEX_LEN && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    let hash_ok = is_hex_id(hash);
     // Only emojis may be animated, so only they use `.gif`.
     let ext_ok = KEY_EXTENSIONS.contains(&ext) && (ext == "webp" || prefix == "emojis");
     (hash_ok && ext_ok).then_some(hash)
@@ -150,6 +195,32 @@ mod tests {
         assert_eq!(content_type_of_key(&emoji), "image/gif");
         // Only emojis may be GIFs.
         assert!(parse_key(&make_key(MediaKind::Avatar, 7, b"x", "gif")).is_none());
+    }
+
+    #[test]
+    fn attachment_keys_roundtrip_and_odd_ones_are_rejected() {
+        let id = random_attachment_id();
+        assert_eq!(id.len(), 32);
+        assert_eq!(parse_key(&attachment_key(42, &id)), Some(id.as_str()));
+        assert_eq!(parse_key(&attachment_thumbnail_key(42, &id)), Some(id.as_str()));
+        assert!(is_attachment_key(&attachment_key(42, &id)));
+        assert_eq!(label_of_key(&attachment_key(42, &id)), Some("attachment"));
+        let zeros = "0".repeat(32);
+        for bad in [
+            format!("attachments/42/{zeros}.webp"),
+            format!("attachments/42/{zeros}.png"),
+            format!("attachments/42/{zeros}-thumb.gif"),
+            format!("attachments/42/{zeros}x"),
+            format!("attachments/x/{zeros}"),
+            format!("attachments//{zeros}"),
+            format!("attachments/42/{zeros}/y"),
+            format!("attachments/42/../{zeros}"),
+            "attachments/42/ZZ".to_owned(),
+            format!("attachments/42/{}", "0".repeat(31)),
+            format!("attachments/42/{}", "A".repeat(32)),
+        ] {
+            assert!(parse_key(&bad).is_none(), "{bad}");
+        }
     }
 
     #[test]

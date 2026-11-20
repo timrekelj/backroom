@@ -215,6 +215,13 @@ fn heartbeat_payload() -> Payload {
 fn to_payload(event: &EventPayload) -> Payload {
     match event.clone() {
         EventPayload::MessageCreated(m) => Payload::MessageCreated(m.into()),
+        EventPayload::MessageUpdated(m) => Payload::MessageUpdated(
+            MessageUpdated {
+                message: m.clone().into(),
+                ..Default::default()
+            }
+            .into(),
+        ),
         EventPayload::ChannelCreated(c) => Payload::ChannelCreated(c.into()),
         EventPayload::GuildMemberJoined(j) => Payload::GuildMemberJoined(j.into()),
         EventPayload::GuildUpdated(g) => Payload::GuildUpdated(g.into()),

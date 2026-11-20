@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use thehideout_server::config::S3Config;
+use thehideout_server::media::attachments::AttachmentSettings;
 use thehideout_server::snowflake::Snowflake;
 use thehideout_server::storage::Storage;
 use thehideout_server::{AppState, build_app, migrations};
@@ -27,12 +28,17 @@ impl TestApp {
 
     /// Like `start`, with a custom gateway heartbeat interval.
     pub async fn start_with_heartbeat(heartbeat_interval: Duration) -> Self {
-        Self::start_inner(heartbeat_interval, None).await
+        Self::start_inner(heartbeat_interval, None, AttachmentSettings::default()).await
     }
 
     /// Like `start`, with media storage on the real S3-compatible service from
     /// `docker-compose.yml` (127.0.0.1:8333, or the `THEHIDEOUT_S3_*` env vars).
     pub async fn start_with_storage() -> Self {
+        Self::start_with_attachments(AttachmentSettings::default()).await
+    }
+
+    /// Like `start_with_storage`, with custom attachment limits and timings.
+    pub async fn start_with_attachments(settings: AttachmentSettings) -> Self {
         let config = S3Config::from_env().expect("S3 config");
         let storage = Storage::s3(&config).expect("configure S3 storage");
         storage.check().await.unwrap_or_else(|e| {
@@ -41,10 +47,10 @@ impl TestApp {
                 config.endpoint
             )
         });
-        Self::start_inner(Duration::from_secs(30), Some(storage)).await
+        Self::start_inner(Duration::from_secs(30), Some(storage), settings).await
     }
 
-    async fn start_inner(heartbeat_interval: Duration, storage: Option<Storage>) -> Self {
+    async fn start_inner(heartbeat_interval: Duration, storage: Option<Storage>, settings: AttachmentSettings) -> Self {
         let session = SessionBuilder::new()
             .known_node("127.0.0.1:9042")
             .build()
@@ -58,6 +64,7 @@ impl TestApp {
         let session = Arc::new(CachingSession::from(session, 64));
         let mut state = AppState::new(session, Arc::new(Snowflake::new(0)), keyspace, heartbeat_interval);
         state.storage = storage;
+        state.attachments = settings;
         let app = build_app(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -91,19 +98,21 @@ impl TestApp {
         new(HttpClient::plaintext(), self.client_config(token))
     }
 
-    /// Deletes the media objects the test stored, then drops the test keyspace.
+    /// Deletes the media objects the test stored (accounted ones and
+    /// still-registered pending uploads), then drops the test keyspace.
     pub async fn cleanup(self) {
-        if let Some(storage) = &self.state.storage
-            && let Ok(result) = self
-                .state
-                .session
-                .execute_unpaged("SELECT key FROM media_objects", ())
-                .await
-            && let Ok(rows) = result.into_rows_result()
-            && let Ok(rows) = rows.rows::<(String,)>()
-        {
-            for (key,) in rows.flatten() {
-                let _ = storage.delete(&key).await;
+        if let Some(storage) = &self.state.storage {
+            for query in ["SELECT key FROM media_objects", "SELECT key FROM pending_sweep", "SELECT thumbnail FROM pending_sweep"] {
+                if let Ok(result) = self.state.session.execute_unpaged(query, ()).await
+                    && let Ok(rows) = result.into_rows_result()
+                    && let Ok(rows) = rows.rows::<(Option<String>,)>()
+                {
+                    for (key,) in rows.flatten() {
+                        if let Some(key) = key {
+                            let _ = storage.delete(&key).await;
+                        }
+                    }
+                }
             }
         }
         let _ = self

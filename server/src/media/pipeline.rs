@@ -80,6 +80,49 @@ fn permits() -> &'static Semaphore {
     S.get_or_init(|| Semaphore::new(MAX_CONCURRENT))
 }
 
+/// Largest stored image decoded for attachment dimensions and thumbnail.
+pub const ATTACHMENT_IMAGE_MAX_BYTES: u64 = 25 * 1024 * 1024;
+/// Longest edge of an attachment thumbnail.
+const ATTACHMENT_THUMBNAIL_EDGE: u32 = 400;
+
+/// Dimensions of an attachment image and, when it is within the decode
+/// limits, its WebP thumbnail.
+pub struct ImageInfo {
+    pub width: u32,
+    pub height: u32,
+    pub thumbnail: Option<Bytes>,
+}
+
+/// Waits for one of the shared decode slots.
+pub async fn acquire_decode_slot() -> Option<tokio::sync::SemaphorePermit<'static>> {
+    permits().acquire().await.ok()
+}
+
+/// Reads the dimensions of a png/jpeg/webp/gif and renders its thumbnail
+/// (fit within 400x400, first frame, never upscaled). `None` if the data is
+/// not a decodable image of those formats. Run on a blocking thread, holding a
+/// slot from [`acquire_decode_slot`].
+pub fn inspect_attachment_image(data: &[u8]) -> Option<ImageInfo> {
+    let format = image::guess_format(data).ok()?;
+    if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif) {
+        return None;
+    }
+    match decode(data, format) {
+        Ok(image) => {
+            let rgba = image.into_rgba8();
+            let (width, height) = rgba.dimensions();
+            let thumbnail = encode_webp(&fit(rgba, ATTACHMENT_THUMBNAIL_EDGE)).ok().map(|p| p.bytes);
+            Some(ImageInfo { width, height, thumbnail })
+        }
+        // Too large to decode: the header still tells the size.
+        Err(MediaError::DimensionsTooLarge) => {
+            let (width, height) = image::ImageReader::with_format(Cursor::new(data), format).into_dimensions().ok()?;
+            Some(ImageInfo { width, height, thumbnail: None })
+        }
+        Err(_) => None,
+    }
+}
+
 /// Validates and processes `data` for `kind` on a blocking thread.
 pub async fn process(kind: MediaKind, data: Vec<u8>, content_type: String) -> Result<Processed, MediaError> {
     // Cheap checks first, before queueing for a decode slot.
@@ -302,6 +345,21 @@ mod tests {
     fn webp_out(p: &Processed) -> (u32, u32) {
         let img = image::load_from_memory_with_format(&p.bytes, ImageFormat::WebP).unwrap();
         (img.width(), img.height())
+    }
+
+    #[test]
+    fn attachment_images_get_dimensions_and_a_fitted_thumbnail() {
+        let info = inspect_attachment_image(&png(800, 200)).unwrap();
+        assert_eq!((info.width, info.height), (800, 200));
+        let thumb = image::load_from_memory_with_format(&info.thumbnail.unwrap(), ImageFormat::WebP).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (400, 100));
+        let small = inspect_attachment_image(&png(30, 20)).unwrap();
+        let thumb = image::load_from_memory_with_format(&small.thumbnail.unwrap(), ImageFormat::WebP).unwrap();
+        assert_eq!((thumb.width(), thumb.height()), (30, 20));
+        assert!(inspect_attachment_image(b"not an image").is_none());
+        let huge = inspect_attachment_image(&png(MAX_DIMENSION + 1, 1)).unwrap();
+        assert_eq!((huge.width, huge.height), (MAX_DIMENSION + 1, 1));
+        assert!(huge.thumbnail.is_none());
     }
 
     #[tokio::test]

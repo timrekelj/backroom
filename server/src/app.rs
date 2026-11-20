@@ -9,6 +9,7 @@ use scylla::client::caching_session::CachingSession;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::events::EventBus;
+use crate::media::attachments::AttachmentSettings;
 use crate::media::{self, MAX_INPUT_BYTES};
 use crate::ratelimit::RateLimiter;
 use crate::services::{AdminSvc, AuthSvc, DmSvc, EmojiSvc, GatewaySvc, GuildSvc, MediaSvc, MessageSvc, RoleSvc};
@@ -28,6 +29,8 @@ pub struct AppState {
     /// Object storage for media; `None` makes the media RPCs and `/media`
     /// answer UNAVAILABLE while everything else works.
     pub storage: Option<Storage>,
+    /// Limits and timings of message attachments.
+    pub attachments: AttachmentSettings,
 }
 
 impl AppState {
@@ -45,7 +48,14 @@ impl AppState {
             limiter: Arc::new(RateLimiter::new()),
             heartbeat_interval,
             storage: None,
+            attachments: AttachmentSettings::default(),
         }
+    }
+
+    /// Overrides the attachment limits (`THEHIDEOUT_MAX_UPLOAD_BYTES`, tests).
+    pub fn with_attachment_settings(mut self, attachments: AttachmentSettings) -> Self {
+        self.attachments = attachments;
+        self
     }
 
     /// Enables media storage.
@@ -60,7 +70,8 @@ impl AppState {
 /// fields.
 const MEDIA_REQUEST_LIMIT: usize = MAX_INPUT_BYTES / 3 * 4 + 64 * 1024;
 
-/// Builds the HTTP app: all Connect services, `GET /health`, and permissive CORS.
+/// Builds the HTTP app: all Connect services, `GET /health`, `GET /media/*`,
+/// `POST /attachments`, and permissive CORS.
 pub fn build_app(state: AppState) -> Router {
     let connect = ConnectRouter::new()
         .add_service(Arc::new(AuthSvc::new(state.clone())))
@@ -86,7 +97,8 @@ pub fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route_service("/thehideout.v1.MediaService/{method}", media_connect)
-        .merge(media::media_route().with_state(state))
+        .merge(media::media_route().with_state(state.clone()))
+        .merge(media::attachments::attachments_route().with_state(state))
         .fallback_service(connect.into_axum_service())
         .layer(cors())
 }

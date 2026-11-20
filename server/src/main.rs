@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use thehideout_server::config::Config;
+use thehideout_server::media::{self, attachments::AttachmentSettings};
 use thehideout_server::snowflake::Snowflake;
 use thehideout_server::storage::Storage;
 use thehideout_server::{AppState, build_app, migrations};
@@ -49,7 +50,12 @@ async fn main() -> Result<()> {
         config.keyspace.clone(),
         config.heartbeat_interval,
     )
-    .with_storage(storage);
+    .with_storage(storage)
+    .with_attachment_settings(AttachmentSettings {
+        max_upload_bytes: config.max_upload_bytes,
+        ..Default::default()
+    });
+    media::pending::spawn_sweeper(state.clone());
     let app = build_app(state);
 
     let listener = tokio::net::TcpListener::bind(config.listen_addr)

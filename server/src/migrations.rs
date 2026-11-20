@@ -35,6 +35,11 @@ pub const MIGRATIONS: &[(i32, &str, &str)] = &[
         "emojis_reactions",
         include_str!("../migrations/0006_emojis_reactions.cql"),
     ),
+    (
+        7,
+        "attachments",
+        include_str!("../migrations/0007_attachments.cql"),
+    ),
 ];
 
 /// Creates the keyspace if needed, selects it on the session, and applies any
