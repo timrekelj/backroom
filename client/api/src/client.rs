@@ -1,8 +1,9 @@
 //! The RPC client.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use connectrpc::client::{ClientConfig, HttpClient};
+use connectrpc::rustls;
 
 use crate::account::LoginOutcome;
 use crate::error::ApiError;
@@ -29,11 +30,19 @@ pub struct Client {
 impl Client {
     /// Creates a client for `base_url` (e.g. `http://127.0.0.1:8080`), without a token.
     ///
-    /// Only plaintext `http://` is supported for now.
+    /// `https://` URLs use TLS (Mozilla root store, system certificates are not
+    /// consulted); `http://` is plaintext and only for local development, since
+    /// the session token would otherwise travel unencrypted.
     pub fn new(base_url: impl Into<String>) -> Self {
+        let base_url = base_url.into();
+        let http = if base_url.starts_with("https://") {
+            HttpClient::with_tls(tls_config())
+        } else {
+            HttpClient::plaintext()
+        };
         Self {
-            http: HttpClient::plaintext(),
-            base_url: base_url.into(),
+            http,
+            base_url,
             token: Arc::default(),
             max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
         }
@@ -557,6 +566,27 @@ pub(crate) fn required<T, U: From<T>>(value: Option<T>) -> Result<U> {
         .ok_or_else(|| ApiError::Other("server returned an incomplete response".into()))
 }
 
+/// The shared TLS config for `https://` servers: the Mozilla root store and
+/// the ring crypto provider (no client certificate).
+fn tls_config() -> Arc<rustls::ClientConfig> {
+    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let mut roots = rustls::RootCertStore::empty();
+            for cert in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+                roots.add(cert.clone()).expect("bundled root certificate is valid");
+            }
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let config = rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .expect("safe default protocol versions")
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            Arc::new(config)
+        })
+        .clone()
+}
+
 /// An open `Subscribe` stream yielding domain events.
 pub(crate) struct EventStream {
     inner: connectrpc::client::ServerStream<hyper::body::Incoming, pb::SubscribeResponseView<'static>>,
@@ -575,5 +605,21 @@ impl EventStream {
                 return Ok(Some(event));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn https_urls_get_a_tls_client_and_http_a_plaintext_one() {
+        // Construction is lazy (no connection), so both build without a server.
+        let https = Client::new("https://thehideout.zabit.si");
+        assert_eq!(https.base_url(), "https://thehideout.zabit.si");
+        let http = Client::new("http://127.0.0.1:8080");
+        assert_eq!(http.base_url(), "http://127.0.0.1:8080");
+        // The TLS config builds once and reuses the same instance.
+        assert!(Arc::ptr_eq(&tls_config(), &tls_config()));
     }
 }

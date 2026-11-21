@@ -3,11 +3,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::http::{HeaderName, Method};
+use axum::http::{HeaderName, HeaderValue, Method};
 use axum::routing::get;
 use connectrpc::Router as ConnectRouter;
 use scylla::client::caching_session::CachingSession;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use url::Url;
 
 fn default_public_url() -> Url {
@@ -140,7 +141,8 @@ const MEDIA_REQUEST_LIMIT: usize = MAX_INPUT_BYTES / 3 * 4 + 64 * 1024;
 
 /// Builds the HTTP app: all Connect services, `GET /health`, `GET /media/*`,
 /// `POST /attachments`, the passkey ceremony page (`/auth/passkey*`), the
-/// invite landing page (`GET /invite/{token}`), and permissive CORS.
+/// invite landing page (`GET /invite/{token}`), CORS limited to the configured
+/// public origin, and baseline security headers on every response.
 pub fn build_app(state: AppState) -> Router {
     let connect = ConnectRouter::new()
         .add_service(Arc::new(AuthSvc::new(state.clone())))
@@ -164,6 +166,8 @@ pub fn build_app(state: AppState) -> Router {
         .into_axum_service()
         .with_limits(media_limits);
 
+    let cors = cors(&state.public_url);
+    let hsts = (state.public_url.scheme() == "https").then(|| HeaderValue::from_static("max-age=31536000"));
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route_service("/thehideout.v1.MediaService/{method}", media_connect)
@@ -172,10 +176,35 @@ pub fn build_app(state: AppState) -> Router {
         .merge(crate::passkeys::routes().with_state(state.clone()))
         .merge(crate::services::invite::routes().with_state(state))
         .fallback_service(connect.into_axum_service())
-        .layer(cors())
+        // Baseline security headers on every response: no MIME sniffing, no
+        // framing, no referrer leakage (invite tokens travel in URLs), and
+        // HSTS when the public URL is https (ignored over plain http).
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("strict-transport-security"),
+            hsts,
+        ))
+        .layer(cors)
 }
 
-fn cors() -> CorsLayer {
+/// CORS for the configured public origin only (`THEHIDEOUT_PUBLIC_URL`). The
+/// desktop client is not a browser and sends no `Origin`, so it is unaffected;
+/// the passkey and invite pages are served from that same origin. Reflecting
+/// any origin would let any website read API responses from a browser that
+/// somehow holds the bearer token, so only the one origin is allowed.
+fn cors(public_url: &Url) -> CorsLayer {
+    let origin = cors_origin(public_url);
     let headers = [
         "content-type",
         "authorization",
@@ -197,9 +226,30 @@ fn cors() -> CorsLayer {
     ]
     .map(HeaderName::from_static);
     CorsLayer::new()
-        .allow_origin(AllowOrigin::mirror_request())
+        .allow_origin(AllowOrigin::list(vec![origin]))
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers(headers)
         .expose_headers(exposed)
         .max_age(Duration::from_secs(600))
+}
+
+/// The one origin CORS allows: the configured public URL's.
+fn cors_origin(public_url: &Url) -> HeaderValue {
+    HeaderValue::from_str(&public_url.origin().ascii_serialization()).expect("valid origin header")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cors_allows_only_the_public_origin() {
+        let public = Url::parse("https://thehideout.zabit.si").unwrap();
+        assert_eq!(cors_origin(&public).to_str().unwrap(), "https://thehideout.zabit.si");
+        let with_port = Url::parse("http://localhost:8080").unwrap();
+        assert_eq!(cors_origin(&with_port).to_str().unwrap(), "http://localhost:8080");
+        // A path or query in the public URL does not change the origin.
+        let with_path = Url::parse("https://hideout.example/app?x=1").unwrap();
+        assert_eq!(cors_origin(&with_path).to_str().unwrap(), "https://hideout.example");
+    }
 }
