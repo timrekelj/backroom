@@ -72,6 +72,16 @@ Email goes through Resend when `THEHIDEOUT_RESEND_API_KEY` is set, otherwise
 over plain SMTP to `THEHIDEOUT_SMTP_URL` (Mailpit in development). Links in
 emails use `THEHIDEOUT_PUBLIC_URL`.
 
+Two guards keep a development setup from sending real mail:
+
+- While the host of `THEHIDEOUT_PUBLIC_URL` is `localhost`, `*.localhost`,
+  `*.test`, `*.example` or an IP address, the Resend key is ignored and mail
+  goes over SMTP (Mailpit); the server logs a warning at startup. Set
+  `THEHIDEOUT_EMAIL_FORCE_RESEND=true` to use Resend anyway.
+- Mail to reserved test domains (`example.com`, `example.net`, `example.org`,
+  `*.test`, `*.example`, `*.invalid`, `localhost`) is never sent through
+  Resend: it is logged and dropped, and the flow carries on as if it was sent.
+
 ## Media storage (S3)
 
 Avatars and guild icons are processed (centre-cropped, 256×256, lossless WebP) and

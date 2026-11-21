@@ -31,6 +31,9 @@ pub struct Config {
     pub email_from: String,
     /// Resend API key (`THEHIDEOUT_RESEND_API_KEY`); `None` = SMTP.
     pub resend_api_key: Option<Redacted>,
+    /// Use Resend even when `public_url` is a development host
+    /// (`THEHIDEOUT_EMAIL_FORCE_RESEND`, default false).
+    pub email_force_resend: bool,
     /// SMTP sink used without a Resend key (`THEHIDEOUT_SMTP_URL`, Mailpit in dev).
     pub smtp_url: String,
     /// Email that gets the first admin invite on an empty install
@@ -123,11 +126,17 @@ impl Config {
             bail!("THEHIDEOUT_EMBED_MAX_VIDEO_BYTES must be at least 1");
         }
         let public_url = public_url(&listen_addr)?;
+        let email_force_resend = match var("THEHIDEOUT_EMAIL_FORCE_RESEND", "false").trim().to_lowercase().as_str() {
+            "true" | "1" | "yes" => true,
+            "" | "false" | "0" | "no" => false,
+            other => bail!("invalid THEHIDEOUT_EMAIL_FORCE_RESEND {other:?}, expected true or false"),
+        };
         let non_empty = |name: &str| env::var(name).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
         Ok(Self {
             public_url,
             email_from: non_empty("THEHIDEOUT_EMAIL_FROM").unwrap_or_else(|| crate::email::DEFAULT_FROM.to_owned()),
             resend_api_key: non_empty("THEHIDEOUT_RESEND_API_KEY").map(Redacted),
+            email_force_resend,
             smtp_url: non_empty("THEHIDEOUT_SMTP_URL").unwrap_or_else(|| "smtp://127.0.0.1:1025".to_owned()),
             bootstrap_admin_email: non_empty("THEHIDEOUT_BOOTSTRAP_ADMIN_EMAIL").map(|e| crate::accounts::normalize_email(&e)),
             listen_addr,

@@ -51,6 +51,12 @@ impl ResendSender {
 #[async_trait]
 impl EmailSender for ResendSender {
     async fn send(&self, from: &str, email: &Email) -> Result<()> {
+        if is_reserved_recipient(&email.to) {
+            // Test and documentation addresses never reach a real provider;
+            // succeed so the calling flow carries on as if it was sent.
+            tracing::warn!(to = %email.to, subject = %email.subject, "not sending to a reserved test/example domain via Resend; dropped");
+            return Ok(());
+        }
         let body = serde_json::json!({
             "from": from,
             "to": [email.to],
@@ -75,6 +81,43 @@ impl EmailSender for ResendSender {
         }
         Ok(())
     }
+}
+
+/// Whether `host` is a development host: `localhost`, `*.localhost`,
+/// `*.test`, `*.example` or an IP literal.
+pub fn is_dev_host(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Ipv4(_) | url::Host::Ipv6(_) => true,
+        url::Host::Domain(domain) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            ["localhost", "test", "example"]
+                .iter()
+                .any(|tld| domain == *tld || domain.ends_with(&format!(".{tld}")))
+        }
+    }
+}
+
+/// Whether Resend may be used for a server reachable at `public_url`: never
+/// for a development host unless `force` (`THEHIDEOUT_EMAIL_FORCE_RESEND`),
+/// so a developer `.env` with a real key cannot send real mail from a local
+/// or test server.
+pub fn resend_allowed(public_url: &url::Url, force: bool) -> bool {
+    force || !public_url.host().is_some_and(|host| is_dev_host(&host))
+}
+
+/// Whether `to` is at a domain reserved for tests and documentation
+/// (`example.com`, `example.net`, `example.org` and their subdomains,
+/// `*.test`, `*.example`, `*.invalid`, `localhost`, `*.localhost`).
+/// Such mail is never handed to Resend.
+pub fn is_reserved_recipient(to: &str) -> bool {
+    let Some((_, domain)) = to.trim().rsplit_once('@') else {
+        return false;
+    };
+    let domain = domain.trim_end_matches(['.', '>']).to_ascii_lowercase();
+    let within = |zone: &str| domain == zone || domain.ends_with(&format!(".{zone}"));
+    ["example.com", "example.net", "example.org", "test", "example", "invalid", "localhost"]
+        .iter()
+        .any(|zone| within(zone))
 }
 
 /// Plain SMTP without auth or TLS, for the local Mailpit sink (`THEHIDEOUT_SMTP_URL`).
@@ -215,6 +258,68 @@ mod tests {
         };
         mailer.send_now(&email).await.unwrap();
         assert_eq!(mailer.outbox.as_ref().unwrap().to("a@x.org"), vec![email]);
+    }
+
+    fn url(s: &str) -> url::Url {
+        url::Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn resend_is_not_used_for_dev_public_urls() {
+        for dev in [
+            "http://localhost:8080",
+            "http://LOCALHOST",
+            "http://app.localhost",
+            "http://127.0.0.1:8080",
+            "http://192.168.1.5",
+            "http://[::1]:8080",
+            "https://hideout.test",
+            "https://hideout.example",
+        ] {
+            assert!(!resend_allowed(&url(dev), false), "{dev}");
+            assert!(resend_allowed(&url(dev), true), "{dev} forced");
+        }
+        for prod in ["https://thehideout.zabit.si", "https://localhost.zabit.si", "https://test.com", "https://example.com"] {
+            assert!(resend_allowed(&url(prod), false), "{prod}");
+        }
+    }
+
+    #[test]
+    fn reserved_recipients_are_detected() {
+        for to in [
+            "a@example.com",
+            "a@EXAMPLE.ORG",
+            "a@example.net",
+            "a@mail.example.com",
+            "a@example.test",
+            "a@x.test",
+            "a@x.example",
+            "a@x.invalid",
+            "a@localhost",
+            "a@app.localhost",
+        ] {
+            assert!(is_reserved_recipient(to), "{to}");
+        }
+        for to in ["a@gmail.com", "a@thecalda.com", "a@example.co", "a@notexample.com", "a@test.com", "no-at-sign"] {
+            assert!(!is_reserved_recipient(to), "{to}");
+        }
+    }
+
+    #[tokio::test]
+    async fn resend_drops_reserved_recipients_without_a_request() {
+        // An unroutable endpoint: reaching it would fail the send.
+        let mut sender = ResendSender::new("re_test".into());
+        sender.endpoint = "http://127.0.0.1:9/emails".into();
+        let mut email = Email {
+            to: "a@example.com".into(),
+            subject: "s".into(),
+            text: "t".into(),
+            html: "h".into(),
+            idempotency_key: "k".into(),
+        };
+        sender.send(DEFAULT_FROM, &email).await.expect("dropped as success");
+        email.to = "a@real-domain.org".into();
+        assert!(sender.send(DEFAULT_FROM, &email).await.is_err());
     }
 
     #[test]

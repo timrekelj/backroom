@@ -42,8 +42,9 @@ pub enum EventPayload {
 /// Control notification delivered to a user's open streams.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UserControl {
-    /// The user joined this guild; streams should start listening to it.
-    JoinedGuild(u64),
+    /// The user joined this guild; streams should start listening to it and
+    /// emit a `guild_added` event for it.
+    JoinedGuild(Guild),
     /// A DM channel was opened with the user; streams should start listening to
     /// it and emit a `dm_opened` event for it.
     OpenedDm(DmChannel),
@@ -110,9 +111,9 @@ impl EventBus {
             .subscribe()
     }
 
-    /// Tells the user's open streams to start listening to `guild_id`.
-    pub fn notify_user_joined_guild(&self, user_id: u64, guild_id: u64) {
-        self.notify_user(user_id, UserControl::JoinedGuild(guild_id));
+    /// Tells the user's open streams they joined `guild`.
+    pub fn notify_user_joined_guild(&self, user_id: u64, guild: Guild) {
+        self.notify_user(user_id, UserControl::JoinedGuild(guild));
     }
 
     /// Tells the user's open streams a DM channel was opened with them.
@@ -204,10 +205,11 @@ mod tests {
     #[tokio::test]
     async fn user_notifications_are_delivered_and_pruned() {
         let bus = EventBus::new();
-        bus.notify_user_joined_guild(7, 1); // no subscribers: no-op
+        let guild = |id| Guild { id, ..Default::default() };
+        bus.notify_user_joined_guild(7, guild(1)); // no subscribers: no-op
         let mut rx = bus.subscribe_user(7);
-        bus.notify_user_joined_guild(7, 2);
-        assert_eq!(rx.recv().await.unwrap(), UserControl::JoinedGuild(2));
+        bus.notify_user_joined_guild(7, guild(2));
+        assert_eq!(rx.recv().await.unwrap(), UserControl::JoinedGuild(guild(2)));
         bus.notify_user_opened_dm(7, DmChannel {
             id: 42,
             ..Default::default()

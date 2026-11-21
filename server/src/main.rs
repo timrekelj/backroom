@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use thehideout_server::config::Config;
-use thehideout_server::email::{EmailSender, Mailer, ResendSender, SmtpSender};
+use thehideout_server::email::{self, EmailSender, Mailer, ResendSender, SmtpSender};
 use thehideout_server::services::invite;
 use thehideout_server::embeds::EmbedSettings;
 use thehideout_server::media::{self, attachments::AttachmentSettings};
@@ -52,13 +52,25 @@ fn parse_args() -> Result<Option<Command>> {
 }
 
 fn mailer(config: &Config) -> Result<Mailer> {
-    let sender: Arc<dyn EmailSender> = match &config.resend_api_key {
+    let resend_key = config.resend_api_key.as_ref().filter(|_| {
+        let allowed = email::resend_allowed(&config.public_url, config.email_force_resend);
+        if !allowed {
+            tracing::warn!(
+                public_url = %config.public_url,
+                smtp = %config.smtp_url,
+                "THEHIDEOUT_RESEND_API_KEY is set but THEHIDEOUT_PUBLIC_URL is a development host: \
+                 NOT using Resend, sending over SMTP instead (set THEHIDEOUT_EMAIL_FORCE_RESEND=true to override)"
+            );
+        }
+        allowed
+    });
+    let sender: Arc<dyn EmailSender> = match resend_key {
         Some(key) => {
             tracing::info!("email: Resend");
             Arc::new(ResendSender::new(key.0.clone()))
         }
         None => {
-            tracing::info!(smtp = %config.smtp_url, "email: SMTP (no THEHIDEOUT_RESEND_API_KEY)");
+            tracing::info!(smtp = %config.smtp_url, "email: SMTP");
             Arc::new(SmtpSender::new(&config.smtp_url)?)
         }
     };

@@ -363,3 +363,54 @@ async fn dropped_streams_leave_no_channels_behind() {
     assert_eq!(app.state.events.user_channel_count(), 0);
     app.cleanup().await;
 }
+
+/// Next `guild_added` event on the stream, skipping heartbeats.
+macro_rules! next_guild_added {
+    ($stream:expr) => {{
+        let event = next_real_event!($stream);
+        let Some(Payload::GuildAdded(guild)) = event.payload else {
+            panic!("expected GuildAdded, got {event:?}");
+        };
+        guild
+    }};
+}
+
+#[tokio::test]
+async fn every_session_of_the_user_receives_guild_added() {
+    let app = start().await;
+    let alice = common::fixtures::user(&app, "alice").await;
+    let bob = common::fixtures::user(&app, "bob").await;
+    let alice_2 = thehideout_server::auth::create_session(&app.state, alice.id, "other").await.unwrap();
+    let bob_2 = thehideout_server::auth::create_session(&app.state, bob.id, "other").await.unwrap();
+    let mut streams_a = [subscribe!(app, &alice.token), subscribe!(app, &alice_2)];
+    let mut streams_b = [subscribe!(app, &bob.token), subscribe!(app, &bob_2)];
+    for stream in streams_a.iter_mut().chain(streams_b.iter_mut()) {
+        assert!(matches!(next_event!(stream).payload, Some(Payload::Heartbeat(_))));
+    }
+
+    // CreateGuild on one device reaches both of alice's streams.
+    let (guild, channel_id) = create_guild(&app, &alice.token).await;
+    for stream in &mut streams_a {
+        let added = next_guild_added!(stream);
+        assert_eq!(added.id, guild.id);
+        assert_eq!(added.name, guild.name);
+        assert_eq!(added.owner_id, alice.id);
+    }
+
+    // JoinGuild reaches both of bob's streams, and the streams then carry the guild's events.
+    join(&app, &bob.token, &guild.invite_code).await;
+    for stream in &mut streams_b {
+        assert_eq!(next_guild_added!(stream).id, guild.id);
+    }
+    send(&app, &alice.token, channel_id, "welcome", None).await;
+    for stream in &mut streams_b {
+        let event = next_real_event!(stream);
+        assert!(matches!(event.payload, Some(Payload::MessageCreated(ref m)) if m.content == "welcome"), "got {event:?}");
+    }
+
+    // Joining again is not a new guild.
+    join(&app, &bob.token, &guild.invite_code).await;
+    let events = events_within!(streams_b[1], Duration::from_millis(600));
+    assert!(events.iter().all(|e| matches!(e.payload, Some(Payload::Heartbeat(_)))));
+    app.cleanup().await;
+}

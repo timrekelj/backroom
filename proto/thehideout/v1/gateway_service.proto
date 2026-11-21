@@ -64,6 +64,11 @@ message Event {
     // A message changed (embeds resolved, attachment removed, ...); carries
     // the full message. Audience: channel audience.
     MessageUpdated message_updated = 16;
+    // The caller became a member of a guild (created it, joined it with an
+    // invite code, or was added when accepting an email invite). Audience:
+    // every open stream of that user; the stream also starts delivering the
+    // guild's events.
+    Guild guild_added = 17;
   }
 }
 

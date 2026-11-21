@@ -811,6 +811,15 @@ fn event(s: &mut AppState, e: Event, tx: &mut Tx) {
             }
         }
         Event::GuildUpdated(g) => s.set_guild(g),
+        // Joined or created elsewhere (another device): list it and load its channels and
+        // layout, leaving the current place alone.
+        Event::GuildAdded(g) => {
+            let id = g.id;
+            add_guild(s, g);
+            if !s.data.channels.contains_key(&id) {
+                s.outbox.push(Command::LoadChannels { guild: id });
+            }
+        }
         Event::ChannelUpdated(c) => update_channel(s, c),
         Event::UserUpdated(u) => user_updated(s, u),
         Event::LayoutUpdated { guild_id, layout } => s.set_layout(guild_id, layout),

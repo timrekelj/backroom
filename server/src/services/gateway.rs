@@ -148,49 +148,46 @@ impl EventStream {
     }
 
     async fn next_payload(&mut self) -> Result<Payload, ConnectError> {
-        loop {
-            let control = self.control.as_mut().expect("control receiver present while streaming");
-            tokio::select! {
-                _ = self.heartbeat.tick() => {
-                    // Re-verify the session so a token that expired (Scylla TTL) or was
-                    // revoked cannot keep an open stream alive past its validity.
-                    if self.last_check.elapsed() >= self.recheck_interval {
-                        self.last_check = Instant::now();
-                        if !session_exists(&self.state, &self.token_hash).await? {
-                            return Err(ConnectError::unauthenticated("session expired"));
-                        }
+        let control = self.control.as_mut().expect("control receiver present while streaming");
+        tokio::select! {
+            _ = self.heartbeat.tick() => {
+                // Re-verify the session so a token that expired (Scylla TTL) or was
+                // revoked cannot keep an open stream alive past its validity.
+                if self.last_check.elapsed() >= self.recheck_interval {
+                    self.last_check = Instant::now();
+                    if !session_exists(&self.state, &self.token_hash).await? {
+                        return Err(ConnectError::unauthenticated("session expired"));
                     }
-                    return Ok(heartbeat_payload());
                 }
-                msg = control.recv() => match msg {
-                    Ok(UserControl::JoinedGuild(guild_id)) => {
-                        let rx = self.state.events.subscribe_guild(guild_id);
-                        self.guilds.insert(guild_id, BroadcastStream::new(rx));
-                    }
-                    Ok(UserControl::OpenedDm(channel)) => {
-                        // Subscribe to the DM channel, then emit the event itself so the
-                        // client learns about the new conversation on this stream.
-                        let rx = self.state.events.subscribe_dm(channel.id);
-                        self.dms.insert(channel.id, BroadcastStream::new(rx));
-                        return Ok(Payload::DmOpened(channel.into()));
-                    }
-                    Ok(UserControl::ProfileUpdated(user)) => return Ok(Payload::UserUpdated(user.into())),
-                    Err(RecvError::Lagged(_)) => return Err(lagged()),
-                    Err(RecvError::Closed) => return Err(internal("user control channel closed")),
-                },
-                Some((_, item)) = self.guilds.next(), if !self.guilds.is_empty() => {
-                    return match item {
-                        Ok(event) => Ok(to_payload(&event)),
-                        Err(BroadcastStreamRecvError::Lagged(_)) => Err(lagged()),
-                    };
-                }
-                Some((_, item)) = self.dms.next(), if !self.dms.is_empty() => {
-                    return match item {
-                        Ok(event) => Ok(to_payload(&event)),
-                        Err(BroadcastStreamRecvError::Lagged(_)) => Err(lagged()),
-                    };
-                }
+                Ok(heartbeat_payload())
             }
+            msg = control.recv() => match msg {
+                Ok(UserControl::JoinedGuild(guild)) => {
+                    // Subscribe to the guild, then tell the client about it so other
+                    // devices of the user pick it up without a restart.
+                    let rx = self.state.events.subscribe_guild(guild.id);
+                    self.guilds.insert(guild.id, BroadcastStream::new(rx));
+                    Ok(Payload::GuildAdded(guild.into()))
+                }
+                Ok(UserControl::OpenedDm(channel)) => {
+                    // Subscribe to the DM channel, then emit the event itself so the
+                    // client learns about the new conversation on this stream.
+                    let rx = self.state.events.subscribe_dm(channel.id);
+                    self.dms.insert(channel.id, BroadcastStream::new(rx));
+                    Ok(Payload::DmOpened(channel.into()))
+                }
+                Ok(UserControl::ProfileUpdated(user)) => Ok(Payload::UserUpdated(user.into())),
+                Err(RecvError::Lagged(_)) => Err(lagged()),
+                Err(RecvError::Closed) => Err(internal("user control channel closed")),
+            },
+            Some((_, item)) = self.guilds.next(), if !self.guilds.is_empty() => match item {
+                Ok(event) => Ok(to_payload(&event)),
+                Err(BroadcastStreamRecvError::Lagged(_)) => Err(lagged()),
+            },
+            Some((_, item)) = self.dms.next(), if !self.dms.is_empty() => match item {
+                Ok(event) => Ok(to_payload(&event)),
+                Err(BroadcastStreamRecvError::Lagged(_)) => Err(lagged()),
+            },
         }
     }
 }

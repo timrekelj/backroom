@@ -133,12 +133,12 @@ impl GuildService for GuildSvc {
         self.add_member(id, user_id).await?;
         let channel = self.insert_channel(id, DEFAULT_CHANNEL, None, 0, None, "").await?;
         self.state.events.publish_to_guild(id, EventPayload::ChannelCreated(channel));
-        self.state.events.notify_user_joined_guild(user_id, id);
+        let guild = guild_to_proto(db_id, name.to_owned(), id_to_db(user_id), invite_code, created_at, None);
+        self.state.events.notify_user_joined_guild(user_id, guild.clone());
 
         tracing::info!(guild_id = id, user_id, "guild created");
         Response::ok(CreateGuildResponse {
-            guild: guild_to_proto(db_id, name.to_owned(), id_to_db(user_id), invite_code, created_at, None)
-                .into(),
+            guild: guild.into(),
             ..Default::default()
         })
     }
@@ -720,7 +720,7 @@ impl GuildSvc {
                     }),
                 );
             }
-            self.state.events.notify_user_joined_guild(user_id, guild.id);
+            self.state.events.notify_user_joined_guild(user_id, guild.clone());
             tracing::info!(guild_id = guild.id, user_id, "user joined guild");
         }
         Ok(())

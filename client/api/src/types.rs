@@ -106,6 +106,9 @@ pub enum Event {
     Heartbeat,
     /// A guild's name or icon changed.
     GuildUpdated(Guild),
+    /// The caller became a member of a guild (created or joined it, possibly on another
+    /// device); the stream now carries its events too.
+    GuildAdded(Guild),
     /// A channel's name, icon, colour or topic changed.
     ChannelUpdated(Channel),
     /// A guild's sections and/or channel order changed.
@@ -222,6 +225,7 @@ impl Event {
             Payload::Heartbeat(_) => Self::Heartbeat,
             Payload::DmOpened(d) => Self::DmOpened((*d).into()),
             Payload::GuildUpdated(g) => Self::GuildUpdated((*g).into()),
+            Payload::GuildAdded(g) => Self::GuildAdded((*g).into()),
             Payload::ChannelUpdated(c) => Self::ChannelUpdated((*c).into()),
             Payload::LayoutUpdated(l) => Self::LayoutUpdated {
                 guild_id: l.guild_id,
@@ -305,6 +309,16 @@ mod tests {
 
     fn event(payload: pb::event::Payload) -> Option<Event> {
         Event::from_proto(pb::Event { payload: Some(payload), ..Default::default() })
+    }
+
+    #[test]
+    fn guild_added_maps_to_event() {
+        use pb::event::Payload;
+        let guild = pb::Guild { id: 7, name: "Den".into(), owner_id: 3, invite_code: "abc".into(), ..Default::default() };
+        let Some(Event::GuildAdded(g)) = event(Payload::GuildAdded(Box::new(guild))) else {
+            panic!("expected GuildAdded");
+        };
+        assert_eq!((g.id, g.name.as_str(), g.owner_id, g.invite_code.as_str()), (7, "Den", 3, "abc"));
     }
 
     #[test]
