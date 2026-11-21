@@ -56,7 +56,7 @@ impl MentionPill {
         });
         row()
             .role("status")
-            .label(format!("{} mentions", self.count))
+            .label(if self.count == 1 { "1 mention".to_owned() } else { format!("{} mentions", self.count) })
             .h(m.em(16.0))
             .min_w(m.em(16.0))
             .px(5.0)

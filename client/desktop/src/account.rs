@@ -953,6 +953,18 @@ impl AppState {
         self.outbox.push(Command::ListInvites { epoch, guild: Some(guild), page_token: None, limit: INVITE_PAGE });
     }
 
+    /// Someone joined `guild` or their membership changed: maybe an invite was just accepted, so
+    /// the invite lists on screen ask again (the dialog keeps its rows meanwhile).
+    pub(crate) fn membership_changed(&mut self, guild: u64) {
+        if matches!(self.ui.dialog.as_ref().map(|d| &d.kind), Some(DialogKind::InviteByEmail { guild: g }) if *g == guild) {
+            let ui = &mut self.ui.invites;
+            ui.epoch += 1;
+            let epoch = ui.epoch;
+            self.outbox.push(Command::ListInvites { epoch, guild: Some(guild), page_token: None, limit: INVITE_PAGE });
+        }
+        self.admin_invites_changed();
+    }
+
     pub fn invite_command(&mut self, guild: u64, email: String) -> Result<Command, String> {
         if !looks_like_email(&email) {
             return Err("Enter their email address".into());

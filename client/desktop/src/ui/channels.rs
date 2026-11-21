@@ -305,6 +305,7 @@ fn more_button(a: &App, k: &Kit, layer: &mut Vec<El>, target: MenuTarget, guild:
         .on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
         .min_width(180.0)
         .build(k, layer)
+        .role("none")
 }
 
 fn point(at: Option<(i32, i32)>) -> Option<PointerPress> {
@@ -329,6 +330,7 @@ fn channel_menu(a: &App, k: &Kit, layer: &mut Vec<El>, guild: u64, id: u64, row:
     menu.on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
         .min_width(180.0)
         .build(k, layer)
+        .role("none")
 }
 
 fn section_menu(a: &App, k: &Kit, layer: &mut Vec<El>, guild: u64, id: u64, group: El) -> El {
@@ -348,6 +350,7 @@ fn section_menu(a: &App, k: &Kit, layer: &mut Vec<El>, guild: u64, id: u64, grou
     menu.on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
         .min_width(180.0)
         .build(k, layer)
+        .role("none")
 }
 
 /// Move up, Move down, Move to section, Edit channel. (Deleting a channel is not in the contract.)

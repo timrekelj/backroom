@@ -307,7 +307,7 @@ unchanged (no live preview). Selecting message text copies it as drawn (markers 
 | `#`, `##`, `###` + space at line start | 16/15/14pt, semibold; `####` and a mid-line `#` stay text |
 | `\|\|spoiler\|\|` | a block in `border` the text colour hides; click reveals it (state per message, local to the UI, not app state); a link inside stays inert until revealed |
 | `[text](https://url)`, `https://url`, `<https://url>` | `accent_text`, underline on hover, hand cursor; click opens the default browser. A masked link shows its URL in a tooltip. Trailing punctuation, `*`, `_`, `~`, `\|` and an unbalanced `)` are not part of a bare URL |
-| `@name` | the mention chip (`accent_subtle`); the row's `accent_wash` still comes from `mentions_me`. Not parsed in code; works inside bold, quotes, lists and spoilers |
+| `@name` | the mention chip (`accent_subtle`); the row's `accent_wash` still comes from `mentions_me`. Not parsed in code; works inside bold, quotes, lists and spoilers, and keeps the emphasis around it (`**@tim**` is a bold chip, `*@tim*` an italic one) |
 | `<:name:id>`, `<a:name:id>` | a custom emoji: a 20pt picture in the line when the app's `EmojiSet` knows the id, else `:name:` text; see "Emojis" |
 | `\*`, `\@`, `\<`, any `\` + ASCII punctuation | the character itself |
 

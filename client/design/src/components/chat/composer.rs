@@ -180,7 +180,9 @@ impl Composer {
                 k,
                 &self.key,
                 self.edit.focused,
-                auto_grow(field, 1, MAX_LINES),
+                // The grow box's scroll view would sit between the card and the field (macOS
+                // shows it as an unknown element); leave it out so the field is the card's child.
+                auto_grow(field, 1, MAX_LINES).role("none"),
                 send_bind,
                 self.add,
                 self.emoji,

@@ -53,6 +53,25 @@ pub fn nice_max(max: u64) -> u64 {
     }
 }
 
+/// An axis's labels, from 0 up to its top, every one a different whole number: 0 to `max` in
+/// ones up to 4, otherwise the smallest 1, 2, 5 x 10^k step that covers `max` in at most five
+/// steps. An empty axis (`max` 0) still reads 0 and 1.
+pub fn nice_ticks(max: u64) -> Vec<u64> {
+    if max <= 4 {
+        return (0..=max.max(1)).collect();
+    }
+    let mut unit = 1u64;
+    let step = 'found: loop {
+        for m in [1, 2, 5] {
+            if (unit * m) * 5 >= max {
+                break 'found unit * m;
+            }
+        }
+        unit *= 10;
+    };
+    (0..=max.div_ceil(step)).map(|i| i * step).collect()
+}
+
 /// Figures that keep their columns: digits of one width.
 const BIG: TextStyle = TextStyle {
     size: 24.0,
@@ -256,8 +275,9 @@ impl ActivityChart {
     pub fn build(self, k: &Kit) -> El {
         let t = theme_of(k);
         let n = self.days.len();
-        let msg_top = nice_max(self.days.iter().map(|d| d.messages).max().unwrap_or(0));
-        let usr_top = nice_max(self.days.iter().map(|d| d.active_users).max().unwrap_or(0));
+        let msg_ticks = nice_ticks(self.days.iter().map(|d| d.messages).max().unwrap_or(0));
+        let usr_ticks = nice_ticks(self.days.iter().map(|d| d.active_users).max().unwrap_or(0));
+        let (msg_top, usr_top) = (msg_ticks[msg_ticks.len() - 1], usr_ticks[usr_ticks.len() - 1]);
         let y = |v: u64, top: u64| VIEW_H - (v as f32 / top as f32) * (VIEW_H - 2.0);
 
         let mut shape = Shape::new().view_box((n.max(1) as f32) * PITCH, VIEW_H);
@@ -289,19 +309,20 @@ impl ActivityChart {
             .w_full()
             .h_full();
 
-        // Faint guides at the quarter marks: fills, not rules.
+        // Faint guides at the messages axis's ticks: fills, not rules.
         let mut guides = col()
             .w_full()
             .h_full()
             .justify_between()
             .inert()
             .a11y_hidden();
-        for i in 0..5 {
+        let last = msg_ticks.len() - 1;
+        for i in 0..=last {
             guides = guides.child(
                 el().key(format!("guide-{i}"))
                     .w_full()
                     .h(1.0)
-                    .fill(if i == 4 { t.border_subtle } else { t.hover }.color()),
+                    .fill(if i == last { t.border_subtle } else { t.hover }.color()),
             );
         }
 
@@ -328,9 +349,9 @@ impl ActivityChart {
             hits = hits.child(column);
         }
 
-        let scale = |top: u64, ink: Color| {
+        let scale = |ticks: &[u64], ink: Color| {
             let mut c = col().h_full().justify_between().a11y_hidden();
-            for v in [top, top * 3 / 4, top / 2, top / 4, 0] {
+            for &v in ticks.iter().rev() {
                 c = c.child(text(compact(v)).font(type_::at(k, type_::CAPTION)).color(ink));
             }
             c
@@ -348,9 +369,9 @@ impl ActivityChart {
             .w_full()
             .h(self.height)
             .gap(8.0)
-            .child(scale(msg_top, t.text_faint.color()).w(AXIS_W).items_end())
+            .child(scale(&msg_ticks, t.text_faint.color()).w(AXIS_W).items_end())
             .child(plot_area)
-            .child(scale(usr_top, t.info.color()).w(AXIS_W));
+            .child(scale(&usr_ticks, t.info.color()).w(AXIS_W));
 
         // Five dates under the plot, not one per bar.
         let mut dates = row()
@@ -446,6 +467,30 @@ mod tests {
         assert_eq!(compact(2_000), "2k");
         assert_eq!(compact(15_000), "15k");
         assert_eq!(compact(2_400_000), "2.4M");
+    }
+
+    #[test]
+    fn axis_ticks_are_distinct_whole_numbers() {
+        assert_eq!(nice_ticks(0), [0, 1]);
+        assert_eq!(nice_ticks(1), [0, 1]);
+        assert_eq!(nice_ticks(2), [0, 1, 2]);
+        assert_eq!(nice_ticks(4), [0, 1, 2, 3, 4]);
+        assert_eq!(nice_ticks(5), [0, 1, 2, 3, 4, 5]);
+        assert_eq!(nice_ticks(6), [0, 2, 4, 6]);
+        assert_eq!(nice_ticks(7), [0, 2, 4, 6, 8]);
+        assert_eq!(nice_ticks(11), [0, 5, 10, 15]);
+        assert_eq!(nice_ticks(100), [0, 20, 40, 60, 80, 100]);
+        assert_eq!(nice_ticks(1_130), [0, 500, 1_000, 1_500]);
+        for max in 0..20_000u64 {
+            let t = nice_ticks(max);
+            assert_eq!(t[0], 0);
+            assert!(*t.last().unwrap() >= max.max(1), "{max}: {t:?}");
+            assert!((2..=6).contains(&t.len()), "{max}: {t:?}");
+            assert!(t.windows(2).all(|w| w[0] < w[1] && w[1] - w[0] == t[1]), "{max}: {t:?}");
+            // As the axis prints them, too.
+            let shown: Vec<String> = t.iter().map(|&v| compact(v)).collect();
+            assert!(shown.windows(2).all(|w| w[0] != w[1]), "{max}: {shown:?}");
+        }
     }
 
     #[test]

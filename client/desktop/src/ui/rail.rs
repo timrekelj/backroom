@@ -31,8 +31,9 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
             .unread(u.count > 0)
             .mentions(u.mentions)
             .on_press(move |a: &mut App| a.act(|s| s.go_guild(id)))
-            .build(k);
-        guilds = guilds.child(el().key(format!("guild-{id}")).child(badge));
+            .build(k)
+            .key(format!("guild-{id}"));
+        guilds = guilds.child(badge);
     }
     let plus = RailTile::new(&PLUS, "Add a server")
         .size(face as u32)
@@ -61,7 +62,9 @@ pub fn build(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
         .open(s.ui.menu == MenuState::Add)
         .placement(rune_kit::Placement::RightStart)
         .on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
-        .build(k, layer);
+        .build(k, layer)
+        // The menu's anchor box is layout only: the tile inside is what assistive technology finds.
+        .role("none");
     guilds = guilds.child(plus);
 
     // Same 4pt inset as the tiles' rail; the divider is a face wide and centred on the faces.
@@ -97,5 +100,5 @@ fn home(a: &App, k: &Kit) -> El {
         .mentions(u.mentions)
         .on_press(|a: &mut App| a.act(|s| s.go_home()))
         .build(k);
-    el().key("home").child(tile)
+    tile.key("home")
 }

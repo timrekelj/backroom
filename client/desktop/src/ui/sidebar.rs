@@ -155,7 +155,8 @@ fn header(a: &App, k: &Kit, layer: &mut Vec<El>, width: f32) -> El {
         .open(a.state.ui.menu == MenuState::Guild)
         .min_width(width - 16.0)
         .on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
-        .build(k, layer);
+        .build(k, layer)
+        .role("none");
     row().w_full().child(menu)
 }
 
@@ -272,7 +273,8 @@ fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
         .placement(rune_kit::Placement::TopEnd)
         .min_width(160.0)
         .on_close(|a: &mut App| a.state.ui.menu = MenuState::None)
-        .build(k, layer);
+        .build(k, layer)
+        .role("none");
     let mut who = col()
         .key("who")
         .grow(1.0)

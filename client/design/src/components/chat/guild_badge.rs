@@ -94,19 +94,12 @@ impl GuildBadge {
             initials(&self.name)
         };
         let fill = avatar_tones(t.spec.accent)[tone_index(&self.id)].color();
-        let mut face = row()
-            .key("face")
-            .role("button")
-            .label(self.name.clone())
-            .size(s, s)
-            .center()
-            .radius(r)
-            .child(
-                text(label)
-                    .font(font)
-                    .color(AVATAR_INK.color())
-                    .a11y_hidden(),
-            );
+        let mut face = row().key("face").size(s, s).center().radius(r).child(
+            text(label)
+                .font(font)
+                .color(AVATAR_INK.color())
+                .a11y_hidden(),
+        );
         if let Some(p) = &self.image {
             face = face.child(crate::components::avatar::picture(p, s, r));
         }
@@ -115,17 +108,69 @@ impl GuildBadge {
             hover: t.hover.color(),
             pressed: t.pressed.color(),
         };
-        let mut face = paint(k, face, surface, self.state, (2.0, 2.0));
-        face = self.acts.apply(face, true);
-
+        let face = paint(k, face, surface, self.state, (2.0, 2.0));
         let rail = indicator(t, s, self.selected, self.unread, self.state == State::Hover);
-
-        let mut root = row().hover_group().w(RAIL + s).h(s).child(rail).child(face);
-        if self.mentions > 0 {
-            root = root.child(mention_corner(k, self.mentions));
-        }
-        root
+        tile(
+            k,
+            Tile {
+                label: self.name,
+                side: s,
+                face,
+                rail,
+                selected: self.selected,
+                unread: self.unread,
+                mentions: self.mentions,
+                state: self.state,
+                acts: self.acts,
+            },
+        )
     }
+}
+
+/// What [`tile`] puts together.
+struct Tile {
+    label: String,
+    side: f32,
+    face: El,
+    rail: El,
+    selected: bool,
+    unread: bool,
+    mentions: u32,
+    state: State,
+    acts: Acts,
+}
+
+/// The tile's root is the button: it carries the role, the name, the press and keyboard focus, so
+/// the element a caller keys (and a menu marks open or closed) is the control itself. The face
+/// only paints (its focus ring draws while the root has focus); the selected and unread states
+/// are the button's value and description, as the rail bar and the count are hidden inside it.
+fn tile(k: &Kit, t: Tile) -> El {
+    let face = t.face.focusable(false);
+    let mut root = row()
+        .role("button")
+        .label(t.label)
+        .hover_group()
+        .w(RAIL + t.side)
+        .h(t.side)
+        .focusable(t.state != State::Disabled)
+        .child(t.rail)
+        .child(face);
+    if t.selected {
+        root = root.a11y_value("selected");
+    }
+    let note = match (t.mentions, t.unread) {
+        (1, _) => Some("1 mention".to_owned()),
+        (n, _) if n > 1 => Some(format!("{n} mentions")),
+        (_, true) => Some("unread".to_owned()),
+        _ => None,
+    };
+    if let Some(note) = note {
+        root = root.description(note);
+    }
+    if t.mentions > 0 {
+        root = root.child(mention_corner(k, t.mentions));
+    }
+    t.acts.apply(root, true)
 }
 
 /// The rail beside a face of side `s`: a tall accent bar when selected, a 4pt dot when unread,
@@ -195,7 +240,7 @@ impl RailTile {
     /// `glyph_selected` is the fill twin shown when selected.
     pub fn new(
         glyph: &'static Icon,
-            label: impl Into<String>,
+        label: impl Into<String>,
     ) -> RailTile {
         RailTile {
             glyph,
@@ -252,8 +297,6 @@ impl RailTile {
         let glyph = self.glyph;
         let mut face = row()
             .key("face")
-            .role("button")
-            .label(self.label)
             .size(s, s)
             .center()
             .radius(radius::LG)
@@ -266,14 +309,21 @@ impl RailTile {
             hover: t.hover.color(),
             pressed: t.pressed.color(),
         };
-        let face = self
-            .acts
-            .apply(paint(k, face, surface, self.state, (2.0, 2.0)), true);
+        let face = paint(k, face, surface, self.state, (2.0, 2.0));
         let rail = indicator(t, s, self.selected, self.unread, self.state == State::Hover);
-        let mut root = row().hover_group().w(RAIL + s).h(s).child(rail).child(face);
-        if self.mentions > 0 {
-            root = root.child(mention_corner(k, self.mentions));
-        }
-        root
+        tile(
+            k,
+            Tile {
+                label: self.label,
+                side: s,
+                face,
+                rail,
+                selected: self.selected,
+                unread: self.unread,
+                mentions: self.mentions,
+                state: self.state,
+                acts: self.acts,
+            },
+        )
     }
 }

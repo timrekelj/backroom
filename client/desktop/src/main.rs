@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+mod a11y_tests;
 mod account;
 mod admin;
 #[cfg(test)]

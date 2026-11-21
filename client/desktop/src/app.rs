@@ -4,10 +4,11 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rune::{Cx, El, Key, KeyEvent, SpringPair, Transition, Tx, Waker, el};
+use thehideout_api::{Event, GatewayUpdate};
 use thehideout_design::{kit_for, motion, theme_for};
 
 use crate::apply::apply;
-use crate::backend::{Backend, Command};
+use crate::backend::{Backend, Command, Reply};
 use crate::fake::{FakeBackend, now_unix};
 use crate::format::Tz;
 use crate::look::{self, Saver};
@@ -95,10 +96,22 @@ impl App {
                 break;
             }
             for r in replies {
-                apply(&mut self.state, r, &mut tx);
+                take(&mut self.state, r, &mut tx);
             }
         }
     }
+}
+
+/// Applies one reply. A member joining a server may be an invite just accepted, so the invite
+/// lists on screen ask again (seen here, beside `apply`, which keeps the data itself).
+fn take(s: &mut AppState, r: Reply, tx: &mut Tx) {
+    if let Reply::Gateway(GatewayUpdate::Event(
+        Event::GuildMemberJoined { guild_id, .. } | Event::MemberUpdated { guild_id, .. },
+    )) = &r
+    {
+        s.membership_changed(*guild_id);
+    }
+    apply(s, r, tx);
 }
 
 /// The pinned clock of the fake world, scenes and tests.
@@ -203,7 +216,7 @@ pub fn poll(a: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         changed = true;
         for r in replies {
-            apply(&mut a.state, r, tx);
+            take(&mut a.state, r, tx);
         }
     }
     if let Some(text) = a.state.ui.copy_request.take() {

@@ -31,7 +31,7 @@ pub use avatar::{Avatar, Presence};
 pub use badge::{Badge, BadgeVariant};
 pub use button::{Button, Size, Variant};
 pub use chart::{
-    ActivityChart, BarSegment, ChartDay, StackedBar, StatCard, compact, group_digits, nice_max,
+    ActivityChart, BarSegment, ChartDay, StackedBar, StatCard, compact, group_digits, nice_max, nice_ticks,
 };
 pub use checkbox::Checkbox;
 pub use code_input::{CodeInput, digits_only};

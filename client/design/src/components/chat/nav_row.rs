@@ -102,6 +102,17 @@ impl Row {
             .focusable(true)
             .focus_ring(2.0, 0.0, k.c.border_focus)
             .token_motion(motion::CONTROL);
+        // A button carries no selected state on every platform, so the selection is its value
+        // ("general, selected, button") and unread or mentions its description.
+        if self.selected {
+            e = e.a11y_value("selected");
+        }
+        match (self.mentions, self.unread && !self.muted) {
+            (0, false) => {}
+            (0, true) => e = e.description("unread"),
+            (1, _) => e = e.description("1 mention"),
+            (n, _) => e = e.description(format!("{n} mentions")),
+        }
         if self.selected {
             // The shared element: unkeyed rows of other lists never match it.
             let hl = el()

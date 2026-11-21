@@ -917,3 +917,22 @@ impl World {
         })
     }
 }
+
+impl FakeBackend {
+    /// The invite to `email` is accepted on another device by a new user `name`: it turns
+    /// Accepted and the gateway says they joined each of its servers.
+    #[cfg(test)]
+    pub fn invite_accepted_elsewhere(&self, email: &str, id: u64, name: &str) {
+        let mut w = self.0.borrow_mut();
+        let Some(i) = w.account.invites.iter().position(|f| f.invite.email == email) else { return };
+        let joined = user(id, name);
+        w.users.push(joined.clone());
+        let inv = &mut w.account.invites[i].invite;
+        inv.status = InviteStatus::Accepted;
+        inv.accepted_user_id = Some(id);
+        for g in inv.guild_ids.clone() {
+            w.members.entry(g).or_default().push(id);
+            w.enqueue(Reply::Gateway(GatewayUpdate::Event(Event::GuildMemberJoined { guild_id: g, user: joined.clone() })));
+        }
+    }
+}

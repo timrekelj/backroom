@@ -352,8 +352,26 @@ impl AppState {
         ad.page = page;
         ad.guild_menu = false;
         ad.kind_menu = false;
+        // Invites are accepted in other people's inboxes, not here: the tab always asks again.
+        if page == AdminPage::Invites {
+            ad.stale.insert(AdminPage::Invites);
+        }
         self.invalidate_stale(page);
         self.want_admin();
+    }
+
+    /// A member joined a server (maybe through an invite): the Invites tab asks again, now if it
+    /// is open, else when it is next opened.
+    pub(crate) fn admin_invites_changed(&mut self) {
+        let Some(ad) = self.ui.admin.as_mut() else {
+            return;
+        };
+        if ad.page == AdminPage::Invites {
+            ad.invites.reset();
+            self.want_admin();
+        } else {
+            ad.stale.insert(AdminPage::Invites);
+        }
     }
 
     /// A page changed by the user's own actions starts over when it is opened.

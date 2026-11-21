@@ -384,7 +384,7 @@ fn an_incoming_message_elsewhere_counts_unread_and_visiting_clears_it() {
         "an unread dot in the sidebar"
     );
     assert!(
-        under(&rt, "channels-1-row-dev", "1 mentions"),
+        under(&rt, "channels-1-row-dev", "1 mention"),
         "a mention count in the sidebar"
     );
     let bar = rt
@@ -397,7 +397,7 @@ fn an_incoming_message_elsewhere_counts_unread_and_visiting_clears_it() {
     click(&mut rt, "channels-1-row-dev");
     settle(&mut rt, 60);
     assert_eq!(rt.state.state.unread_of(DEV).count, 0);
-    assert!(!under(&rt, "channels-1-row-dev", "1 mentions"));
+    assert!(!under(&rt, "channels-1-row-dev", "1 mention"));
     assert!(has(&rt, "stage-11"));
     assert_eq!(
         rt.state.state.guild_unread(1).count,
@@ -413,7 +413,7 @@ fn a_new_mention_badge_pops_in_and_a_plain_one_does_not_bounce() {
     settle(&mut rt, 2);
     let pill = |rt: &Runtime<App>| {
         rt.elements().into_iter().find(|e| {
-            e.label.as_deref() == Some("1 mentions") && e.path.contains("channels-1-row-dev/")
+            e.label.as_deref() == Some("1 mention") && e.path.contains("channels-1-row-dev/")
         })
     };
     let mid = pill(&rt).expect("the pill mounted");

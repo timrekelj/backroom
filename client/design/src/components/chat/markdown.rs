@@ -804,6 +804,21 @@ mod tests {
     }
 
     #[test]
+    fn a_mention_that_is_all_the_emphasis_keeps_both() {
+        for (src, kind) in [("**@tim**", Kind::Bold), ("*@tim*", Kind::Italic), ("_@tim_", Kind::Italic), ("__@tim__", Kind::Underline), ("~~@tim~~", Kind::Strike)] {
+            let i = one(src);
+            assert_eq!(i.text, "@tim", "{src}");
+            let m = marked(src);
+            assert!(m.contains(&("@tim".into(), Kind::Mention)), "{src}: {m:?}");
+            assert!(m.contains(&("@tim".into(), kind)), "{src}: {m:?}");
+        }
+        let m = marked("***@tim***");
+        assert!([Kind::Bold, Kind::Italic, Kind::Mention].iter().all(|k| m.contains(&("@tim".into(), k.clone()))), "{m:?}");
+        let m = marked("hey **@tim, look**");
+        assert!(m.contains(&("@tim, look".into(), Kind::Bold)) && m.contains(&("@tim".into(), Kind::Mention)), "{m:?}");
+    }
+
+    #[test]
     fn emoji_tokens_become_name_text() {
         let i = one("hi <:blob:123456> and <a:wave:9>!");
         assert_eq!(i.text, "hi :blob: and :wave:!");

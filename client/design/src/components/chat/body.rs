@@ -367,6 +367,21 @@ fn overlaps(a: (usize, usize), b: (usize, usize)) -> bool {
     a.0 < b.1 && b.0 < a.1
 }
 
+/// Weight of a mention chip on its own.
+const MENTION_WEIGHT: f32 = 560.0;
+
+/// The chip's span over `a..b`: its own weight, or the bold around it (`**@tim**` is a bold chip),
+/// and italic when it sits in italics. Spans merge with the later one winning, so the chip
+/// carries the emphasis itself instead of relying on the order; an underline merges on its own.
+fn mention_span(marks: &[&md::Mark], a: usize, b: usize, bold: f32) -> Span {
+    let around = |kind: Kind| marks.iter().any(|m| m.kind == kind && m.start <= a && b <= m.end);
+    let mut span = Span::new(a, b).weight(if around(Kind::Bold) { bold.max(MENTION_WEIGHT) } else { MENTION_WEIGHT });
+    if around(Kind::Italic) {
+        span = span.italic();
+    }
+    span
+}
+
 /// One wrapping text: marks as spans, links and spoilers as pressable ranges, strikes as lines.
 fn inline_el(cx: &mut Cx, x: &Inlines, font: TextStyle, bold: f32) -> El {
     let k = cx.k;
@@ -417,7 +432,7 @@ fn inline_el(cx: &mut Cx, x: &Inlines, font: TextStyle, bold: f32) -> El {
                     .mention
                     .and_then(|f| f(name))
                     .unwrap_or((t.accent_text.color(), t.accent_subtle.color()));
-                spans.push(Span::new(a, b).weight(560.0).color(ink).bg(wash, 2.0));
+                spans.push(mention_span(&marks, a, b, bold).color(ink).bg(wash, 2.0));
             }
             Kind::Link(url) => {
                 spans.push(Span::new(a, b).color(t.accent_text.color()));
@@ -492,6 +507,35 @@ fn inline_el(cx: &mut Cx, x: &Inlines, font: TextStyle, bold: f32) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chip(src: &str, bold: f32) -> Span {
+        let x = only(src);
+        let marks: Vec<&md::Mark> = x.marks.iter().collect();
+        let m = marks.iter().find(|m| m.kind == Kind::Mention).expect("a mention");
+        mention_span(&marks, m.start, m.end, bold)
+    }
+
+    #[test]
+    fn a_mention_keeps_the_emphasis_around_it() {
+        assert_eq!(chip("hi @tim", 600.0).weight, Some(MENTION_WEIGHT));
+        assert!(!chip("hi @tim", 600.0).italic);
+        assert_eq!(chip("**@tim**", 600.0).weight, Some(600.0));
+        assert_eq!(chip("**hey @tim**", 700.0).weight, Some(700.0));
+        assert!(chip("*@tim*", 600.0).italic);
+        let both = chip("***@tim***", 600.0);
+        assert_eq!((both.weight, both.italic), (Some(600.0), true));
+        // Emphasis that ends before the chip does not reach it.
+        assert_eq!(chip("**hey** @tim", 600.0).weight, Some(MENTION_WEIGHT));
+        // Merged as Rune draws them, the bold chip stays bold whichever span comes last.
+        let x = only("**@tim**");
+        let b = x.marks.iter().find(|m| m.kind == Kind::Bold).unwrap();
+        let bold = Span::new(b.start, b.end).weight(600.0);
+        let c = chip("**@tim**", 600.0);
+        for order in [vec![bold.clone(), c.clone()], vec![c.clone(), bold.clone()]] {
+            let flat = rune::text::flatten_spans(&order);
+            assert!(flat.iter().all(|s| s.weight == Some(600.0)), "{flat:?}");
+        }
+    }
 
     #[test]
     fn plain_text_is_one_block() {

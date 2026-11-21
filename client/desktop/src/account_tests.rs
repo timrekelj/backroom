@@ -1216,6 +1216,71 @@ fn inviting_by_email_shows_the_code_link_and_the_pending_invites() {
     assert!(rt.state.state.ui.toasts.iter().any(|t| t.message == "Invite link copied"));
 }
 
+#[test]
+fn an_invite_accepted_elsewhere_leaves_the_open_dialogs_pending_list() {
+    let (mut app, fake) = booted(true);
+    app.act(|s| s.open_dialog(DialogKind::InviteByEmail { guild: HIDEOUT }));
+    app.pump();
+    let erin = |app: &App| app.state.ui.invites.list.iter().find(|i| i.email == "erin@example.com").map(|i| i.status);
+    assert_eq!(erin(&app), Some(InviteStatus::Pending));
+    let lists = |fake: &FakeBackend| sent(fake, |c| matches!(c, Command::ListInvites { guild: Some(HIDEOUT), .. }));
+    assert_eq!(lists(&fake), 1, "asked once on open");
+    // Erin signs up from the email: the gateway says she joined, and the list asks again.
+    fake.invite_accepted_elsewhere("erin@example.com", 9100, "erin");
+    app.pump();
+    assert_eq!(lists(&fake), 2);
+    assert_eq!(erin(&app), Some(InviteStatus::Accepted));
+    assert!(app.state.data.users.contains_key(&9100), "the join itself still applies");
+    // With the dialog closed nothing asks; opening it again does.
+    app.act(|s| s.close_dialog());
+    fake.gateway(thehideout_api::GatewayUpdate::Event(thehideout_api::Event::GuildMemberJoined {
+        guild_id: HIDEOUT,
+        user: fake.user(9100).unwrap(),
+    }));
+    app.pump();
+    assert_eq!(lists(&fake), 2);
+    app.act(|s| s.open_dialog(DialogKind::InviteByEmail { guild: HIDEOUT }));
+    app.pump();
+    assert_eq!(lists(&fake), 3);
+    assert_eq!(erin(&app), Some(InviteStatus::Accepted));
+}
+
+#[test]
+fn the_admin_invites_tab_asks_again_on_open_and_when_someone_joins() {
+    let (mut app, fake) = booted_as(true, "cvetka");
+    app.act(|s| s.open_admin());
+    app.pump();
+    app.act(|s| s.admin_page(AdminPage::Invites));
+    app.pump();
+    let erin = |app: &App| app.state.admin_invite_rows().iter().find(|i| i.email == "erin@example.com").map(|i| i.status);
+    let lists = |fake: &FakeBackend| sent(fake, |c| matches!(c, Command::ListInvites { guild: None, .. }));
+    assert_eq!(erin(&app), Some(InviteStatus::Pending));
+    assert_eq!(lists(&fake), 1);
+    // Away on another tab, the invite is accepted; coming back asks again.
+    app.act(|s| s.admin_page(AdminPage::Users));
+    app.pump();
+    fake.invite_accepted_elsewhere("erin@example.com", 9100, "erin");
+    app.pump();
+    app.act(|s| s.admin_page(AdminPage::Invites));
+    app.pump();
+    assert_eq!(lists(&fake), 2);
+    assert_eq!(erin(&app), Some(InviteStatus::Accepted));
+    // Opening the tab again with nothing new still asks (invites change in other inboxes).
+    app.act(|s| s.admin_page(AdminPage::Overview));
+    app.pump();
+    app.act(|s| s.admin_page(AdminPage::Invites));
+    app.pump();
+    assert_eq!(lists(&fake), 3);
+    // While it is open, a join asks at once.
+    fake.gateway(thehideout_api::GatewayUpdate::Event(thehideout_api::Event::GuildMemberJoined {
+        guild_id: HIDEOUT,
+        user: fake.user(9100).unwrap(),
+    }));
+    app.pump();
+    assert_eq!(lists(&fake), 4);
+    assert_eq!(app.state.admin_invite_rows().len(), 4, "the list is whole again");
+}
+
 // ---- the admin Invites tab -----------------------------------------------------------------------
 
 #[test]
