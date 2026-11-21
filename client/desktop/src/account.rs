@@ -17,8 +17,7 @@ use thehideout_design::components::{ToastKind, digits_only};
 
 use crate::backend::{Command, InviteAction, SecurityInfo, Session};
 use crate::forms::{
-    AuthError, AuthField, AuthMode, AuthStep, DialogKind, Phase, RESEND_SECS, SECOND_FACTOR_TRIES,
-    auth_error, sentence,
+    AuthError, AuthField, AuthMode, AuthStep, DialogKind, Phase, RESEND_SECS, auth_error, sentence,
 };
 use crate::server_settings::error_text;
 use crate::state::{AppState, Section};
@@ -165,7 +164,7 @@ impl AppState {
     /// The links under the form: "Email me a code instead", "Use a passkey", "Forgot password?",
     /// "Use your password" and "Start again". What was typed as the login comes along.
     pub fn auth_go(&mut self, step: AuthStep) {
-        if self.auth.phase == Phase::Busy && !matches!(self.auth.step, AuthStep::Passkey { waiting: true }) {
+        if self.auth.phase == Phase::Busy && !self.auth_passkey_waiting() {
             return;
         }
         self.cancel_auth_passkey();
@@ -180,17 +179,39 @@ impl AppState {
         self.auth.go(step);
     }
 
-    fn cancel_auth_passkey(&mut self) {
-        if matches!(self.auth.step, AuthStep::Passkey { waiting: true }) {
-            self.outbox.push(Command::CancelPasskey);
-            self.auth.step = AuthStep::Passkey { waiting: false };
-            self.auth.phase = Phase::Idle;
-        }
+    /// Whether the form waits for a passkey in the browser (a sign-in or a second factor).
+    fn auth_passkey_waiting(&self) -> bool {
+        matches!(self.auth.step, AuthStep::Passkey { waiting: true } | AuthStep::SecondFactor { passkey: true, .. })
     }
 
-    /// The waiting passkey sign-in's Cancel.
+    fn cancel_auth_passkey(&mut self) {
+        if !self.auth_passkey_waiting() {
+            return;
+        }
+        self.outbox.push(Command::CancelPasskey);
+        match &mut self.auth.step {
+            AuthStep::SecondFactor { passkey, .. } => *passkey = false,
+            step => *step = AuthStep::Passkey { waiting: false },
+        }
+        self.auth.phase = Phase::Idle;
+    }
+
+    /// The waiting passkey's Cancel (a sign-in or a second factor).
     pub fn cancel_passkey_login(&mut self) {
         self.cancel_auth_passkey();
+    }
+
+    /// "Use a passkey" on the second-factor step: the browser ceremony answers this challenge.
+    pub fn second_factor_passkey(&mut self) {
+        if self.auth.phase == Phase::Busy {
+            return;
+        }
+        let AuthStep::SecondFactor { challenge, locked: false, passkey: false, .. } = &self.auth.step else { return };
+        let cmd = Command::BeginSecondFactorPasskey { challenge: challenge.clone() };
+        self.auth.error = None;
+        self.auth.notice = None;
+        self.auth.phase = Phase::Busy;
+        self.outbox.push(cmd);
     }
 
     fn auth_invalid(&mut self, field: AuthField, message: &str) {
@@ -249,7 +270,7 @@ impl AppState {
                 }
                 Command::BeginPasskeyLogin { username: login }
             }
-            AuthStep::SecondFactor { locked: true, .. } => return,
+            AuthStep::SecondFactor { locked: true, .. } | AuthStep::SecondFactor { passkey: true, .. } => return,
             AuthStep::SecondFactor { challenge, recovery, .. } => {
                 let code = if recovery { a.recovery.text.trim().to_owned() } else { code };
                 if recovery && code.is_empty() {
@@ -293,7 +314,7 @@ impl AppState {
         if self.auth.error.as_ref().is_some_and(|e| e.field == AuthField::Code) {
             self.auth.error = None;
         }
-        let auto = matches!(self.auth.step, AuthStep::EmailCode { sent: true } | AuthStep::SecondFactor { recovery: false, locked: false, .. });
+        let auto = matches!(self.auth.step, AuthStep::EmailCode { sent: true } | AuthStep::SecondFactor { recovery: false, locked: false, passkey: false, .. });
         if clean.len() == 6 && auto {
             self.submit_auth();
         }
@@ -301,7 +322,7 @@ impl AppState {
 
     /// "Use a recovery code" / "Use your authenticator app".
     pub fn toggle_recovery(&mut self) {
-        if let AuthStep::SecondFactor { recovery, locked: false, .. } = &mut self.auth.step {
+        if let AuthStep::SecondFactor { recovery, locked: false, passkey: false, .. } = &mut self.auth.step {
             *recovery = !*recovery;
             let r = *recovery;
             self.auth.error = None;
@@ -362,27 +383,32 @@ impl AppState {
         self.auth.phase = Phase::Idle;
         self.auth.password.clear();
         match &mut self.auth.step {
-            AuthStep::SecondFactor { wrong, locked, recovery, .. } => {
-                let r = *recovery;
+            // The server says what happened: a wrong answer (and how many are left), or a
+            // challenge that is used up or expired.
+            AuthStep::SecondFactor { remaining, locked, recovery, passkey, .. } => {
+                let (r, was_passkey) = (*recovery, std::mem::take(passkey));
                 match e {
-                    ApiError::Unauthenticated => {
-                        *wrong += 1;
-                        if *wrong >= SECOND_FACTOR_TRIES {
-                            *locked = true;
-                        }
-                    }
-                    ApiError::RateLimited => *locked = true,
+                    ApiError::WrongCode { attempts_remaining } => *remaining = Some(*attempts_remaining),
+                    ApiError::TooManyAttempts | ApiError::CodeExpired => *locked = true,
                     _ => {}
                 }
-                let locked = *locked;
                 self.auth.code.clear();
                 self.auth.recovery.clear();
-                if locked {
-                    self.auth.fail(AuthField::Form, "Too many attempts. Start signing in again.");
-                } else if *e == ApiError::Unauthenticated {
-                    self.auth.fail(AuthField::Code, if r { "That recovery code didn't work." } else { wrong_code });
-                } else {
-                    self.auth.error = Some(auth_error(e));
+                match e {
+                    ApiError::TooManyAttempts => self.auth.fail(AuthField::Form, "Too many wrong attempts. Start signing in again."),
+                    ApiError::CodeExpired => self.auth.fail(AuthField::Form, "This sign-in expired. Start again."),
+                    ApiError::WrongCode { attempts_remaining } => {
+                        let (field, what) = match (was_passkey, r) {
+                            (true, _) => (AuthField::Form, "That passkey wasn't accepted."),
+                            (false, true) => (AuthField::Code, "That recovery code didn't work."),
+                            (false, false) => (AuthField::Code, "That code didn't work."),
+                        };
+                        self.auth.fail(field, format!("{what} {}", tries_left(*attempts_remaining)));
+                    }
+                    ApiError::Precondition(_) if was_passkey => {
+                        self.auth.fail(AuthField::Form, "A passkey can't be used for this sign-in. Use a code instead.")
+                    }
+                    _ => self.auth.error = Some(auth_error(e)),
                 }
             }
             AuthStep::EmailCode { sent: true } if *e == ApiError::Unauthenticated => {
@@ -418,7 +444,7 @@ impl AppState {
     pub(crate) fn second_factor(&mut self, challenge: String, methods: Vec<SecondFactorMethod>) {
         self.auth.mode = AuthMode::Login;
         self.auth.password.clear();
-        self.auth.go(AuthStep::SecondFactor { challenge, methods, recovery: false, wrong: 0, locked: false });
+        self.auth.go(AuthStep::SecondFactor { challenge, methods, recovery: false, remaining: None, locked: false, passkey: false });
     }
 
     /// A sign-in landed. Remembers what it says about the account for the Security page.
@@ -510,8 +536,10 @@ impl AppState {
                 // `open_url` refuses anything but http(s); the server's page is one.
                 let _ = tx.open_url(&url);
                 if signing_in {
-                    if matches!(self.auth.step, AuthStep::Passkey { .. }) {
-                        self.auth.step = AuthStep::Passkey { waiting: true };
+                    match &mut self.auth.step {
+                        AuthStep::Passkey { .. } => self.auth.step = AuthStep::Passkey { waiting: true },
+                        AuthStep::SecondFactor { passkey, .. } => *passkey = true,
+                        _ => {}
                     }
                 } else if let Some(d) = self.ui.security.dialog.as_mut()
                     && matches!(d.kind, SecKind::AddPasskey { .. })
@@ -569,9 +597,7 @@ impl AppState {
         sec.loading = false;
         match result {
             Ok(info) => {
-                if info.totp.is_some() {
-                    sec.totp = info.totp;
-                }
+                sec.totp = Some(info.summary.totp_enabled);
                 sec.info = Some(info);
                 sec.error = None;
             }
@@ -736,8 +762,17 @@ impl AppState {
     fn sec_failed(&mut self, e: &ApiError) {
         let text = match (e, self.ui.security.dialog.as_ref().map(|d| &d.kind)) {
             (ApiError::PermissionDenied, Some(SecKind::Email { .. } | SecKind::Password)) => "That password isn't right.".to_owned(),
-            (ApiError::Unauthenticated, Some(SecKind::DisableTotp)) => "That code didn't work. Use a current code or an unused recovery code.".to_owned(),
-            (ApiError::Unauthenticated, _) => "That code didn't work. Check it and try again.".to_owned(),
+            (ApiError::WrongCode { attempts_remaining }, Some(SecKind::DisableTotp)) => {
+                format!("That code didn't work. Use a current code or an unused recovery code. {}", tries_left(*attempts_remaining))
+            }
+            (ApiError::WrongCode { attempts_remaining }, _) => {
+                format!("That code didn't work. Check it and try again. {}", tries_left(*attempts_remaining))
+            }
+            (ApiError::CodeExpired, Some(SecKind::Email { .. })) => "That code expired. Start the change again.".to_owned(),
+            (ApiError::CodeExpired, Some(SecKind::TotpSetup { .. })) => "The setup timed out. Close this and start again.".to_owned(),
+            (ApiError::CodeExpired, _) => "That expired. Start again.".to_owned(),
+            (ApiError::TooManyAttempts, Some(SecKind::Email { .. })) => "Too many wrong codes. Start the change again.".to_owned(),
+            (ApiError::TooManyAttempts | ApiError::RateLimited, _) => "Too many wrong codes. Try again later.".to_owned(),
             (ApiError::AlreadyExists, Some(SecKind::Email { .. })) => "Another account uses that email.".to_owned(),
             (ApiError::Precondition(m), Some(SecKind::AddPasskey { .. })) => format!("Passkeys aren't available on this server ({m})."),
             _ => error_text(e),
@@ -949,7 +984,7 @@ impl AppState {
                 d.input.clear();
                 d.error = None;
                 self.ui.invites.list.retain(|i| i.id != invite.id);
-                self.ui.invites.list.insert(0, Invite { code: None, ..invite.clone() });
+                self.ui.invites.list.insert(0, Invite { code: None, link: None, ..invite.clone() });
                 self.ui.invites.created = Some(invite);
             }
             Err(e) => {
@@ -984,7 +1019,7 @@ impl AppState {
         }
         match result {
             Ok(invite) => {
-                let plain = Invite { code: None, ..invite.clone() };
+                let plain = Invite { code: None, link: None, ..invite.clone() };
                 for list in [Some(&mut self.ui.invites.list), self.ui.admin.as_mut().map(|ad| &mut ad.invites.items)].into_iter().flatten() {
                     if let Some(slot) = list.iter_mut().find(|i| i.id == id) {
                         *slot = plain.clone();
@@ -1019,6 +1054,15 @@ pub enum SecReply {
     PasskeyDeleted { id: u64, result: Result<(), ApiError> },
     SessionRevoked { id: u64, result: Result<(), ApiError> },
     OthersRevoked(Result<u32, ApiError>),
+}
+
+/// "1 try left." / "3 tries left." / "No tries left."
+pub fn tries_left(n: u32) -> String {
+    match n {
+        0 => "No tries left.".to_owned(),
+        1 => "1 try left.".to_owned(),
+        n => format!("{n} tries left."),
+    }
 }
 
 /// When an invite expires or expired, in words.

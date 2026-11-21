@@ -223,12 +223,14 @@ async fn send_invite(state: &AppState, invite: &InviteRow, secrets: &Secrets) ->
     Ok(())
 }
 
-/// Invite as shown to admins and inviters.
-async fn to_proto(state: &AppState, invite: &InviteRow, code: Option<&str>) -> Result<Invite, ConnectError> {
+/// Invite as shown to admins and inviters; `secrets` (code and link) only for its creator,
+/// right after it was made or sent again.
+async fn to_proto(state: &AppState, invite: &InviteRow, secrets: Option<&Secrets>) -> Result<Invite, ConnectError> {
     Ok(Invite {
         id: invite.id,
         email: invite.email.clone(),
-        code: code.map(codes::format_invite_code),
+        code: secrets.map(|s| codes::format_invite_code(&s.code)),
+        link: secrets.map(|s| invite_link(state, &s.token)),
         status: invite.status().into(),
         inviter: inviter_user(state, invite.inviter_id).await?.into(),
         guild_ids: invite.guild_ids.clone(),
@@ -447,7 +449,7 @@ impl InviteService for InviteSvc {
                 return Err(ConnectError::not_found("guild not found"));
             }
         }
-        let (invite, _, code) = create(
+        let (invite, token, code) = create(
             &self.state,
             NewInvite {
                 email: req.email.to_owned(),
@@ -458,7 +460,7 @@ impl InviteService for InviteSvc {
             },
         )
         .await?;
-        let invite = to_proto(&self.state, &invite, Some(&code)).await?;
+        let invite = to_proto(&self.state, &invite, Some(&Secrets { token, code })).await?;
         Response::ok(CreateInviteResponse { invite: invite.into(), ..Default::default() })
     }
 
@@ -556,7 +558,7 @@ impl InviteService for InviteSvc {
         let invite = load(&self.state, invite.id).await?.ok_or_else(|| ConnectError::not_found("invite not found"))?;
         send_invite(&self.state, &invite, &secrets).await?;
         crate::admin::audit(&self.state, caller, "invite.resend", &format!("invite:{}", invite.id), &invite.email).await?;
-        let invite = to_proto(&self.state, &invite, Some(&secrets.code)).await?;
+        let invite = to_proto(&self.state, &invite, Some(&secrets)).await?;
         Response::ok(ResendInviteResponse { invite: invite.into(), ..Default::default() })
     }
 

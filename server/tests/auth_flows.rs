@@ -152,8 +152,21 @@ async fn change_email_verifies_the_new_address_and_legacy_accounts_can_add_one()
     assert_eq!(code(start("nope", PASSWORD).await), ErrorCode::InvalidArgument);
     user(&app, "gina").await;
     assert_eq!(code(start(&email_of(&app, "gina"), PASSWORD).await), ErrorCode::AlreadyExists);
+    let confirm = |code: &str| {
+        let req = ConfirmEmailChangeRequest { code: code.into(), ..Default::default() };
+        let client = client.clone();
+        async move { client.confirm_email_change(req).await.map(|_| ()) }
+    };
+    let expired = Some((CodeErrorReason::CODE_ERROR_REASON_EXPIRED, 0));
+    assert_eq!(code_error(confirm("123456").await), (ErrorCode::FailedPrecondition, expired), "nothing was started");
     start(&new, PASSWORD).await.unwrap();
     let c = six_digit_code(&wait_mail(&app, &new, 0, "Confirm").await.text);
+    let wrong = if c == "000000" { "111111" } else { "000000" };
+    assert_eq!(
+        code_error(confirm(wrong).await),
+        (ErrorCode::InvalidArgument, Some((CodeErrorReason::CODE_ERROR_REASON_WRONG, 4))),
+        "a wrong code is not UNAUTHENTICATED"
+    );
     let confirmed = client
         .confirm_email_change(ConfirmEmailChangeRequest { code: c, ..Default::default() })
         .await

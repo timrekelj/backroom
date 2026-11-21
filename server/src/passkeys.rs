@@ -19,7 +19,7 @@ use axum::routing::get;
 use chrono::{DateTime, Utc};
 use connectrpc::ConnectError;
 use serde::Deserialize;
-use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PasskeyRegistration, Url, Uuid};
+use webauthn_rs::prelude::{AuthenticationResult, Passkey, PasskeyAuthentication, PasskeyRegistration, Url, Uuid};
 use webauthn_rs::{Webauthn, WebauthnBuilder};
 
 use crate::AppState;
@@ -51,6 +51,8 @@ pub fn user_handle(user_id: u64) -> Uuid {
 pub enum CeremonyKind {
     Register { user_id: u64, name: String, state: PasskeyRegistration },
     Login { user_id: u64, device_name: String, state: PasskeyAuthentication },
+    /// Answers the second-factor challenge `challenge_id`.
+    SecondFactor { challenge_id: String, user_id: u64, state: PasskeyAuthentication },
 }
 
 /// A running ceremony (kept in memory for 5 minutes).
@@ -148,6 +150,16 @@ pub async fn save(state: &AppState, user_id: u64, passkey: &StoredPasskey) -> Re
     Ok(())
 }
 
+/// Records a successful sign-in with one of the user's passkeys (counter, last used).
+pub async fn mark_used(state: &AppState, user_id: u64, result: &AuthenticationResult) -> Result<(), ConnectError> {
+    if let Some(mut passkey) = list(state, user_id).await?.into_iter().find(|p| p.credential.cred_id() == result.cred_id()) {
+        passkey.credential.update_credential(result);
+        passkey.last_used_at = Some(Utc::now());
+        save(state, user_id, &passkey).await?;
+    }
+    Ok(())
+}
+
 pub async fn delete(state: &AppState, user_id: u64, id: u64) -> Result<(), ConnectError> {
     state
         .session
@@ -188,7 +200,7 @@ async fn options(State(state): State<AppState>, Query(q): Query<CeremonyQuery>) 
     };
     let kind = match ceremony.kind {
         CeremonyKind::Register { .. } => "register",
-        CeremonyKind::Login { .. } => "login",
+        CeremonyKind::Login { .. } | CeremonyKind::SecondFactor { .. } => "login",
     };
     let body = serde_json::json!({
         "kind": kind,

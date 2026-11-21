@@ -6,6 +6,7 @@ publish.workspace = true
 description = "Typed client for the thehideout server: plain domain types and a self-reconnecting gateway"
 
 [dependencies]
+base64 = "0.22"
 bytes = "1"
 buffa = { version = "0.9", features = ["json"] }
 buffa-types = { version = "0.9", features = ["json"] }
@@ -27,3 +28,4 @@ axum = "0.8"
 rand = "0.9"
 scylla = { version = "1", features = ["chrono-04"] }
 thehideout-server = { path = "../../server" }
+webauthn-authenticator-rs = { version = "0.6.2", features = ["softpasskey"] }

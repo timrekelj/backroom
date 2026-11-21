@@ -274,3 +274,18 @@ pub fn six_digit_code(text: &str) -> String {
 pub fn login_req(username: &str, password: &str, device: &str) -> LoginRequest {
     LoginRequest { username: username.into(), password: password.into(), device_name: device.into(), ..Default::default() }
 }
+
+/// The code of a failed call, and its `CodeError` detail (reason, attempts remaining) if any.
+pub fn code_error<T>(r: Result<T, ConnectError>) -> (connectrpc::ErrorCode, Option<(CodeErrorReason, u32)>) {
+    use base64::Engine as _;
+    let err = r.err().expect("expected an error");
+    let detail = err.details.iter().find(|d| d.type_url.ends_with("thehideout.v1.CodeError")).map(|d| {
+        let raw = d.value.as_deref().unwrap_or_default();
+        let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(raw.trim_end_matches('='))
+            .expect("base64 detail");
+        let e = <CodeError as buffa::Message>::decode_from_slice(&bytes).expect("CodeError");
+        (e.reason.as_known().expect("known reason"), e.attempts_remaining)
+    });
+    (err.code, detail)
+}

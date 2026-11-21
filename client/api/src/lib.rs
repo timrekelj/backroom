@@ -104,7 +104,7 @@ pub(crate) mod proto {
 
 pub use account::{
     DeviceSession, Invite, InvitePreview, InviteStatus, LoginOutcome, NewInvite, Passkey, PasskeyCeremony, SecondFactor,
-    SecondFactorMethod, TotpSetup,
+    SecondFactorMethod, SecuritySummary, TotpSetup,
 };
 pub use admin::{
     ActivityPoint, AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, AuditEntry, Overview, Paged, StorageBreakdown,

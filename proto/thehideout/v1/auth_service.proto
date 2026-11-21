@@ -9,11 +9,16 @@ import "thehideout/v1/types.proto";
 //
 // Accounts are invite-only (see invite_service.proto): SignUp always fails.
 // The unauthenticated RPCs are Login, RequestEmailCode, VerifyEmailCode,
-// CompleteSecondFactor, RequestPasswordReset, ResetPassword,
-// BeginPasskeyLogin and FinishPasskeyLogin (plus LookupInvite and
-// AcceptInvite in InviteService). Every other RPC, in every service, requires
-// the session token returned by those calls, sent as the HTTP header
-// `Authorization: Bearer <token>`.
+// CompleteSecondFactor, BeginSecondFactorPasskey, FinishSecondFactorPasskey,
+// RequestPasswordReset, ResetPassword, BeginPasskeyLogin and
+// FinishPasskeyLogin (plus LookupInvite and AcceptInvite in InviteService).
+// Every other RPC, in every service, requires the session token returned by
+// those calls, sent as the HTTP header `Authorization: Bearer <token>`.
+//
+// Rejected second-factor answers and signed-in code checks (ConfirmTotp,
+// DisableTotp, RegenerateRecoveryCodes, ConfirmEmailChange) carry a
+// `CodeError` error detail; they never answer UNAUTHENTICATED, which always
+// means a missing or refused session token.
 service AuthService {
   // Deprecated: accounts are invite-only. Always fails with
   // FAILED_PRECONDITION "invite required"; use InviteService.AcceptInvite.
@@ -23,6 +28,8 @@ service AuthService {
   rpc Login(LoginRequest) returns (LoginResponse);
   // Returns the user the session token belongs to.
   rpc GetMe(GetMeRequest) returns (GetMeResponse);
+  // How the caller's account is protected (for a security settings page).
+  rpc GetSecurity(GetSecurityRequest) returns (GetSecurityResponse);
 
   // Emails a one-time sign-in code. Always succeeds (unless rate limited),
   // whether or not an account has that email.
@@ -32,6 +39,11 @@ service AuthService {
   rpc VerifyEmailCode(VerifyEmailCodeRequest) returns (VerifyEmailCodeResponse);
   // Answers a second-factor challenge with a TOTP or recovery code.
   rpc CompleteSecondFactor(CompleteSecondFactorRequest) returns (CompleteSecondFactorResponse);
+  // Starts answering a second-factor challenge with a passkey (offered as
+  // SECOND_FACTOR_METHOD_PASSKEY when the account has one).
+  rpc BeginSecondFactorPasskey(BeginSecondFactorPasskeyRequest) returns (BeginSecondFactorPasskeyResponse);
+  // Finishes BeginSecondFactorPasskey: the session, or `pending`.
+  rpc FinishSecondFactorPasskey(FinishSecondFactorPasskeyRequest) returns (FinishSecondFactorPasskeyResponse);
 
   // Emails a password reset code. Always succeeds (unless rate limited).
   rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
@@ -101,6 +113,36 @@ enum SecondFactorMethod {
   SECOND_FACTOR_METHOD_TOTP = 1;
   // One of the single-use recovery codes.
   SECOND_FACTOR_METHOD_RECOVERY_CODE = 2;
+  // One of the account's passkeys (BeginSecondFactorPasskey); offered when
+  // the account has a passkey.
+  SECOND_FACTOR_METHOD_PASSKEY = 3;
+}
+
+// Why a code (or a second-factor answer) was not accepted; the `reason` of a
+// `CodeError` error detail.
+enum CodeErrorReason {
+  // Not a reason; the zero value.
+  CODE_ERROR_REASON_UNSPECIFIED = 0;
+  // INVALID_ARGUMENT: the code or passkey answer was wrong; see
+  // `attempts_remaining`.
+  CODE_ERROR_REASON_WRONG = 1;
+  // FAILED_PRECONDITION: the challenge, code or setup expired, was used, or
+  // never existed; start again.
+  CODE_ERROR_REASON_EXPIRED = 2;
+  // RESOURCE_EXHAUSTED: too many wrong answers; the challenge or code is
+  // dead, start again (signed-in checks: wait for the hourly limit).
+  CODE_ERROR_REASON_TOO_MANY_ATTEMPTS = 3;
+}
+
+// Error detail (type `thehideout.v1.CodeError`) of a rejected second-factor
+// answer or signed-in code check.
+message CodeError {
+  // What went wrong.
+  CodeErrorReason reason = 1;
+  // For CODE_ERROR_REASON_WRONG: how many more answers are accepted before
+  // the challenge or code dies (signed-in TOTP checks: before the hourly
+  // limit is reached).
+  uint32 attempts_remaining = 2;
 }
 
 // The first factor succeeded; answer with CompleteSecondFactor.
@@ -141,6 +183,24 @@ message GetMeRequest {}
 message GetMeResponse {
   // The authenticated user (with `email`).
   User user = 1;
+}
+
+// Request for the caller's security overview.
+message GetSecurityRequest {}
+
+// How the caller's account is protected.
+message GetSecurityResponse {
+  // An authenticator app is set up (sign-ins need a second factor).
+  bool totp_enabled = 1;
+  // The account has a password (false for passwordless accounts).
+  bool has_password = 2;
+  // How many passkeys the account has.
+  uint32 passkey_count = 3;
+  // Unused recovery codes left; 0 when TOTP is off.
+  uint32 recovery_codes_remaining = 4;
+  // The account has a confirmed email (accounts get theirs from the invite
+  // or ConfirmEmailChange); false for legacy accounts without one.
+  bool email_verified = 5;
 }
 
 // Request to email a sign-in code.
@@ -188,6 +248,39 @@ message CompleteSecondFactorResponse {
   string token = 1;
   // The authenticated user.
   User user = 2;
+}
+
+// Request to answer a second-factor challenge with a passkey.
+message BeginSecondFactorPasskeyRequest {
+  // `SecondFactorChallenge.challenge_id`.
+  string challenge_id = 1;
+  // See BeginPasskeyRegistrationRequest.redirect_port.
+  optional uint32 redirect_port = 2;
+}
+
+// The ceremony; it is bound to the challenge.
+message BeginSecondFactorPasskeyResponse {
+  // The ceremony to run.
+  PasskeyCeremony ceremony = 1;
+}
+
+// Request to finish a second-factor passkey answer.
+message FinishSecondFactorPasskeyRequest {
+  // `PasskeyCeremony.ceremony_id`.
+  string ceremony_id = 1;
+  // The `PublicKeyCredential` as JSON; "" = use the result the ceremony page stored.
+  string credential_json = 2;
+}
+
+// The new session, or `pending`. A passkey that is not accepted counts as a
+// wrong answer to the challenge (INVALID_ARGUMENT with a `CodeError`).
+message FinishSecondFactorPasskeyResponse {
+  // Session token; "" while pending.
+  string token = 1;
+  // The authenticated user; unset while pending.
+  User user = 2;
+  // True when the ceremony page has not finished yet; poll again.
+  bool pending = 3;
 }
 
 // Request to email a password reset code.

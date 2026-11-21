@@ -30,6 +30,7 @@ impl LoginOutcome {
             .filter_map(|m| match m.as_known() {
                 Some(pb::SecondFactorMethod::SECOND_FACTOR_METHOD_TOTP) => Some(SecondFactorMethod::Totp),
                 Some(pb::SecondFactorMethod::SECOND_FACTOR_METHOD_RECOVERY_CODE) => Some(SecondFactorMethod::RecoveryCode),
+                Some(pb::SecondFactorMethod::SECOND_FACTOR_METHOD_PASSKEY) => Some(SecondFactorMethod::Passkey),
                 _ => None,
             })
             .collect();
@@ -44,6 +45,8 @@ pub enum SecondFactorMethod {
     Totp,
     /// One of the single-use recovery codes.
     RecoveryCode,
+    /// One of the account's passkeys ([`Client::begin_second_factor_passkey`]).
+    Passkey,
 }
 
 /// The code answering a second-factor challenge.
@@ -83,6 +86,9 @@ pub struct Invite {
     pub email: String,
     /// `XXXX-XXXX`; only right after [`Client::create_invite`] / [`Client::resend_invite`].
     pub code: Option<String>,
+    /// The invite link (`{server}/invite/{token}`); like `code`, only right after creating or
+    /// resending.
+    pub link: Option<String>,
     pub status: InviteStatus,
     /// `None` for invites made by the server (bootstrap, CLI).
     pub inviter: Option<User>,
@@ -99,6 +105,7 @@ impl From<pb::Invite> for Invite {
             id: i.id,
             email: i.email,
             code: i.code,
+            link: i.link,
             status: i.status.into(),
             inviter: i.inviter.into_option().map(Into::into),
             guild_ids: i.guild_ids,
@@ -132,6 +139,19 @@ pub struct NewInvite {
     pub guild_ids: Vec<u64>,
     /// Site admins only: make the new account a site admin.
     pub make_admin: bool,
+}
+
+/// How the caller's account is protected ([`Client::get_security`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SecuritySummary {
+    pub totp_enabled: bool,
+    /// `false` for passwordless accounts.
+    pub has_password: bool,
+    pub passkey_count: u32,
+    /// Unused recovery codes; 0 when TOTP is off.
+    pub recovery_codes_remaining: u32,
+    /// `false` for legacy accounts without an email.
+    pub email_verified: bool,
 }
 
 /// A new authenticator-app secret ([`Client::begin_totp_setup`]).
@@ -346,6 +366,39 @@ impl Client {
         self.finish_auth(res.token, res.user.into_option())
     }
 
+    /// Starts answering a [`LoginOutcome::SecondFactor`] challenge with a passkey (offered as
+    /// [`SecondFactorMethod::Passkey`]); finish with [`finish_second_factor_passkey`](Self::finish_second_factor_passkey).
+    pub async fn begin_second_factor_passkey(&self, challenge: &str, redirect_port: Option<u16>) -> Result<PasskeyCeremony> {
+        let res = self
+            .auth()?
+            .begin_second_factor_passkey(pb::BeginSecondFactorPasskeyRequest {
+                challenge_id: challenge.into(),
+                redirect_port: redirect_port.map(u32::from),
+                ..Default::default()
+            })
+            .await?
+            .into_owned();
+        required(res.ceremony.into_option())
+    }
+
+    /// Finishes a second-factor passkey answer and stores the token; `Ok(None)` while the
+    /// ceremony page has no result yet. A refused passkey is [`ApiError::WrongCode`].
+    pub async fn finish_second_factor_passkey(&self, ceremony_id: &str, credential_json: Option<&str>) -> Result<Option<(String, User)>> {
+        let res = self
+            .auth()?
+            .finish_second_factor_passkey(pb::FinishSecondFactorPasskeyRequest {
+                ceremony_id: ceremony_id.into(),
+                credential_json: credential_json.unwrap_or_default().into(),
+                ..Default::default()
+            })
+            .await?
+            .into_owned();
+        if res.pending {
+            return Ok(None);
+        }
+        self.finish_auth(res.token, res.user.into_option()).map(Some)
+    }
+
     /// Emails a password reset code (succeeds whether or not the address has an account).
     pub async fn request_password_reset(&self, email: &str) -> Result<()> {
         self.auth()?
@@ -368,6 +421,18 @@ impl Client {
     }
 
     // --- Account security ----------------------------------------------------
+
+    /// How the account is protected: TOTP, password, passkeys, recovery codes, email.
+    pub async fn get_security(&self) -> Result<SecuritySummary> {
+        let res = self.auth()?.get_security(pb::GetSecurityRequest::default()).await?.into_owned();
+        Ok(SecuritySummary {
+            totp_enabled: res.totp_enabled,
+            has_password: res.has_password,
+            passkey_count: res.passkey_count,
+            recovery_codes_remaining: res.recovery_codes_remaining,
+            email_verified: res.email_verified,
+        })
+    }
 
     /// Changes the password (`current_password` is "" for passwordless
     /// accounts); other sessions are signed out.
@@ -560,12 +625,16 @@ mod tests {
             methods: vec![
                 pb::SecondFactorMethod::SECOND_FACTOR_METHOD_TOTP.into(),
                 pb::SecondFactorMethod::SECOND_FACTOR_METHOD_RECOVERY_CODE.into(),
+                pb::SecondFactorMethod::SECOND_FACTOR_METHOD_PASSKEY.into(),
             ],
             ..Default::default()
         };
         assert_eq!(
             LoginOutcome::from_challenge(c),
-            LoginOutcome::SecondFactor { challenge: "c".into(), methods: vec![SecondFactorMethod::Totp, SecondFactorMethod::RecoveryCode] }
+            LoginOutcome::SecondFactor {
+                challenge: "c".into(),
+                methods: vec![SecondFactorMethod::Totp, SecondFactorMethod::RecoveryCode, SecondFactorMethod::Passkey]
+            }
         );
     }
 

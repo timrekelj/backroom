@@ -330,9 +330,12 @@ async fn invite_accept_and_sign_in() {
     assert_eq!(invite.email, "zoe@example.test");
     assert_eq!(invite.status, InviteStatus::Pending);
     let code = invite.code.clone().expect("code");
-    // The emailed link (test hook: the server's in-memory outbox) and the code both work.
+    // The emailed link (test hook: the server's in-memory outbox) and the code both work; the
+    // creator gets both back.
     let mail = common::mail(&server.state, "zoe@example.test", "invited").await;
     assert!(mail.text.contains(&code));
+    let link = invite.link.clone().expect("link");
+    assert!(link.contains("/invite/") && mail.text.contains(&link), "{link}");
 
     let zoe = Client::new(&server.url);
     let preview = zoe.lookup_invite(&code).await.unwrap();
@@ -371,11 +374,19 @@ async fn email_code_sign_in_with_second_factor() {
     assert!(matches!(fresh.verify_email_code(&email, &code, "tablet").await.unwrap(), LoginOutcome::Session { .. }));
     assert!(fresh.token().is_some());
 
-    // With an authenticator app the code leads to a second-factor challenge.
+    // With an authenticator app the code leads to a second-factor challenge. A wrong code while
+    // signed in is a `WrongCode` with the tries left, never `Unauthenticated`.
+    let security = ann.get_security().await.unwrap();
+    assert!(!security.totp_enabled && security.has_password && security.email_verified);
+    assert_eq!(ann.confirm_totp("000000").await, Err(ApiError::CodeExpired), "no setup started");
     let setup = ann.begin_totp_setup().await.unwrap();
+    assert_eq!(ann.confirm_totp("000000").await, Err(ApiError::WrongCode { attempts_remaining: 8 }));
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let recovery = ann.confirm_totp(&thehideout_server::codes::totp_now(&setup.secret, now)).await.unwrap();
     assert_eq!(recovery.len(), 10);
+    let security = ann.get_security().await.unwrap();
+    assert!(security.totp_enabled);
+    assert_eq!((security.recovery_codes_remaining, security.passkey_count), (10, 0));
     let other = Client::new(&server.url);
     other.request_email_code(&email).await.unwrap();
     let mail = loop {
@@ -391,8 +402,71 @@ async fn email_code_sign_in_with_second_factor() {
     };
     assert_eq!(methods.len(), 2);
     assert!(other.token().is_none());
+    assert_eq!(
+        other.complete_second_factor(&challenge, SecondFactor::Totp("000000")).await,
+        Err(ApiError::WrongCode { attempts_remaining: 4 })
+    );
     let (_, me) = other.complete_second_factor(&challenge, SecondFactor::RecoveryCode(&recovery[0])).await.unwrap();
     assert_eq!(me.username, "ann");
     assert!(other.token().is_some());
+    assert_eq!(
+        other.complete_second_factor(&challenge, SecondFactor::RecoveryCode(&recovery[1])).await,
+        Err(ApiError::CodeExpired),
+        "the challenge is used"
+    );
+    assert_eq!(ann.get_security().await.unwrap().recovery_codes_remaining, 9);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+async fn passkey_answers_the_second_factor_and_too_many_wrong_codes_end_it() {
+    use webauthn_authenticator_rs::WebauthnAuthenticator;
+    use webauthn_authenticator_rs::prelude::Url;
+    use webauthn_authenticator_rs::softpasskey::SoftPasskey;
+
+    let server = Server::start().await;
+    let bea = Client::new(&server.url);
+    common::sign_up(&server.state, &bea, "bea").await;
+    let origin = Url::parse(&server.state.public_base()).unwrap();
+    let mut key = SoftPasskey::new(true);
+    let ceremony = bea.begin_passkey_registration("laptop", None).await.unwrap();
+    let credential = key.do_registration(origin.clone(), serde_json::from_str(&ceremony.options_json).unwrap()).unwrap();
+    bea.finish_passkey_registration(&ceremony.id, Some(&serde_json::to_string(&credential).unwrap())).await.unwrap().unwrap();
+    let setup = bea.begin_totp_setup().await.unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    bea.confirm_totp(&thehideout_server::codes::totp_now(&setup.secret, now)).await.unwrap();
+    assert_eq!(bea.get_security().await.unwrap().passkey_count, 1);
+
+    let challenge = |c: &Client| {
+        let c = c.clone();
+        async move {
+            match c.login("bea", PASSWORD).await.unwrap() {
+                LoginOutcome::SecondFactor { challenge, methods } => (challenge, methods),
+                other => panic!("second factor expected, got {other:?}"),
+            }
+        }
+    };
+    let other = Client::new(&server.url);
+    let (id, methods) = challenge(&other).await;
+    assert!(methods.contains(&thehideout_api::SecondFactorMethod::Passkey));
+    let ceremony = other.begin_second_factor_passkey(&id, None).await.unwrap();
+    assert_eq!(other.finish_second_factor_passkey(&ceremony.id, None).await, Ok(None), "pending");
+    let credential = key.do_authentication(origin, serde_json::from_str(&ceremony.options_json).unwrap()).unwrap();
+    let (_, me) = other
+        .finish_second_factor_passkey(&ceremony.id, Some(&serde_json::to_string(&credential).unwrap()))
+        .await
+        .unwrap()
+        .expect("signed in");
+    assert_eq!(me.username, "bea");
+    assert!(other.token().is_some());
+
+    // Five wrong answers end the challenge.
+    let third = Client::new(&server.url);
+    let (id, _) = challenge(&third).await;
+    for left in (1..=4).rev() {
+        assert_eq!(third.complete_second_factor(&id, SecondFactor::Totp("000000")).await, Err(ApiError::WrongCode { attempts_remaining: left }));
+    }
+    assert_eq!(third.complete_second_factor(&id, SecondFactor::Totp("000000")).await, Err(ApiError::TooManyAttempts));
+    assert_eq!(third.begin_second_factor_passkey(&id, None).await, Err(ApiError::CodeExpired));
     server.cleanup().await;
 }

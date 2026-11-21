@@ -4,11 +4,21 @@ use std::fmt;
 
 use connectrpc::{ConnectError, ErrorCode};
 
+use crate::proto::thehideout::v1 as pb;
+
 /// Why an API call failed, mapped from the Connect error code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiError {
-    /// Missing, invalid or expired session token, or wrong username/password.
+    /// Missing, invalid or expired session token, or wrong username/password (and, so they don't
+    /// reveal whether an account exists, a wrong emailed sign-in or reset code).
     Unauthenticated,
+    /// A second-factor answer or a signed-in code check (authenticator code, recovery code,
+    /// email-change code, passkey) was wrong; that many more tries are accepted.
+    WrongCode { attempts_remaining: u32 },
+    /// The sign-in challenge, code or setup expired, was used, or never existed: start again.
+    CodeExpired,
+    /// Too many wrong answers: the challenge or code is dead, start again.
+    TooManyAttempts,
     /// The request was rejected as malformed (empty or over-long message, bad username, ...).
     InvalidArgument(String),
     /// The guild, channel, user or invite does not exist (or is not visible to the caller).
@@ -47,6 +57,10 @@ impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unauthenticated => f.write_str("not signed in or invalid credentials"),
+            Self::WrongCode { attempts_remaining: 1 } => f.write_str("wrong code, 1 try left"),
+            Self::WrongCode { attempts_remaining } => write!(f, "wrong code, {attempts_remaining} tries left"),
+            Self::CodeExpired => f.write_str("expired, start again"),
+            Self::TooManyAttempts => f.write_str("too many wrong attempts, start again"),
             Self::InvalidArgument(msg) => write!(f, "invalid request: {msg}"),
             Self::NotFound => f.write_str("not found"),
             Self::PermissionDenied => f.write_str("permission denied"),
@@ -85,9 +99,30 @@ impl ApiError {
 
 /// The server's message for a sign-up without an invite.
 const INVITE_REQUIRED: &str = "invite required";
+/// Type of the error detail on rejected codes.
+const CODE_ERROR: &str = "thehideout.v1.CodeError";
+
+/// The `CodeError` detail of a rejected code, if the error has one.
+fn code_error(err: &ConnectError) -> Option<ApiError> {
+    use base64::Engine as _;
+    use buffa::Message as _;
+    let detail = err.details.iter().find(|d| d.type_url.trim_start_matches("type.googleapis.com/") == CODE_ERROR)?;
+    let raw = detail.value.as_deref()?.trim_end_matches('=');
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD.decode(raw).ok()?;
+    let detail = pb::CodeError::decode_from_slice(&bytes).ok()?;
+    match detail.reason.as_known()? {
+        pb::CodeErrorReason::CODE_ERROR_REASON_WRONG => Some(ApiError::WrongCode { attempts_remaining: detail.attempts_remaining }),
+        pb::CodeErrorReason::CODE_ERROR_REASON_EXPIRED => Some(ApiError::CodeExpired),
+        pb::CodeErrorReason::CODE_ERROR_REASON_TOO_MANY_ATTEMPTS => Some(ApiError::TooManyAttempts),
+        _ => None,
+    }
+}
 
 impl From<ConnectError> for ApiError {
     fn from(err: ConnectError) -> Self {
+        if let Some(e) = code_error(&err) {
+            return e;
+        }
         let msg = err.message.clone().unwrap_or_default();
         match err.code {
             ErrorCode::Unauthenticated => Self::Unauthenticated,
@@ -128,6 +163,25 @@ mod tests {
         assert_eq!(map(ErrorCode::Aborted), ApiError::Conflict);
         assert_eq!(map(ErrorCode::Unimplemented), ApiError::Unimplemented);
         assert_eq!(map(ErrorCode::Internal), ApiError::Other("boom".into()));
+    }
+
+    fn with_detail(code: ErrorCode, reason: pb::CodeErrorReason, attempts_remaining: u32) -> ApiError {
+        let detail = pb::CodeError { reason: reason.into(), attempts_remaining, ..Default::default() };
+        ConnectError::new(code, "boom")
+            .with_detail(connectrpc::ErrorDetail::from_message(CODE_ERROR, &detail))
+            .into()
+    }
+
+    #[test]
+    fn maps_code_error_details() {
+        use pb::CodeErrorReason::*;
+        assert_eq!(with_detail(ErrorCode::InvalidArgument, CODE_ERROR_REASON_WRONG, 3), ApiError::WrongCode { attempts_remaining: 3 });
+        assert_eq!(with_detail(ErrorCode::FailedPrecondition, CODE_ERROR_REASON_EXPIRED, 0), ApiError::CodeExpired);
+        assert_eq!(with_detail(ErrorCode::ResourceExhausted, CODE_ERROR_REASON_TOO_MANY_ATTEMPTS, 0), ApiError::TooManyAttempts);
+        // An unknown reason falls back to the code.
+        assert_eq!(with_detail(ErrorCode::InvalidArgument, CODE_ERROR_REASON_UNSPECIFIED, 0), ApiError::InvalidArgument("boom".into()));
+        assert!(!ApiError::TooManyAttempts.is_transient());
+        assert_eq!(ApiError::WrongCode { attempts_remaining: 1 }.to_string(), "wrong code, 1 try left");
     }
 
     #[test]

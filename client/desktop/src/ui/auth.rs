@@ -506,8 +506,38 @@ fn step(a: &App, k: &Kit) -> Vec<El> {
                     .w_full(),
             );
         }
+        AuthStep::SecondFactor { passkey: true, .. } => {
+            let glyph = catalog::by_name("fingerprint").unwrap_or(&thehideout_design::icons::LOCK);
+            out.push(
+                col()
+                    .key("auth-2fa-passkey-waiting")
+                    .w_full()
+                    .gap(12.0)
+                    .py(8.0)
+                    .items_center()
+                    .child(row().size(48.0, 48.0).center().radius(radius::LG).fill(t.accent_subtle.color()).child(icon(glyph, 28.0).color(t.accent_text.color())))
+                    .child(text("Finish in your browser").font(type_::at(k, type_::TITLE)).color(t.text.color()))
+                    .child(
+                        text("We opened a page in your browser. Confirm with your passkey there to finish signing in.")
+                            .font(type_::at(k, type_::CONTROL))
+                            .color(t.text_muted.color())
+                            .wrap()
+                            .w_full()
+                            .align(rune::Align::Center),
+                    )
+                    .child(text("Waiting\u{2026}").key("auth-waiting").font(type_::at(k, type_::CAPTION)).color(t.text_faint.color())),
+            );
+            out.push(
+                Button::new("Cancel")
+                    .variant(Variant::Secondary)
+                    .on_press(|a: &mut App| a.act(|s| s.cancel_passkey_login()))
+                    .build(k)
+                    .key("auth-passkey-cancel")
+                    .w_full(),
+            );
+        }
         AuthStep::SecondFactor {
-            recovery, locked, ..
+            recovery, locked, methods, ..
         } => {
             out.push(back(
                 k,
@@ -522,7 +552,7 @@ fn step(a: &App, k: &Kit) -> Vec<El> {
                 out.push(heading(
                     k,
                     "Two-factor authentication",
-                    "That was too many tries, so this sign-in was stopped.",
+                    "This sign-in was stopped. Start again to get a new one.",
                 ));
                 out.push(
                     Button::new("Start again")
@@ -563,6 +593,7 @@ fn step(a: &App, k: &Kit) -> Vec<El> {
                 ));
             }
             if !*locked {
+                let has_passkey = methods.contains(&thehideout_api::SecondFactorMethod::Passkey);
                 let toggle = link(
                     k,
                     "auth-toggle-recovery",
@@ -573,27 +604,20 @@ fn step(a: &App, k: &Kit) -> Vec<El> {
                     },
                     |a: &mut App| a.act(|s| s.toggle_recovery()),
                 );
-                out.push(
-                    row()
-                        .w_full()
-                        .gap(8.0)
-                        .center()
-                        .flex_wrap()
-                        .child(toggle)
+                let mut links = row().w_full().gap(8.0).center().flex_wrap().child(toggle);
+                // A passkey answers this challenge (offered when the account has one).
+                if has_passkey {
+                    links = links
                         .child(
                             text("\u{00b7}")
                                 .font(type_::at(k, type_::CONTROL))
                                 .color(t.text_faint.color()),
                         )
-                        .child(link(
-                            k,
-                            "auth-link-passkey",
-                            "Use a passkey",
-                            |a: &mut App| {
-                                a.act(|s| s.auth_go(AuthStep::Passkey { waiting: false }))
-                            },
-                        )),
-                );
+                        .child(link(k, "auth-2fa-passkey", "Use a passkey", |a: &mut App| {
+                            a.act(|s| s.second_factor_passkey())
+                        }));
+                }
+                out.push(links);
             }
         }
         AuthStep::InviteCode => {

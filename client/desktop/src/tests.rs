@@ -912,7 +912,7 @@ fn signing_out_returns_to_auth() {
     let (mut rt, _) = signed_in(0.0);
     click(&mut rt, "user-menu-button");
     settle(&mut rt, 8);
-    click(&mut rt, "user-menu-item2");
+    click(&mut rt, "user-menu-item3");
     settle(&mut rt, 6);
     assert_eq!(rt.state.state.screen, Screen::Auth);
     assert!(rt.state.state.session.is_none());

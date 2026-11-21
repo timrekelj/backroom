@@ -30,9 +30,14 @@ pub const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
 pub const SERVER_ENV: &str = "THEHIDEOUT_SERVER_URL";
 const APP_ID: &str = "thehideout";
 const PAGE: u32 = 50;
-/// A passkey ceremony is polled once a second for up to two minutes.
+/// A passkey ceremony is polled once a second for up to two minutes (and at once when the
+/// ceremony page redirects to the app's loopback address).
 const PASSKEY_POLL: Duration = Duration::from_secs(1);
-const PASSKEY_POLLS: u32 = 120;
+const PASSKEY_WAIT: Duration = Duration::from_secs(120);
+/// What the browser shows after the ceremony page redirects to the app.
+const LOOPBACK_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>thehideout</title>\
+<body style=\"font-family:-apple-system,Segoe UI,sans-serif;max-width:420px;margin:15vh auto;padding:0 16px\">\
+<h2>All set</h2><p>You can close this tab and return to thehideout.</p></body>";
 
 /// The server to talk to when the auth form's field is empty: the environment, else the default.
 pub fn default_server() -> String {
@@ -153,14 +158,25 @@ impl Shared {
         Session { token, me }
     }
 
-    /// Polls a passkey ceremony page's result once a second, until it is there, fails, is
-    /// cancelled (`None`) or two minutes pass.
-    async fn wait_ceremony<T, Fut>(&self, ticket: u64, mut finish: impl FnMut() -> Fut) -> Option<Result<T, ApiError>>
+    /// Polls a passkey ceremony page's result once a second (or as soon as the page redirects to
+    /// `loopback`), until it is there, fails, is cancelled (`None`) or two minutes pass.
+    async fn wait_ceremony<T, Fut>(
+        &self,
+        ticket: u64,
+        loopback: Option<&Loopback>,
+        mut finish: impl FnMut() -> Fut,
+    ) -> Option<Result<T, ApiError>>
     where
         Fut: Future<Output = Result<Option<T>, ApiError>>,
     {
-        for _ in 0..PASSKEY_POLLS {
-            tokio::time::sleep(PASSKEY_POLL).await;
+        let deadline = tokio::time::Instant::now() + PASSKEY_WAIT;
+        while tokio::time::Instant::now() < deadline {
+            match loopback {
+                Some(l) => {
+                    let _ = tokio::time::timeout(PASSKEY_POLL, l.done.notified()).await;
+                }
+                None => tokio::time::sleep(PASSKEY_POLL).await,
+            }
             if self.passkey.load(Ordering::SeqCst) != ticket {
                 return None;
             }
@@ -360,42 +376,49 @@ impl RealBackend {
         });
     }
 
-    /// `call` for a signed-in check of a code or password: the server answers a wrong code with
-    /// `Unauthenticated` too, so the session only ends when `GetMe` agrees it is gone.
-    fn call_checked<T: Send + 'static>(
-        &mut self,
-        fut: impl Future<Output = Result<T, ApiError>> + Send + 'static,
-        make: impl FnOnce(Result<T, ApiError>) -> Reply + Send + 'static,
-    ) {
-        let shared = Arc::clone(&self.shared);
-        let generation = shared.generation();
-        let client = shared.client();
-        self.runtime().spawn(async move {
-            let result = fut.await;
-            if matches!(result, Err(ApiError::Unauthenticated)) && client.get_me().await == Err(ApiError::Unauthenticated) {
-                if shared.generation() == generation {
-                    shared.expire();
-                }
-                return;
-            }
-            if shared.generation() == generation {
-                shared.push(make(result));
-            }
-        });
-    }
-
     /// A passkey sign-in: the ceremony page goes to the app to open, then its result is polled.
     fn passkey_login(&mut self, username: String) {
         let shared = Arc::clone(&self.shared);
         let ticket = shared.passkey.fetch_add(1, Ordering::SeqCst) + 1;
         self.runtime().spawn(async move {
             let (url, client) = shared.signed_out_client();
-            let ceremony = match client.begin_passkey_login(&username, &device_label(), None).await {
+            let loopback = Loopback::start().await;
+            let port = loopback.as_ref().map(|l| l.port);
+            let ceremony = match client.begin_passkey_login(&username, &device_label(), port).await {
                 Ok(c) => c,
                 Err(e) => return shared.push(Reply::PasskeyCeremony(Err(e))),
             };
             shared.push(Reply::PasskeyCeremony(Ok(ceremony.url.clone())));
-            let done = shared.wait_ceremony(ticket, || client.finish_passkey_login(&ceremony.id, None)).await;
+            let done = shared
+                .wait_ceremony(ticket, loopback.as_ref(), || client.finish_passkey_login(&ceremony.id, None))
+                .await;
+            match done {
+                None => {}
+                Some(Ok((token, me))) => {
+                    let session = shared.establish(client.clone(), &url, token, me);
+                    shared.push(Reply::Auth(Ok(session)));
+                }
+                Some(Err(e)) => shared.push(Reply::Auth(Err(e))),
+            }
+        });
+    }
+
+    /// A second factor answered with a passkey: like `passkey_login`, bound to the challenge.
+    fn second_factor_passkey(&mut self, challenge: String) {
+        let shared = Arc::clone(&self.shared);
+        let ticket = shared.passkey.fetch_add(1, Ordering::SeqCst) + 1;
+        self.runtime().spawn(async move {
+            let (url, client) = shared.signed_out_client();
+            let loopback = Loopback::start().await;
+            let port = loopback.as_ref().map(|l| l.port);
+            let ceremony = match client.begin_second_factor_passkey(&challenge, port).await {
+                Ok(c) => c,
+                Err(e) => return shared.push(Reply::PasskeyCeremony(Err(e))),
+            };
+            shared.push(Reply::PasskeyCeremony(Ok(ceremony.url.clone())));
+            let done = shared
+                .wait_ceremony(ticket, loopback.as_ref(), || client.finish_second_factor_passkey(&ceremony.id, None))
+                .await;
             match done {
                 None => {}
                 Some(Ok((token, me))) => {
@@ -414,13 +437,17 @@ impl RealBackend {
         let generation = shared.generation();
         let client = shared.client();
         self.runtime().spawn(async move {
-            let ceremony = match client.begin_passkey_registration(&name, None).await {
+            let loopback = Loopback::start().await;
+            let port = loopback.as_ref().map(|l| l.port);
+            let ceremony = match client.begin_passkey_registration(&name, port).await {
                 Ok(c) => c,
                 Err(ApiError::Unauthenticated) => return shared.expire(),
                 Err(e) => return shared.push(Reply::PasskeyCeremony(Err(e))),
             };
             shared.push(Reply::PasskeyCeremony(Ok(ceremony.url.clone())));
-            let done = shared.wait_ceremony(ticket, || client.finish_passkey_registration(&ceremony.id, None)).await;
+            let done = shared
+                .wait_ceremony(ticket, loopback.as_ref(), || client.finish_passkey_registration(&ceremony.id, None))
+                .await;
             if shared.generation() != generation {
                 return;
             }
@@ -504,6 +531,56 @@ async fn fetch_initial(client: &Client) -> Result<Initial, ApiError> {
     })
 }
 
+/// A loopback listener for a passkey ceremony: the server's page redirects the browser to
+/// `http://127.0.0.1:<port>/done` once it has posted the result, which wakes the poll at once.
+/// Polling still runs as the fallback (a browser that blocks the redirect, a busy port).
+struct Loopback {
+    port: u16,
+    done: Arc<tokio::sync::Notify>,
+    task: tokio::task::AbortHandle,
+}
+
+impl Loopback {
+    async fn start() -> Option<Loopback> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.ok()?;
+        let port = listener.local_addr().ok()?.port();
+        let done = Arc::new(tokio::sync::Notify::new());
+        let wake = Arc::clone(&done);
+        let task = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let wake = Arc::clone(&wake);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let n = match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await {
+                        Ok(Ok(n)) => n,
+                        _ => return,
+                    };
+                    let is_done = buf[..n].starts_with(b"GET /done ") || buf[..n].starts_with(b"GET /done?");
+                    let (status, body) = if is_done { ("200 OK", LOOPBACK_PAGE) } else { ("404 Not Found", "") };
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.write_all(body.as_bytes()).await;
+                    if is_done {
+                        wake.notify_one();
+                    }
+                });
+            }
+        })
+        .abort_handle();
+        Some(Loopback { port, done, task })
+    }
+}
+
+impl Drop for Loopback {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 enum UploadSource {
     Path { path: std::path::PathBuf, size: u64 },
     Bytes(Vec<u8>),
@@ -536,6 +613,7 @@ impl Backend for RealBackend {
                 Reply::PasswordReset,
             ),
             Command::BeginPasskeyLogin { username } => self.passkey_login(username),
+            Command::BeginSecondFactorPasskey { challenge } => self.second_factor_passkey(challenge),
             Command::CancelPasskey => {
                 self.shared.passkey.fetch_add(1, Ordering::SeqCst);
             }
@@ -549,15 +627,9 @@ impl Backend for RealBackend {
             Command::LoadSecurity => {
                 self.call(
                     async move {
-                        let (passkeys, sessions) = tokio::join!(client.list_passkeys(), client.list_sessions());
-                        // The API has no "is an authenticator on?": starting a setup answers it
-                        // (refused when one is on; a setup that is never confirmed lapses).
-                        let totp = match client.begin_totp_setup().await {
-                            Ok(_) => Some(false),
-                            Err(ApiError::Precondition(_)) => Some(true),
-                            Err(_) => None,
-                        };
-                        Ok(SecurityInfo { passkeys: passkeys?, sessions: sessions?, totp })
+                        let (summary, passkeys, sessions) =
+                            tokio::join!(client.get_security(), client.list_passkeys(), client.list_sessions());
+                        Ok(SecurityInfo { passkeys: passkeys?, sessions: sessions?, summary: summary? })
                     },
                     Reply::Security,
                 );
@@ -569,17 +641,17 @@ impl Backend for RealBackend {
                 self.call(async move { client.change_email(&email, &password).await }, Reply::EmailChangeStarted);
             }
             Command::ConfirmEmailChange { code } => {
-                self.call_checked(async move { client.confirm_email_change(&code).await }, Reply::EmailChanged);
+                self.call(async move { client.confirm_email_change(&code).await }, Reply::EmailChanged);
             }
             Command::BeginTotpSetup => self.call(async move { client.begin_totp_setup().await }, Reply::TotpSetup),
-            Command::ConfirmTotp { code } => self.call_checked(
+            Command::ConfirmTotp { code } => self.call(
                 async move { client.confirm_totp(&code).await },
                 |result| Reply::RecoveryCodes { regenerated: false, result },
             ),
             Command::DisableTotp { code } => {
-                self.call_checked(async move { client.disable_totp(&code).await }, Reply::TotpDisabled);
+                self.call(async move { client.disable_totp(&code).await }, Reply::TotpDisabled);
             }
-            Command::RegenerateRecoveryCodes { code } => self.call_checked(
+            Command::RegenerateRecoveryCodes { code } => self.call(
                 async move { client.regenerate_recovery_codes(&code).await },
                 |result| Reply::RecoveryCodes { regenerated: true, result },
             ),

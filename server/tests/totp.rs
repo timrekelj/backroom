@@ -10,6 +10,10 @@ fn code<T>(r: Result<T, ConnectError>) -> ErrorCode {
     r.err().expect("expected an error").code
 }
 
+const WRONG: CodeErrorReason = CodeErrorReason::CODE_ERROR_REASON_WRONG;
+const EXPIRED: CodeErrorReason = CodeErrorReason::CODE_ERROR_REASON_EXPIRED;
+const TOO_MANY: CodeErrorReason = CodeErrorReason::CODE_ERROR_REASON_TOO_MANY_ATTEMPTS;
+
 fn now() -> u64 {
     chrono::Utc::now().timestamp() as u64
 }
@@ -19,9 +23,10 @@ async fn enable(app: &TestApp, who: &Account) -> (String, Vec<String>) {
     let client = auth(app, Some(&who.token));
     let setup = client.begin_totp_setup(BeginTotpSetupRequest::default()).await.unwrap().into_owned();
     assert!(setup.otpauth_uri.starts_with("otpauth://totp/thehideout:") && setup.otpauth_uri.contains(&setup.secret));
+    // A wrong code is not UNAUTHENTICATED (that would read as a dead session).
     assert_eq!(
-        code(client.confirm_totp(ConfirmTotpRequest { code: "000000".into(), ..Default::default() }).await),
-        ErrorCode::Unauthenticated
+        code_error(client.confirm_totp(ConfirmTotpRequest { code: "000000".into(), ..Default::default() }).await),
+        (ErrorCode::InvalidArgument, Some((WRONG, 9)))
     );
     // Use the previous step so the current one stays free for the test.
     let codes = client
@@ -63,16 +68,17 @@ async fn totp_is_required_and_codes_are_single_use() {
     let login = app.name("ivy");
 
     let ch = challenge(&app, &login).await;
-    assert_eq!(code(complete(&app, &ch, "123", "").await), ErrorCode::Unauthenticated);
-    assert_eq!(code(complete(&app, &ch, "1", "x").await), ErrorCode::InvalidArgument);
+    assert_eq!(code_error(complete(&app, &ch, "123", "").await), (ErrorCode::InvalidArgument, Some((WRONG, 4))));
+    assert_eq!(code_error(complete(&app, &ch, "1", "x").await), (ErrorCode::InvalidArgument, None), "not counted");
     let current = totp_now(&secret, now());
     let done = complete(&app, &ch, &current, "").await.unwrap();
     assert_eq!(done.user.unwrap().id, ivy.id);
-    assert_eq!(code(complete(&app, &ch, &current, "").await), ErrorCode::Unauthenticated, "challenge used");
+    assert_eq!(code_error(complete(&app, &ch, &current, "").await), (ErrorCode::FailedPrecondition, Some((EXPIRED, 0))), "challenge used");
+    assert_eq!(code_error(complete(&app, "no-such-challenge", &current, "").await), (ErrorCode::FailedPrecondition, Some((EXPIRED, 0))));
 
     // Replay: the same code is refused on a new challenge; a later step works.
     let ch = challenge(&app, &login).await;
-    assert_eq!(code(complete(&app, &ch, &current, "").await), ErrorCode::Unauthenticated);
+    assert_eq!(code_error(complete(&app, &ch, &current, "").await), (ErrorCode::InvalidArgument, Some((WRONG, 4))));
     complete(&app, &ch, &totp_now(&secret, now() + TOTP_STEP_SECS), "").await.unwrap();
 
     // Email codes also need the second factor.
@@ -90,7 +96,7 @@ async fn totp_is_required_and_codes_are_single_use() {
     let rc = recovery[0].to_uppercase();
     complete(&app, &ch, "", &rc).await.unwrap();
     let ch = challenge(&app, &login).await;
-    assert_eq!(code(complete(&app, &ch, "", &rc).await), ErrorCode::Unauthenticated);
+    assert_eq!(code_error(complete(&app, &ch, "", &rc).await), (ErrorCode::InvalidArgument, Some((WRONG, 4))));
     complete(&app, &ch, "", &recovery[1]).await.unwrap();
     app.cleanup().await;
 }
@@ -101,10 +107,15 @@ async fn challenges_die_after_five_wrong_answers() {
     let jo = user(&app, "jo").await;
     let (secret, _) = enable(&app, &jo).await;
     let ch = challenge(&app, &app.name("jo")).await;
-    for _ in 0..5 {
-        assert_eq!(code(complete(&app, &ch, "000000", "").await), ErrorCode::Unauthenticated);
+    for left in (1..=4).rev() {
+        assert_eq!(code_error(complete(&app, &ch, "000000", "").await), (ErrorCode::InvalidArgument, Some((WRONG, left))));
     }
-    assert_eq!(code(complete(&app, &ch, &totp_now(&secret, now()), "").await), ErrorCode::Unauthenticated);
+    assert_eq!(code_error(complete(&app, &ch, "000000", "").await), (ErrorCode::ResourceExhausted, Some((TOO_MANY, 0))));
+    assert_eq!(
+        code_error(complete(&app, &ch, &totp_now(&secret, now()), "").await),
+        (ErrorCode::FailedPrecondition, Some((EXPIRED, 0))),
+        "the challenge is gone"
+    );
     app.cleanup().await;
 }
 
@@ -123,14 +134,53 @@ async fn regenerate_and_disable() {
         .recovery_codes;
     assert_eq!(fresh.len(), 10);
     let ch = challenge(&app, &app.name("kim")).await;
-    assert_eq!(code(complete(&app, &ch, "", &old[0]).await), ErrorCode::Unauthenticated, "old codes are gone");
+    assert_eq!(code_error(complete(&app, &ch, "", &old[0]).await), (ErrorCode::InvalidArgument, Some((WRONG, 4))), "old codes are gone");
 
+    // Signed-in checks: a wrong code says how many checks are left this hour (10, minus the
+    // enable's two and the regenerate's one).
     assert_eq!(
-        code(client.disable_totp(DisableTotpRequest { code: "000000".into(), ..Default::default() }).await),
-        ErrorCode::Unauthenticated
+        code_error(client.disable_totp(DisableTotpRequest { code: "000000".into(), ..Default::default() }).await),
+        (ErrorCode::InvalidArgument, Some((WRONG, 6)))
+    );
+    assert_eq!(
+        code_error(client.regenerate_recovery_codes(RegenerateRecoveryCodesRequest { code: "000000".into(), ..Default::default() }).await),
+        (ErrorCode::InvalidArgument, Some((WRONG, 5)))
     );
     client.disable_totp(DisableTotpRequest { code: fresh[0].clone(), ..Default::default() }).await.unwrap();
     let resp = auth(&app, None).login(login_req(&app.name("kim"), PASSWORD, "")).await.unwrap().into_owned();
     assert!(!resp.token.is_empty() && !resp.second_factor_required.is_set());
+    app.cleanup().await;
+}
+
+#[tokio::test]
+async fn get_security_reports_how_the_account_is_protected() {
+    let app = TestApp::start().await;
+    let uma = user(&app, "uma").await;
+    let client = auth(&app, Some(&uma.token));
+    let security = || {
+        let client = client.clone();
+        async move { client.get_security(GetSecurityRequest::default()).await.unwrap().into_owned() }
+    };
+    let s = security().await;
+    assert!(!s.totp_enabled && s.has_password && s.email_verified);
+    assert_eq!((s.passkey_count, s.recovery_codes_remaining), (0, 0));
+
+    let (_, recovery) = enable(&app, &uma).await;
+    let s = security().await;
+    assert!(s.totp_enabled);
+    assert_eq!(s.recovery_codes_remaining, 10);
+    let ch = challenge(&app, &app.name("uma")).await;
+    complete(&app, &ch, "", &recovery[3]).await.unwrap();
+    assert_eq!(security().await.recovery_codes_remaining, 9);
+
+    let legacy = legacy_user(&app, "oldie").await;
+    let s = auth(&app, Some(&legacy.token)).get_security(GetSecurityRequest::default()).await.unwrap().into_owned();
+    assert!(!s.email_verified && s.has_password && !s.totp_enabled);
+    // Confirming a setup that was never started (or lapsed) is EXPIRED.
+    assert_eq!(
+        code_error(auth(&app, Some(&legacy.token)).confirm_totp(ConfirmTotpRequest { code: "000000".into(), ..Default::default() }).await),
+        (ErrorCode::FailedPrecondition, Some((EXPIRED, 0)))
+    );
+    assert_eq!(code(auth(&app, None).get_security(GetSecurityRequest::default()).await), ErrorCode::Unauthenticated);
     app.cleanup().await;
 }

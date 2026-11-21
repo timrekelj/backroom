@@ -37,14 +37,17 @@ pub enum AuthStep {
     Passkey { waiting: bool },
     /// "Forgot password?": the email, then (`sent`) the code and a new password.
     Reset { sent: bool },
-    /// The account has an authenticator app: a 6-digit code, or (`recovery`) a recovery code.
-    /// `locked`: too many wrong answers, the sign-in has to start again.
+    /// The account has an authenticator app: a 6-digit code, (`recovery`) a recovery code, or
+    /// (`passkey`: waiting for the browser) one of its passkeys. `remaining`: the tries the server
+    /// said are left after a wrong answer. `locked`: too many wrong answers, or the challenge
+    /// expired; the sign-in has to start again.
     SecondFactor {
         challenge: String,
         methods: Vec<SecondFactorMethod>,
         recovery: bool,
-        wrong: u32,
+        remaining: Option<u32>,
         locked: bool,
+        passkey: bool,
     },
     /// "I have an invite": the code or the link from the email.
     InviteCode,
@@ -74,8 +77,6 @@ pub struct AuthError {
 
 /// Seconds before "Resend code" may be pressed again.
 pub const RESEND_SECS: f64 = 30.0;
-/// Wrong second-factor answers before the server drops the sign-in (it allows five).
-pub const SECOND_FACTOR_TRIES: u32 = 5;
 
 pub struct Auth {
     pub mode: AuthMode,

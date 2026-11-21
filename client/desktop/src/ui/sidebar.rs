@@ -259,6 +259,11 @@ fn user_strip(a: &App, k: &Kit, layer: &mut Vec<El>) -> El {
     }
     let menu = menu
         .item(
+            MenuItem::new("Security\u{2026}")
+                .icon(&thehideout_design::icons::LOCK)
+                .on_select(|a: &mut App| a.act(|s| s.open_security())),
+        )
+        .item(
             MenuItem::new("Sign out")
                 .icon(&SIGN_OUT)
                 .on_select(|a: &mut App| a.act(|s| s.sign_out())),

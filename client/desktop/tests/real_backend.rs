@@ -2073,7 +2073,7 @@ fn an_invite_then_two_factor_then_a_second_device() {
             _ => None,
         },
     );
-    assert_eq!(wrong.map(|s| s.me.id), Err(ApiError::Unauthenticated));
+    assert_eq!(wrong.map(|s| s.me.id), Err(ApiError::WrongCode { attempts_remaining: 4 }));
     // ...and the next step's code (each step is accepted once; the setup used this one) completes it.
     let second = laptop
         .ask(
@@ -2097,7 +2097,8 @@ fn an_invite_then_two_factor_then_a_second_device() {
     assert_eq!(info.sessions.iter().filter(|s| s.current).count(), 1);
     let label = backend::device_label();
     assert!(info.sessions.iter().all(|s| s.device_name == label), "named after this computer: {:?}", info.sessions);
-    assert_eq!(info.totp, Some(true));
+    assert!(info.summary.totp_enabled && info.summary.has_password && info.summary.email_verified);
+    assert_eq!((info.summary.recovery_codes_remaining, info.summary.passkey_count), (10, 0));
     assert!(info.passkeys.is_empty());
 
     // Signing the other device out leaves one.
@@ -2114,6 +2115,182 @@ fn an_invite_then_two_factor_then_a_second_device() {
         })
         .expect("the security lists again");
     assert_eq!(info.sessions.len(), 1);
+
+    rt.block_on(server.cleanup());
+}
+
+/// A plain HTTP/1.1 request (`body`: a POST), as a browser makes it: the status and the body.
+async fn http(url: &str, body: Option<&str>) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let rest = url.strip_prefix("http://").expect("an http URL");
+    let (host, path) = match rest.split_once('/') {
+        Some((h, p)) => (h, format!("/{p}")),
+        None => (rest, "/".to_owned()),
+    };
+    let mut stream = tokio::net::TcpStream::connect(host).await.expect("connect");
+    let (method, body) = match body {
+        Some(b) => ("POST", b),
+        None => ("GET", ""),
+    };
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    stream.read_to_end(&mut out).await.unwrap();
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let status = text.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_owned()).unwrap_or_default())
+}
+
+/// What the system browser does with a ceremony page the backend asked to open: fetch the
+/// options, run WebAuthn with `key`, post the result, then follow the page's redirect to the
+/// app's loopback address. Returns what the loopback answered.
+async fn browser_ceremony(
+    server: &Server,
+    ceremony_url: &str,
+    key: &mut webauthn_authenticator_rs::softpasskey::SoftPasskey,
+) -> (u16, String) {
+    use webauthn_authenticator_rs::WebauthnAuthenticator;
+    let id = ceremony_url.split("ceremony=").nth(1).expect("a ceremony id");
+    let (status, cfg) = http(&format!("{}/auth/passkey/options?ceremony={id}", server.url), None).await;
+    assert_eq!(status, 200, "{cfg}");
+    let cfg: serde_json::Value = serde_json::from_str(&cfg).unwrap();
+    let origin = server.state.public_url.clone();
+    let options = cfg["options"].clone();
+    let credential = if cfg["kind"] == "register" {
+        serde_json::to_string(&key.do_registration(origin, serde_json::from_value(options).unwrap()).unwrap())
+    } else {
+        serde_json::to_string(&key.do_authentication(origin, serde_json::from_value(options).unwrap()).unwrap())
+    }
+    .unwrap();
+    let (status, _) = http(&format!("{}/auth/passkey/result?ceremony={id}", server.url), Some(&credential)).await;
+    assert_eq!(status, 204);
+    let redirect = cfg["redirect"].as_str().expect("the backend asked for the loopback redirect");
+    assert!(redirect.starts_with("http://127.0.0.1:") && redirect.ends_with("/done"), "{redirect}");
+    http(redirect, None).await
+}
+
+/// A passkey (added through the browser ceremony, which redirects to the backend's loopback
+/// listener) answers the second factor of a sign-in on another device: the challenge's own
+/// ceremony, not a fresh passkey sign-in. Wrong codes come back as `WrongCode` with the server's
+/// count and never end a session; the Security lists come from `GetSecurity`, with no TOTP probe.
+#[test]
+fn a_passkey_answers_the_second_factor_and_wrong_codes_keep_the_session() {
+    use thehideout_api::SecondFactorMethod;
+    use totp_rs::{Algorithm, Secret, TOTP};
+    use webauthn_authenticator_rs::softpasskey::SoftPasskey;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(Server::start());
+    let mut desk = Peer::new(&server.url);
+    let pia = desk.sign_up(&server, "pia");
+    let mut key = SoftPasskey::new(true);
+
+    // A passkey, through the ceremony page: the browser lands on the app's loopback page.
+    desk.backend.submit(Command::BeginPasskeyRegistration { name: "laptop".into() });
+    let url = desk
+        .wait("the registration page", |r| match r {
+            Reply::PasskeyCeremony(u) => Some(u.clone()),
+            _ => None,
+        })
+        .expect("a ceremony page");
+    let started = Instant::now();
+    let (status, page) = rt.block_on(browser_ceremony(&server, &url, &mut key));
+    assert_eq!(status, 200);
+    assert!(page.contains("close this tab"), "{page}");
+    let added = desk
+        .wait("the new passkey", |r| match r {
+            Reply::PasskeyAdded(p) => Some(p.clone()),
+            _ => None,
+        })
+        .expect("the passkey is added");
+    assert_eq!(added.name, "laptop");
+    assert!(started.elapsed() < Duration::from_secs(5));
+
+    // The authenticator, then a wrong signed-in code: a `WrongCode`, and the session lives on.
+    let setup = desk
+        .ask(Command::BeginTotpSetup, |r| match r {
+            Reply::TotpSetup(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("begin the authenticator setup");
+    let totp = TOTP::new_unchecked(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        Secret::Encoded(setup.secret.clone()).to_bytes().expect("a base32 secret"),
+        None,
+        String::new(),
+    );
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let wrong = desk.ask(Command::ConfirmTotp { code: "000000".into() }, |r| match r {
+        Reply::RecoveryCodes { result, .. } => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(wrong, Err(ApiError::WrongCode { attempts_remaining: 9 }), "ten checks an hour");
+    desk.ask(Command::ConfirmTotp { code: totp.generate(now) }, |r| match r {
+        Reply::RecoveryCodes { result, .. } => Some(result.clone()),
+        _ => None,
+    })
+    .expect("confirm the authenticator");
+    let info = desk
+        .ask(Command::LoadSecurity, |r| match r {
+            Reply::Security(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("the security lists after a wrong code: still signed in");
+    assert!(info.summary.totp_enabled);
+    assert_eq!((info.summary.passkey_count, info.summary.recovery_codes_remaining), (1, 10));
+    assert!(desk.seen.iter().all(|r| !matches!(r, Reply::Gateway(GatewayUpdate::AuthExpired))));
+
+    // Another device: the password stops at the second factor, which offers the passkey.
+    let mut laptop = Peer::new(&server.url);
+    let (challenge, methods) = laptop.ask(
+        Command::Login { username: "pia".into(), password: PASSWORD.into() },
+        |r| match r {
+            Reply::SecondFactor { challenge, methods } => Some((challenge.clone(), methods.clone())),
+            Reply::Auth(a) => panic!("signed in without the second factor: {a:?}"),
+            _ => None,
+        },
+    );
+    assert!(methods.contains(&SecondFactorMethod::Passkey));
+    let wrong = laptop.ask(
+        Command::CompleteSecondFactor { challenge: challenge.clone(), code: "000000".into(), recovery: false },
+        |r| match r {
+            Reply::Auth(a) => Some(a.clone()),
+            _ => None,
+        },
+    );
+    assert_eq!(wrong.map(|s| s.me.id), Err(ApiError::WrongCode { attempts_remaining: 4 }));
+    laptop.backend.submit(Command::BeginSecondFactorPasskey { challenge: challenge.clone() });
+    let url = laptop
+        .wait("the second-factor page", |r| match r {
+            Reply::PasskeyCeremony(u) => Some(u.clone()),
+            _ => None,
+        })
+        .expect("a ceremony page for the challenge");
+    let (status, _) = rt.block_on(browser_ceremony(&server, &url, &mut key));
+    assert_eq!(status, 200);
+    let signed = laptop
+        .wait("the session", |r| match r {
+            Reply::Auth(a) => Some(a.clone()),
+            _ => None,
+        })
+        .expect("the passkey completes the sign-in");
+    assert_eq!(signed.me.id, pia.me.id);
+    assert!(laptop.saved().is_some(), "the new session is saved");
+    // The challenge is spent.
+    let again = laptop.ask(
+        Command::CompleteSecondFactor { challenge, code: totp.generate(now + 30), recovery: false },
+        |r| match r {
+            Reply::Auth(a) => Some(a.clone()),
+            _ => None,
+        },
+    );
+    assert_eq!(again.map(|s| s.me.id), Err(ApiError::CodeExpired));
 
     rt.block_on(server.cleanup());
 }

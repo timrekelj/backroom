@@ -218,7 +218,7 @@ pub enum Menu {
     Add,
     /// The sidebar header's menu.
     Guild,
-    /// The user strip's gear: settings and sign out.
+    /// The user strip's gear: profile, settings, (admin), security and sign out.
     User,
     /// A channel's menu (the row's "..." button, or a right-click at `at`).
     Channel {

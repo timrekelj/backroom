@@ -66,6 +66,9 @@ message Invite {
   optional uint64 accepted_user_id = 9;
   // Whether the new account becomes a site admin.
   bool make_admin = 10;
+  // The invite link (`{THEHIDEOUT_PUBLIC_URL}/invite/{token}`); like `code`,
+  // only returned by CreateInvite and ResendInvite.
+  optional string link = 11;
 }
 
 // Request to create an invite.
@@ -82,7 +85,7 @@ message CreateInviteRequest {
 
 // The created invite, with its code.
 message CreateInviteResponse {
-  // The invite (`code` set).
+  // The invite (`code` and `link` set).
   Invite invite = 1;
 }
 
@@ -99,7 +102,7 @@ message ListInvitesRequest {
 
 // Newest first.
 message ListInvitesResponse {
-  // The invites (`code` unset).
+  // The invites (`code` and `link` unset).
   repeated Invite invites = 1;
   // Token of the next page; "" = no more.
   string next_page_token = 2;
@@ -126,7 +129,7 @@ message ResendInviteRequest {
 
 // The invite with its new code.
 message ResendInviteResponse {
-  // The invite (`code` set).
+  // The invite (`code` and `link` set).
   Invite invite = 1;
 }
 

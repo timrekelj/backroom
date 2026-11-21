@@ -70,7 +70,7 @@ fn an_admin_opens_the_dashboard_from_the_menu_and_the_shortcut_and_esc_leaves_it
             .any(|e| e.label.as_deref().is_some_and(|l| l.contains("Admin"))),
         "the account menu offers Admin"
     );
-    click(&mut rt, "user-menu-item2"); // Profile, Settings, Admin, Sign out
+    click(&mut rt, "user-menu-item2"); // Profile, Settings, Admin, Security, Sign out
     settle(&mut rt, 12);
     let s = &rt.state.state;
     assert!(s.ui.admin.is_some(), "the menu item opens the dashboard");

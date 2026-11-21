@@ -5,7 +5,9 @@
 //!
 //! - every emailed code, and every authenticator code, is `123456`;
 //! - `dora` has an authenticator app (signing in as her asks for the second factor); her
-//!   recovery codes are [`RECOVERY`];
+//!   recovery codes are [`RECOVERY`]; she also has a passkey, offered as a second factor;
+//! - a second-factor challenge takes five wrong answers (each says how many are left), and
+//!   signed-in code checks ten per session;
 //! - `tim` has a passkey; a passkey ceremony finishes [`PASSKEY_SECS`] after it starts;
 //! - `bruno` is a legacy account without an email;
 //! - invites `WXYZ-2345` (pending, The Hideout), `EXPD-0001` (expired), `RVKD-0001` (revoked)
@@ -18,7 +20,7 @@ use std::collections::HashSet;
 use super::*;
 use thehideout_api::{
     DeviceSession, Invite, InvitePreview, InviteStatus, NewInvite, Paged, Passkey,
-    SecondFactorMethod, TotpSetup,
+    SecondFactorMethod, SecuritySummary, TotpSetup,
 };
 
 use crate::backend::{InviteAction, SecurityInfo};
@@ -50,6 +52,8 @@ pub const INVITE_EXPIRED: &str = "EXPD-0001";
 pub const INVITE_REVOKED: &str = "RVKD-0001";
 pub const INVITE_USED: &str = "USED-0001";
 const SECOND_FACTOR_TRIES: u32 = 5;
+/// Signed-in code checks (authenticator, email change) the fake allows.
+const USER_CHECKS: u32 = 10;
 const INVITE_DAYS: i64 = 7;
 
 struct FakeInvite {
@@ -63,8 +67,12 @@ pub(super) struct Accounts {
     totp: HashMap<String, Vec<String>>,
     /// A TOTP setup begun and not confirmed, by user id.
     setups: HashSet<u64>,
-    /// Second-factor challenges: id, username, wrong answers so far.
+    /// Second-factor challenges: id, username, answers so far.
     challenges: Vec<(String, String, u32)>,
+    /// Usernames whose passkey answers a second-factor challenge.
+    second_factor_passkeys: HashSet<String>,
+    /// Signed-in code checks so far (the server limits them per hour).
+    checks: u32,
     next_challenge: u64,
     passkeys: HashMap<u64, Vec<Passkey>>,
     next_passkey: u64,
@@ -149,6 +157,7 @@ impl Accounts {
                 id,
                 email: email.into(),
                 code: None,
+                link: None,
                 status,
                 inviter,
                 guild_ids: guilds,
@@ -168,6 +177,8 @@ impl Accounts {
             )]),
             setups: HashSet::new(),
             challenges: Vec::new(),
+            second_factor_passkeys: HashSet::from([DORA.to_owned()]),
+            checks: 0,
             next_challenge: 0,
             passkeys,
             next_passkey: 2,
@@ -274,10 +285,11 @@ impl World {
             self.account
                 .challenges
                 .push((id.clone(), username.to_lowercase(), 0));
-            return Reply::SecondFactor {
-                challenge: id,
-                methods: vec![SecondFactorMethod::Totp, SecondFactorMethod::RecoveryCode],
-            };
+            let mut methods = vec![SecondFactorMethod::Totp, SecondFactorMethod::RecoveryCode];
+            if self.account.second_factor_passkeys.contains(&username.to_lowercase()) {
+                methods.push(SecondFactorMethod::Passkey);
+            }
+            return Reply::SecondFactor { challenge: id, methods };
         }
         Reply::Auth(Ok(self.session_for(username)))
     }
@@ -328,8 +340,24 @@ impl World {
                         current: true,
                     }]
                 }),
-            totp: Some(self.me_has_totp()),
+            summary: SecuritySummary {
+                totp_enabled: self.me_has_totp(),
+                has_password: true,
+                passkey_count: self.account.passkeys.get(&self.me.id).map_or(0, |p| p.len() as u32),
+                recovery_codes_remaining: self
+                    .account
+                    .totp
+                    .get(&self.me.username.to_lowercase())
+                    .map_or(0, |c| c.len() as u32),
+                email_verified: self.me.email.is_some(),
+            },
         }
+    }
+
+    /// A wrong signed-in code: how many checks are left.
+    fn wrong_check(&mut self) -> ApiError {
+        self.account.checks += 1;
+        ApiError::WrongCode { attempts_remaining: USER_CHECKS.saturating_sub(self.account.checks) }
     }
 
     /// Ten fresh recovery codes, `XXXX-XXXX` in the server's alphabet (each set differs).
@@ -397,6 +425,7 @@ impl World {
             id,
             email,
             code: Some(code.clone()),
+            link: Some(format!("http://127.0.0.1:8080/invite/tok-{id}")),
             status: InviteStatus::Pending,
             inviter: Some(self.me.clone()),
             guild_ids: guilds,
@@ -410,6 +439,7 @@ impl World {
             FakeInvite {
                 invite: Invite {
                     code: None,
+                    link: None,
                     ..invite.clone()
                 },
                 code,
@@ -512,8 +542,10 @@ impl World {
                 f.code = format!("RSND-{:04}", id % 10_000);
                 f.invite.status = InviteStatus::Pending;
                 f.invite.expires_at = at(now_unix() + INVITE_DAYS * DAY);
+                f.token = format!("tok-rsnd-{id}");
                 Ok(Invite {
                     code: Some(f.code.clone()),
+                    link: Some(format!("http://127.0.0.1:8080/invite/{}", f.token)),
                     ..f.invite.clone()
                 })
             }
@@ -562,16 +594,18 @@ impl World {
                     .iter()
                     .position(|c| c.0 == challenge)
                 else {
-                    return Ok(vec![Reply::Auth(Err(ApiError::Unauthenticated))]);
+                    return Ok(vec![Reply::Auth(Err(ApiError::CodeExpired))]);
                 };
                 self.account.challenges[i].2 += 1;
                 let (_, name, tries) = self.account.challenges[i].clone();
-                if tries > SECOND_FACTOR_TRIES {
-                    self.account.challenges.remove(i);
-                    return Ok(vec![Reply::Auth(Err(ApiError::Unauthenticated))]);
-                }
                 if !self.check_code(&name, &code, recovery) {
-                    return Ok(vec![Reply::Auth(Err(ApiError::Unauthenticated))]);
+                    if tries >= SECOND_FACTOR_TRIES {
+                        self.account.challenges.remove(i);
+                        return Ok(vec![Reply::Auth(Err(ApiError::TooManyAttempts))]);
+                    }
+                    return Ok(vec![Reply::Auth(Err(ApiError::WrongCode {
+                        attempts_remaining: SECOND_FACTOR_TRIES - tries,
+                    }))]);
                 }
                 self.account.challenges.remove(i);
                 vec![Reply::Auth(Ok(self.session_for(&name)))]
@@ -596,6 +630,27 @@ impl World {
                 vec![Reply::PasskeyCeremony(Ok(format!(
                     "http://127.0.0.1:8080/passkey/fake-{}",
                     self.account.next_passkey
+                )))]
+            }
+            Command::BeginSecondFactorPasskey { challenge } => {
+                let Some(i) = self.account.challenges.iter().position(|c| c.0 == challenge) else {
+                    return Ok(vec![Reply::PasskeyCeremony(Err(ApiError::CodeExpired))]);
+                };
+                let name = self.account.challenges[i].1.clone();
+                if !self.account.second_factor_passkeys.contains(&name) {
+                    return Ok(vec![Reply::PasskeyCeremony(Err(ApiError::Precondition(
+                        "no passkey for this account".into(),
+                    )))]);
+                }
+                self.account.challenges.remove(i);
+                let session = self.session_for(&name);
+                self.account.ceremony = Some((
+                    self.now + self.latency + PASSKEY_SECS,
+                    Reply::Auth(Ok(session)),
+                ));
+                vec![Reply::PasskeyCeremony(Ok(format!(
+                    "http://127.0.0.1:8080/passkey/fake-2fa-{}",
+                    self.account.next_challenge
                 )))]
             }
             Command::CancelPasskey => {
@@ -677,8 +732,8 @@ impl World {
                         }
                         Ok(self.me.clone())
                     }
-                    Some(_) => Err(ApiError::Unauthenticated),
-                    None => Err(ApiError::Precondition("start the change again".into())),
+                    Some(_) => Err(self.wrong_check()),
+                    None => Err(ApiError::CodeExpired),
                 },
             )],
             Command::BeginTotpSetup => vec![Reply::TotpSetup(if self.me_has_totp() {
@@ -700,9 +755,9 @@ impl World {
             Command::ConfirmTotp { code } => vec![Reply::RecoveryCodes {
                 regenerated: false,
                 result: if !self.account.setups.contains(&self.me.id) {
-                    Err(ApiError::Precondition("start the setup again".into()))
+                    Err(ApiError::CodeExpired)
                 } else if code.trim() != CODE {
-                    Err(ApiError::Unauthenticated)
+                    Err(self.wrong_check())
                 } else {
                     self.account.setups.remove(&self.me.id);
                     Ok(self.new_codes())
@@ -715,7 +770,7 @@ impl World {
                         "two-factor authentication is off".into(),
                     ))
                 } else if !self.check_code(&name, &code, false) {
-                    Err(ApiError::Unauthenticated)
+                    Err(self.wrong_check())
                 } else {
                     self.account.totp.remove(&name.to_lowercase());
                     Ok(())
@@ -728,7 +783,7 @@ impl World {
                         "two-factor authentication is off".into(),
                     ))
                 } else if code.trim() != CODE {
-                    Err(ApiError::Unauthenticated)
+                    Err(self.wrong_check())
                 } else {
                     Ok(self.new_codes())
                 },

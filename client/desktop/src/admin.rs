@@ -1037,7 +1037,7 @@ impl AppState {
             Ok(invite) => {
                 ad.invite_form = None;
                 ad.invites.items.retain(|i| i.id != invite.id);
-                ad.invites.items.insert(0, Invite { code: None, ..invite.clone() });
+                ad.invites.items.insert(0, Invite { code: None, link: None, ..invite.clone() });
                 ad.stale.insert(AdminPage::Audit);
                 let email = invite.email.clone();
                 ad.invite_created = Some(invite);

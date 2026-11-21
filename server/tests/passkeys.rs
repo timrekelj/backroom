@@ -180,3 +180,90 @@ async fn rename_delete_and_wrong_keys() {
     assert_eq!(code(begin_login(&app, "nobody").await), ErrorCode::FailedPrecondition);
     app.cleanup().await;
 }
+
+async fn begin_second_factor(app: &TestApp, challenge_id: &str) -> Result<PasskeyCeremony, ConnectError> {
+    Ok(auth(app, None)
+        .begin_second_factor_passkey(BeginSecondFactorPasskeyRequest { challenge_id: challenge_id.into(), ..Default::default() })
+        .await?
+        .into_owned()
+        .ceremony
+        .unwrap())
+}
+
+async fn finish_second_factor(app: &TestApp, ceremony_id: &str, json: &str) -> Result<FinishSecondFactorPasskeyResponse, ConnectError> {
+    Ok(auth(app, None)
+        .finish_second_factor_passkey(FinishSecondFactorPasskeyRequest {
+            ceremony_id: ceremony_id.into(),
+            credential_json: json.into(),
+            ..Default::default()
+        })
+        .await?
+        .into_owned())
+}
+
+/// A password sign-in of `login` that stops at the second factor: the challenge.
+async fn second_factor_challenge(app: &TestApp, login: &str) -> SecondFactorChallenge {
+    let resp = auth(app, None).login(login_req(login, PASSWORD, "desk")).await.unwrap().into_owned();
+    resp.second_factor_required.into_option().expect("second factor required")
+}
+
+fn sign(app: &TestApp, key: &mut SoftPasskey, ceremony: &PasskeyCeremony) -> String {
+    let options: RequestChallengeResponse = serde_json::from_str(&ceremony.options_json).unwrap();
+    serde_json::to_string(&key.do_authentication(origin(app), options).expect("soft passkey signs")).unwrap()
+}
+
+#[tokio::test]
+async fn a_passkey_answers_the_second_factor_challenge() {
+    let app = TestApp::start().await;
+    let oli = user(&app, "oli").await;
+    let login = app.name("oli");
+    let client = auth(&app, Some(&oli.token));
+    let setup = client.begin_totp_setup(BeginTotpSetupRequest::default()).await.unwrap().into_owned();
+    let now = chrono::Utc::now().timestamp() as u64;
+    client.confirm_totp(ConfirmTotpRequest { code: totp_now(&setup.secret, now), ..Default::default() }).await.unwrap();
+    let passkey = SecondFactorMethod::SECOND_FACTOR_METHOD_PASSKEY;
+
+    // Without a passkey, it is not offered (and cannot be used).
+    let ch = second_factor_challenge(&app, &login).await;
+    assert!(!ch.methods.contains(&passkey.into()));
+    assert_eq!(code(begin_second_factor(&app, &ch.challenge_id).await), ErrorCode::FailedPrecondition);
+
+    let mut key = SoftPasskey::new(true);
+    register(&app, &oli, &mut key, "laptop").await;
+    let ch = second_factor_challenge(&app, &login).await;
+    assert!(ch.methods.contains(&passkey.into()), "offered once the account has a passkey");
+    assert_eq!(
+        code_error(begin_second_factor(&app, "no-such-challenge").await),
+        (ErrorCode::FailedPrecondition, Some((CodeErrorReason::CODE_ERROR_REASON_EXPIRED, 0)))
+    );
+
+    let first = begin_second_factor(&app, &ch.challenge_id).await.unwrap();
+    assert!(finish_second_factor(&app, &first.ceremony_id, "").await.unwrap().pending, "the page has no result yet");
+    // Not a sign-in ceremony.
+    assert_eq!(code(finish_login(&app, &first.ceremony_id, "").await), ErrorCode::NotFound);
+
+    // An answer signed for another ceremony is a wrong answer to the challenge.
+    let second = begin_second_factor(&app, &ch.challenge_id).await.unwrap();
+    let json = sign(&app, &mut key, &second);
+    assert_eq!(
+        code_error(finish_second_factor(&app, &first.ceremony_id, &json).await),
+        (ErrorCode::InvalidArgument, Some((CodeErrorReason::CODE_ERROR_REASON_WRONG, 4)))
+    );
+    let signed = finish_second_factor(&app, &second.ceremony_id, &json).await.unwrap();
+    assert!(!signed.pending && !signed.token.is_empty());
+    assert_eq!(signed.user.unwrap().id, oli.id);
+    auth(&app, Some(&signed.token)).get_me(GetMeRequest::default()).await.unwrap();
+
+    // The challenge is used up.
+    let again = auth(&app, None)
+        .complete_second_factor(CompleteSecondFactorRequest {
+            challenge_id: ch.challenge_id.clone(),
+            totp_code: totp_now(&setup.secret, now + 30),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(code_error(again), (ErrorCode::FailedPrecondition, Some((CodeErrorReason::CODE_ERROR_REASON_EXPIRED, 0))));
+    let security = client.get_security(GetSecurityRequest::default()).await.unwrap().into_owned();
+    assert_eq!(security.passkey_count, 1);
+    app.cleanup().await;
+}

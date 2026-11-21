@@ -89,6 +89,12 @@ async fn who_may_invite() {
     let by_inviter = create(&app, &inviter, create_req(&invitee(&app, "b"), Some(g.id), &[], false)).await.unwrap();
     assert_eq!(by_inviter.guild_ids, vec![g.id]);
     assert!(by_inviter.code.as_deref().is_some_and(|c| c.len() == 9 && c.as_bytes()[4] == b'-'));
+    // The creator also gets the link that was emailed, so it can be copied and shared.
+    let link = by_inviter.link.clone().expect("link for the creator");
+    assert!(link.starts_with(&format!("{}/invite/", app.state.public_base())), "{link}");
+    let mail = wait_mail(&app, &invitee(&app, "b"), 0, "invited").await;
+    assert!(mail.text.contains(&link), "the emailed link is the one returned");
+    assert_eq!(lookup(&app, &link_token(&app, &link)).await.unwrap().status, InviteStatus::INVITE_STATUS_PENDING);
     assert_eq!(by_inviter.status, InviteStatus::INVITE_STATUS_PENDING);
     assert_eq!(by_inviter.inviter.as_option().unwrap().id, inviter.id);
     create(&app, &owner, create_req(&invitee(&app, "c"), Some(g.id), &[], false)).await.unwrap();
@@ -105,7 +111,7 @@ async fn who_may_invite() {
     };
     let listed = list(&inviter, Some(g.id)).await.unwrap();
     assert_eq!(listed.len(), 3);
-    assert!(listed.iter().all(|i| i.code.is_none()));
+    assert!(listed.iter().all(|i| i.code.is_none() && i.link.is_none()));
     assert_eq!(code(list(&member, Some(g.id)).await), ErrorCode::PermissionDenied);
     assert_eq!(code(list(&inviter, None).await), ErrorCode::PermissionDenied);
     assert!(list(&admin, None).await.unwrap().iter().any(|i| i.id == by_admin.id));
@@ -209,6 +215,9 @@ async fn accept_rejects_taken_names_expired_and_revoked_invites() {
     assert_eq!(resent.status, InviteStatus::INVITE_STATUS_PENDING);
     let new_code = resent.code.unwrap();
     assert_ne!(new_code, ec);
+    let new_link = resent.link.expect("a resend returns the new link");
+    assert_ne!(Some(new_link.clone()), expired.link);
+    assert_eq!(lookup(&app, &link_token(&app, &new_link)).await.unwrap().status, InviteStatus::INVITE_STATUS_PENDING);
     assert_eq!(code(lookup(&app, &ec).await), ErrorCode::NotFound);
     wait_mail(&app, &invitee(&app, "y"), 1, "invited").await;
 

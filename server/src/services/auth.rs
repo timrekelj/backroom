@@ -105,6 +105,31 @@ fn invalid_code() -> ConnectError {
     ConnectError::unauthenticated("invalid or expired code")
 }
 
+/// A rejected second-factor answer or signed-in code check, with its `CodeError` detail.
+fn code_error(reason: CodeErrorReason, attempts_remaining: u32) -> ConnectError {
+    let err = match reason {
+        CodeErrorReason::CODE_ERROR_REASON_WRONG => ConnectError::invalid_argument("wrong code"),
+        CodeErrorReason::CODE_ERROR_REASON_TOO_MANY_ATTEMPTS => {
+            ConnectError::resource_exhausted("too many wrong attempts, start again")
+        }
+        _ => ConnectError::failed_precondition("expired, start again"),
+    };
+    let detail = CodeError { reason: reason.into(), attempts_remaining, ..Default::default() };
+    err.with_detail(connectrpc::ErrorDetail::from_message("thehideout.v1.CodeError", &detail))
+}
+
+fn wrong_code(attempts_remaining: usize) -> ConnectError {
+    code_error(CodeErrorReason::CODE_ERROR_REASON_WRONG, attempts_remaining as u32)
+}
+
+fn expired() -> ConnectError {
+    code_error(CodeErrorReason::CODE_ERROR_REASON_EXPIRED, 0)
+}
+
+fn too_many_attempts() -> ConnectError {
+    code_error(CodeErrorReason::CODE_ERROR_REASON_TOO_MANY_ATTEMPTS, 0)
+}
+
 /// Result of a first factor.
 enum SignIn {
     Session { token: String, user: User },
@@ -133,9 +158,29 @@ pub mod email_codes {
         Ok(code)
     }
 
+    /// Why [`check`] refused a code.
+    pub enum Rejected {
+        /// No code (never sent, expired, used, or killed by wrong guesses).
+        Missing,
+        /// Wrong; it survives this many more wrong guesses.
+        Wrong { remaining: usize },
+        /// Wrong, and that was the last guess: the code is gone.
+        Exhausted,
+    }
+
+    /// [`check`] for callers that must not reveal why (enumeration-safe sign-in and reset).
+    pub async fn consume(state: &AppState, purpose: &str, subject: &str, code: &str) -> Result<Option<String>, ConnectError> {
+        check(state, purpose, subject, code).await?.map_err(|_| invalid_code())
+    }
+
     /// Consumes the code if it matches; returns the stored `new_email`.
     /// Wrong guesses count against the code, which dies after [`CODE_ATTEMPTS`].
-    pub async fn consume(state: &AppState, purpose: &str, subject: &str, code: &str) -> Result<Option<String>, ConnectError> {
+    pub async fn check(
+        state: &AppState,
+        purpose: &str,
+        subject: &str,
+        code: &str,
+    ) -> Result<Result<Option<String>, Rejected>, ConnectError> {
         let row = state
             .session
             .execute_unpaged(
@@ -149,13 +194,14 @@ pub mod email_codes {
             .maybe_first_row::<(Option<String>, Option<i32>, Option<String>)>()
             .map_err(internal)?;
         let Some((Some(stored), attempts, new_email)) = row else {
-            return Err(invalid_code());
+            return Ok(Err(Rejected::Missing));
         };
         let attempts = attempts.unwrap_or(0);
         let code = codes::digits(code);
         if code.len() != 6 || hash_token(&code) != stored {
             if attempts + 1 >= CODE_ATTEMPTS {
                 delete(state, purpose, subject).await?;
+                return Ok(Err(Rejected::Exhausted));
             } else {
                 state
                     .session
@@ -166,7 +212,7 @@ pub mod email_codes {
                     .await
                     .map_err(internal)?;
             }
-            return Err(invalid_code());
+            return Ok(Err(Rejected::Wrong { remaining: (CODE_ATTEMPTS - attempts - 1) as usize }));
         }
         // Single use, also against a concurrent verification of the same code.
         let applied = lwt_applied(
@@ -180,9 +226,9 @@ pub mod email_codes {
                 .map_err(internal)?,
         )?;
         if !applied {
-            return Err(invalid_code());
+            return Ok(Err(Rejected::Missing));
         }
-        Ok(new_email)
+        Ok(Ok(new_email))
     }
 
     async fn delete(state: &AppState, purpose: &str, subject: &str) -> Result<(), ConnectError> {
@@ -228,12 +274,16 @@ impl AuthSvc {
                 Challenge { user_id: account.id, device_name: device_name.to_owned(), method, attempts: 0 },
             );
             let expires_at = Utc::now() + chrono::Duration::from_std(CHALLENGE_TTL).unwrap_or_default();
+            let mut methods = vec![
+                SecondFactorMethod::SECOND_FACTOR_METHOD_TOTP.into(),
+                SecondFactorMethod::SECOND_FACTOR_METHOD_RECOVERY_CODE.into(),
+            ];
+            if self.state.webauthn.is_some() && !passkeys::list(&self.state, account.id).await?.is_empty() {
+                methods.push(SecondFactorMethod::SECOND_FACTOR_METHOD_PASSKEY.into());
+            }
             return Ok(SignIn::SecondFactor(SecondFactorChallenge {
                 challenge_id: id,
-                methods: vec![
-                    SecondFactorMethod::SECOND_FACTOR_METHOD_TOTP.into(),
-                    SecondFactorMethod::SECOND_FACTOR_METHOD_RECOVERY_CODE.into(),
-                ],
+                methods,
                 expires_at: datetime_to_proto(expires_at).into(),
                 ..Default::default()
             }));
@@ -334,6 +384,44 @@ impl AuthSvc {
         Ok(out)
     }
 
+    /// Counts an answer to the challenge `id`: EXPIRED when it is gone.
+    fn challenge_attempt(&self, id: &String) -> Result<Challenge, ConnectError> {
+        let challenge = self
+            .state
+            .auth
+            .challenges
+            .update(id, |c| {
+                c.attempts += 1;
+                c.clone()
+            })
+            .ok_or_else(expired)?;
+        if challenge.attempts > CHALLENGE_ATTEMPTS {
+            self.state.auth.challenges.take(id);
+            return Err(too_many_attempts());
+        }
+        Ok(challenge)
+    }
+
+    /// The error for a wrong answer (the `attempts`-th) to the challenge `id`; the last one
+    /// allowed drops the challenge.
+    fn challenge_wrong(&self, id: &String, attempts: u32) -> ConnectError {
+        if attempts >= CHALLENGE_ATTEMPTS {
+            self.state.auth.challenges.take(id);
+            return too_many_attempts();
+        }
+        wrong_code((CHALLENGE_ATTEMPTS - attempts) as usize)
+    }
+
+    /// Checks a signed-in user's TOTP-style code against the hourly limit; the number of checks
+    /// left goes into the wrong-code error.
+    fn user_check(&self, account: &Account) -> Result<usize, ConnectError> {
+        let used = self
+            .state
+            .limiter
+            .hit(&format!("totp-check:user:{}", account.id), USER_CHECK_MAX, USER_CHECK_WINDOW)?;
+        Ok(USER_CHECK_MAX.saturating_sub(used))
+    }
+
     /// The ceremony `id` if it is of the expected kind (and user, for registrations).
     fn ceremony(&self, id: &str) -> Result<Ceremony, ConnectError> {
         self.state
@@ -405,6 +493,35 @@ impl AuthService for AuthSvc {
         })
     }
 
+    async fn get_security(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, GetSecurityRequest>,
+    ) -> ServiceResult<GetSecurityResponse> {
+        let (account, _) = self.caller(&ctx).await?;
+        let passkey_count = passkeys::list(&self.state, account.id).await?.len() as u32;
+        let recovery_codes_remaining = if account.has_totp() {
+            self.state
+                .session
+                .execute_unpaged("SELECT code_hash FROM recovery_codes WHERE user_id = ?", (id_to_db(account.id),))
+                .await
+                .map_err(internal)?
+                .into_rows_result()
+                .map_err(internal)?
+                .rows_num() as u32
+        } else {
+            0
+        };
+        Response::ok(GetSecurityResponse {
+            totp_enabled: account.has_totp(),
+            has_password: account.password_hash.is_some(),
+            passkey_count,
+            recovery_codes_remaining,
+            email_verified: account.email.is_some(),
+            ..Default::default()
+        })
+    }
+
     async fn request_email_code(
         &self,
         ctx: RequestContext,
@@ -453,29 +570,19 @@ impl AuthService for AuthSvc {
         self.state
             .limiter
             .check(&format!("2fa:ip:{}", peer_key(&ctx)), SECOND_FACTOR_IP_MAX, LOGIN_WINDOW)?;
-        let id = req.challenge_id.to_owned();
-        let expired = || ConnectError::unauthenticated("sign-in expired, start again");
-        let challenge = self
-            .state
-            .auth
-            .challenges
-            .update(&id, |c| {
-                c.attempts += 1;
-                c.clone()
-            })
-            .ok_or_else(expired)?;
-        if challenge.attempts > CHALLENGE_ATTEMPTS {
-            self.state.auth.challenges.take(&id);
-            return Err(expired());
+        if req.totp_code.is_empty() == req.recovery_code.is_empty() {
+            return Err(ConnectError::invalid_argument("set exactly one of totp_code and recovery_code"));
         }
+        let id = req.challenge_id.to_owned();
+        let challenge = self.challenge_attempt(&id)?;
         let account = accounts::load(&self.state, challenge.user_id).await?.ok_or_else(expired)?;
-        let ok = match (req.totp_code.is_empty(), req.recovery_code.is_empty()) {
-            (false, true) => self.use_totp(&account, req.totp_code).await?,
-            (true, false) => self.use_recovery_code(&account, req.recovery_code).await?,
-            _ => return Err(ConnectError::invalid_argument("set exactly one of totp_code and recovery_code")),
+        let ok = if req.recovery_code.is_empty() {
+            self.use_totp(&account, req.totp_code).await?
+        } else {
+            self.use_recovery_code(&account, req.recovery_code).await?
         };
         if !ok {
-            return Err(invalid_code());
+            return Err(self.challenge_wrong(&id, challenge.attempts));
         }
         // Only one session per challenge, even if two answers race.
         if self.state.auth.challenges.take(&id).is_none() {
@@ -575,9 +682,12 @@ impl AuthService for AuthSvc {
         self.state
             .limiter
             .check(&format!("email-change-verify:user:{}", account.id), CODE_VERIFY_EMAIL_MAX, CODE_WINDOW)?;
-        let new_email = email_codes::consume(&self.state, "email_change", &account.id.to_string(), req.code)
-            .await?
-            .ok_or_else(invalid_code)?;
+        let new_email = match email_codes::check(&self.state, "email_change", &account.id.to_string(), req.code).await? {
+            Ok(Some(email)) => email,
+            Ok(None) | Err(email_codes::Rejected::Missing) => return Err(expired()),
+            Err(email_codes::Rejected::Wrong { remaining }) => return Err(wrong_code(remaining)),
+            Err(email_codes::Rejected::Exhausted) => return Err(too_many_attempts()),
+        };
         if !accounts::claim_email(&self.state, &new_email, account.id).await? {
             return Err(ConnectError::already_exists("an account with that email already exists"));
         }
@@ -625,19 +735,12 @@ impl AuthService for AuthSvc {
         req: ServiceRequest<'_, ConfirmTotpRequest>,
     ) -> ServiceResult<ConfirmTotpResponse> {
         let (account, _) = self.caller(&ctx).await?;
-        self.state
-            .limiter
-            .check(&format!("totp-check:user:{}", account.id), USER_CHECK_MAX, USER_CHECK_WINDOW)?;
+        let remaining = self.user_check(&account)?;
         if account.has_totp() {
             return Err(ConnectError::failed_precondition("an authenticator app is already set up"));
         }
-        let secret = self
-            .state
-            .auth
-            .totp_setup
-            .get(&account.id)
-            .ok_or_else(|| ConnectError::failed_precondition("start the setup again"))?;
-        let step = codes::verify_totp(&secret, req.code, now_secs(), i64::MIN).ok_or_else(invalid_code)?;
+        let secret = self.state.auth.totp_setup.get(&account.id).ok_or_else(expired)?;
+        let step = codes::verify_totp(&secret, req.code, now_secs(), i64::MIN).ok_or_else(|| wrong_code(remaining))?;
         self.state.auth.totp_setup.take(&account.id);
         let recovery_codes = self.new_recovery_codes(account.id).await?;
         self.state
@@ -662,11 +765,9 @@ impl AuthService for AuthSvc {
         if !account.has_totp() {
             return Err(ConnectError::failed_precondition("two-factor authentication is off"));
         }
-        self.state
-            .limiter
-            .check(&format!("totp-check:user:{}", account.id), USER_CHECK_MAX, USER_CHECK_WINDOW)?;
+        let remaining = self.user_check(&account)?;
         if !(self.use_totp(&account, req.code).await? || self.use_recovery_code(&account, req.code).await?) {
-            return Err(invalid_code());
+            return Err(wrong_code(remaining));
         }
         self.state
             .session
@@ -692,11 +793,9 @@ impl AuthService for AuthSvc {
         if !account.has_totp() {
             return Err(ConnectError::failed_precondition("two-factor authentication is off"));
         }
-        self.state
-            .limiter
-            .check(&format!("totp-check:user:{}", account.id), USER_CHECK_MAX, USER_CHECK_WINDOW)?;
+        let remaining = self.user_check(&account)?;
         if !self.use_totp(&account, req.code).await? {
-            return Err(invalid_code());
+            return Err(wrong_code(remaining));
         }
         let recovery_codes = self.new_recovery_codes(account.id).await?;
         audit_self(&self.state, &account, "auth.recovery_regenerate").await?;
@@ -888,16 +987,84 @@ impl AuthService for AuthSvc {
         let account = accounts::load(&self.state, user_id)
             .await?
             .ok_or_else(|| ConnectError::unauthenticated("passkey verification failed"))?;
-        if let Some(mut passkey) =
-            passkeys::list(&self.state, user_id).await?.into_iter().find(|p| p.credential.cred_id() == result.cred_id())
-        {
-            passkey.credential.update_credential(&result);
-            passkey.last_used_at = Some(Utc::now());
-            passkeys::save(&self.state, user_id, &passkey).await?;
-        }
+        passkeys::mark_used(&self.state, user_id, &result).await?;
         // A passkey is phishing-resistant and user-verified: it skips TOTP.
         let token = start_session(&self.state, &account, &device_name, "a passkey").await?;
         Response::ok(FinishPasskeyLoginResponse { token, user: account.to_proto().into(), ..Default::default() })
+    }
+
+    async fn begin_second_factor_passkey(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, BeginSecondFactorPasskeyRequest>,
+    ) -> ServiceResult<BeginSecondFactorPasskeyResponse> {
+        self.state
+            .limiter
+            .check(&format!("passkey:ip:{}", peer_key(&ctx)), PASSKEY_IP_MAX, LOGIN_WINDOW)?;
+        let webauthn = passkeys::webauthn(&self.state)?;
+        let challenge_id = req.challenge_id.to_owned();
+        let challenge = self.state.auth.challenges.get(&challenge_id).ok_or_else(expired)?;
+        let credentials: Vec<_> = passkeys::list(&self.state, challenge.user_id).await?.into_iter().map(|p| p.credential).collect();
+        if credentials.is_empty() {
+            return Err(ConnectError::failed_precondition("no passkey for this account"));
+        }
+        let (options, auth) = webauthn.start_passkey_authentication(&credentials).map_err(internal)?;
+        let options_json = serde_json::to_string(&options).map_err(internal)?;
+        let id = generate_token();
+        self.state.auth.ceremonies.insert(
+            id.clone(),
+            Ceremony {
+                kind: CeremonyKind::SecondFactor { challenge_id, user_id: challenge.user_id, state: auth },
+                options_json: options_json.clone(),
+                result: None,
+                redirect_port: redirect_port(req.redirect_port)?,
+            },
+        );
+        Response::ok(BeginSecondFactorPasskeyResponse {
+            ceremony: passkeys::ceremony_proto(&self.state, &id, &options_json).into(),
+            ..Default::default()
+        })
+    }
+
+    async fn finish_second_factor_passkey(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, FinishSecondFactorPasskeyRequest>,
+    ) -> ServiceResult<FinishSecondFactorPasskeyResponse> {
+        self.state
+            .limiter
+            .check(&format!("passkey-finish:ip:{}", peer_key(&ctx)), PASSKEY_IP_MAX * 10, LOGIN_WINDOW)?;
+        let webauthn = passkeys::webauthn(&self.state)?;
+        let ceremony = self.ceremony(req.ceremony_id)?;
+        let CeremonyKind::SecondFactor { challenge_id, user_id, state } = ceremony.kind else {
+            return Err(ConnectError::not_found("passkey ceremony not found or expired"));
+        };
+        let json = if req.credential_json.is_empty() { ceremony.result } else { Some(req.credential_json.to_owned()) };
+        let Some(json) = json else {
+            return Response::ok(FinishSecondFactorPasskeyResponse { pending: true, ..Default::default() });
+        };
+        self.state.auth.ceremonies.take(&req.ceremony_id.to_owned());
+        let challenge = self.challenge_attempt(&challenge_id)?;
+        let verified = serde_json::from_str::<PublicKeyCredential>(&json)
+            .ok()
+            .and_then(|credential| match webauthn.finish_passkey_authentication(&credential, &state) {
+                Ok(result) => Some(result),
+                Err(e) => {
+                    tracing::info!(error = %e, "second-factor passkey rejected");
+                    None
+                }
+            });
+        let Some(result) = verified else {
+            return Err(self.challenge_wrong(&challenge_id, challenge.attempts));
+        };
+        let account = accounts::load(&self.state, user_id).await?.ok_or_else(expired)?;
+        // Only one session per challenge, even if answers race.
+        if self.state.auth.challenges.take(&challenge_id).is_none() {
+            return Err(expired());
+        }
+        passkeys::mark_used(&self.state, user_id, &result).await?;
+        let token = start_session(&self.state, &account, &challenge.device_name, challenge.method).await?;
+        Response::ok(FinishSecondFactorPasskeyResponse { token, user: account.to_proto().into(), ..Default::default() })
     }
 
     async fn list_sessions(

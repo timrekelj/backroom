@@ -1355,6 +1355,23 @@ fn invites(a: &App, k: &Kit, layer: &mut Vec<El>, ad: &AdminState, compact: bool
     if let Some(created) = &ad.invite_created {
         let code = created.code.clone().unwrap_or_default();
         let copy = code.clone();
+        let link = created.link.clone();
+        let mut line = format!("Invite sent to {}. Code: {code}", created.email);
+        if let Some(link) = &link {
+            line.push_str(&format!(" \u{00b7} Link: {link}"));
+        }
+        let copy_link = link.map(|link| {
+            Button::new("Copy link")
+                .icon(&icons::COPY)
+                .variant(Variant::Secondary)
+                .size(Size::Sm)
+                .build(k)
+                .key("admin-invite-copy-link")
+                .on_press_tx(move |a: &mut App, tx| {
+                    tx.copy(link.clone());
+                    a.state.toast(thehideout_design::components::ToastKind::Success, "Invite link copied");
+                })
+        });
         controls = controls.child(
             row()
                 .key("admin-invite-created")
@@ -1366,12 +1383,16 @@ fn invites(a: &App, k: &Kit, layer: &mut Vec<El>, ad: &AdminState, compact: bool
                 .radius(radius::MD)
                 .fill(t.success_bg.color())
                 .child(
-                    text(format!("Invite sent to {}. Code: {code}", created.email))
+                    text(line)
+                        .key("admin-invite-created-text")
                         .font(type_::at(k, type_::CONTROL))
                         .color(t.text.color())
                         .grow(1.0)
+                        .shrink()
+                        .min_w(0.0)
                         .wrap(),
                 )
+                .children(copy_link)
                 .child(
                     Button::new("Copy code")
                         .icon(&icons::COPY)

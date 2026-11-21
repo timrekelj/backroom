@@ -10,7 +10,7 @@ use thehideout_api::{
     ActivityPoint, AdminFileKind, AdminFileRow, AdminGuildRow, AdminUserRow, ApiError, AuditEntry,
     Channel, ChannelIconRef, DeviceSession, DmChannel, Emoji, GatewayUpdate, Guild, GuildLayout,
     Invite, InvitePreview, Member, Message, NewInvite, Overview, Page, Paged, PaletteColor, Passkey,
-    PendingAttachment, Permissions, ReactionEmoji, Role, RoleList, SecondFactorMethod, Section,
+    PendingAttachment, Permissions, ReactionEmoji, Role, RoleList, SecondFactorMethod, Section, SecuritySummary,
     TotpSetup, User,
 };
 
@@ -49,6 +49,12 @@ pub enum Command {
         code: String,
         recovery: bool,
     },
+    /// Answers a `Reply::SecondFactor` challenge with a passkey (offered when the account has
+    /// one): `Reply::PasskeyCeremony`, then the backend waits like `BeginPasskeyLogin` and
+    /// answers `Auth`.
+    BeginSecondFactorPasskey {
+        challenge: String,
+    },
     /// Emails a password reset code; always succeeds.
     RequestPasswordReset {
         email: String,
@@ -77,7 +83,7 @@ pub enum Command {
         password: Option<String>,
     },
     // ---- account security -------------------------------------------------------------------
-    /// Passkeys, sessions and whether an authenticator app is on: `Reply::Security`.
+    /// Passkeys, sessions and how the account is protected: `Reply::Security`.
     LoadSecurity,
     /// `current` is "" for an account without a password; other sessions are signed out.
     ChangePassword {
@@ -399,6 +405,7 @@ impl Command {
                 | Command::RequestEmailCode { .. }
                 | Command::VerifyEmailCode { .. }
                 | Command::CompleteSecondFactor { .. }
+                | Command::BeginSecondFactorPasskey { .. }
                 | Command::RequestPasswordReset { .. }
                 | Command::ResetPassword { .. }
                 | Command::BeginPasskeyLogin { .. }
@@ -430,8 +437,8 @@ pub fn device_label() -> String {
 pub struct SecurityInfo {
     pub passkeys: Vec<Passkey>,
     pub sessions: Vec<DeviceSession>,
-    /// Whether an authenticator app is on; `None` when the server didn't say.
-    pub totp: Option<bool>,
+    /// Whether an authenticator app is on, recovery codes left, a password, a confirmed email.
+    pub summary: SecuritySummary,
 }
 
 /// What a `RevokeInvite` / `ResendInvite` did.

@@ -1,6 +1,6 @@
 //! Proofs of signing in, invites and account security against the fake backend: every way in
 //! (password, emailed code, passkey, reset), the second factor (authenticator, recovery code,
-//! wrong codes, lockout), invites (lookup, accept, the errors), the legacy add-email prompt, the
+//! passkey, the server's tries left, lockout), invites (lookup, accept, the errors), the legacy add-email prompt, the
 //! Security page's actions (and recovery codes shown only once), the server's invite dialog and
 //! who sees it, the admin Invites tab and the role editor's "Invite people" switch. Mostly
 //! state-level; the keyboard paths drive the real view.
@@ -309,26 +309,33 @@ fn a_recovery_code_completes_the_sign_in_once() {
     assert_eq!(again.state.screen, Screen::Auth);
     assert_eq!(
         error(&again, AuthField::Code).unwrap(),
-        "That recovery code didn't work."
+        "That recovery code didn't work. 4 tries left."
     );
 }
 
 #[test]
-fn wrong_codes_say_so_and_the_fifth_stops_the_sign_in() {
+fn wrong_codes_show_the_servers_tries_left_and_the_fifth_stops_the_sign_in() {
     let (mut app, fake) = at_second_factor();
-    for n in 1..=5 {
+    for n in 1..=5u32 {
         app.state.auth.code.replace_text("111111");
         app.act(|s| s.auth_code_changed());
         app.pump();
-        let AuthStep::SecondFactor { wrong, locked, .. } = &app.state.auth.step else {
+        let AuthStep::SecondFactor { remaining, locked, .. } = &app.state.auth.step else {
             panic!()
         };
-        assert_eq!(*wrong, n);
-        assert_eq!(*locked, n == 5);
+        // The count is the server's (no client-side counter): 4, 3, 2, 1, then it is over.
+        if n < 5 {
+            assert_eq!(*remaining, Some(5 - n));
+            assert!(!*locked);
+            let left = if n == 4 { "1 try left.".to_owned() } else { format!("{} tries left.", 5 - n) };
+            assert_eq!(error(&app, AuthField::Code).unwrap(), format!("That code didn't work. {left}"));
+        } else {
+            assert!(*locked);
+        }
     }
     assert!(error(&app, AuthField::Form)
         .unwrap()
-        .starts_with("Too many attempts"));
+        .starts_with("Too many wrong attempts"));
     // Locked: nothing more is sent, and "Start again" goes back to the password.
     app.state.auth.code.replace_text(CODE);
     app.act(|s| s.submit_auth());
@@ -338,6 +345,75 @@ fn wrong_codes_say_so_and_the_fifth_stops_the_sign_in() {
     );
     app.act(|s| s.auth_go(AuthStep::Password));
     assert_eq!(app.state.auth.step, AuthStep::Password);
+}
+
+#[test]
+fn an_expired_challenge_stops_the_sign_in() {
+    let (mut app, _) = at_second_factor();
+    // The server forgot it (restart, five minutes): the form says so and offers a restart.
+    if let AuthStep::SecondFactor { challenge, .. } = &mut app.state.auth.step {
+        *challenge = "gone".into();
+    }
+    app.state.auth.code.replace_text(CODE);
+    app.act(|s| s.auth_code_changed());
+    app.pump();
+    assert!(matches!(app.state.auth.step, AuthStep::SecondFactor { locked: true, .. }));
+    assert_eq!(error(&app, AuthField::Form).unwrap(), "This sign-in expired. Start again.");
+}
+
+#[test]
+fn a_passkey_answers_the_second_factor_through_the_browser() {
+    let (app, fake) = at_second_factor();
+    let AuthStep::SecondFactor { methods, challenge, .. } = &app.state.auth.step else { panic!() };
+    assert!(methods.contains(&thehideout_api::SecondFactorMethod::Passkey), "dora has a passkey");
+    let challenge = challenge.clone();
+    let mut rt = runtime(app);
+    settle(&mut rt, 4);
+    click(&mut rt, "auth-2fa-passkey");
+    settle(&mut rt, 4);
+    assert!(matches!(rt.state.state.auth.step, AuthStep::SecondFactor { passkey: true, .. }));
+    assert!(has(&rt, "auth-2fa-passkey-waiting"));
+    // The challenge's own ceremony, not a fresh passkey sign-in.
+    assert_eq!(
+        sent(&fake, |c| matches!(c, Command::BeginSecondFactorPasskey { challenge: id } if *id == challenge)),
+        1
+    );
+    assert_eq!(sent(&fake, |c| matches!(c, Command::BeginPasskeyLogin { .. })), 0);
+    settle(&mut rt, 150);
+    assert_eq!(rt.state.state.screen, Screen::Main);
+    assert_eq!(rt.state.state.me().unwrap().username, DORA);
+}
+
+#[test]
+fn cancelling_the_second_factor_passkey_returns_to_the_code() {
+    let (mut app, fake) = at_second_factor();
+    app.act(|s| s.second_factor_passkey());
+    app.pump();
+    assert!(matches!(app.state.auth.step, AuthStep::SecondFactor { passkey: true, .. }));
+    app.act(|s| s.cancel_passkey_login());
+    assert!(matches!(app.state.auth.step, AuthStep::SecondFactor { passkey: false, locked: false, .. }));
+    assert_eq!(app.state.auth.phase, Phase::Idle);
+    assert_eq!(sent(&fake, |c| matches!(c, Command::CancelPasskey)), 1);
+}
+
+#[test]
+fn without_a_passkey_the_second_factor_offers_none() {
+    let (mut app, fake) = signed_out();
+    // Turn tim's authenticator on in the fake (no second-factor passkey for him).
+    password(&mut app, "tim", "hunter22");
+    app.act(|s| s.open_sec(SecKind::TotpSetup { setup: None }));
+    app.pump();
+    app.state.ui.security.dialog.as_mut().unwrap().code.replace_text(CODE);
+    app.act(|s| s.submit_sec());
+    app.pump();
+    let mut other = App::new(Box::new(fake.clone()), AppState::new(fake_now, Tz::Fixed(0)));
+    password(&mut other, "tim", "hunter22");
+    let AuthStep::SecondFactor { methods, .. } = &other.state.auth.step else { panic!("{:?}", other.state.auth.step) };
+    assert!(!methods.contains(&thehideout_api::SecondFactorMethod::Passkey));
+    let mut rt = runtime(other);
+    settle(&mut rt, 4);
+    assert!(has(&rt, "auth-toggle-recovery"));
+    assert!(!has(&rt, "auth-2fa-passkey"));
 }
 
 // ---- password reset ------------------------------------------------------------------------------
@@ -628,6 +704,11 @@ fn the_security_page_lists_passkeys_and_devices_with_this_one_marked() {
     );
     assert!(has(&rt, "session-revoke-2"));
     assert_eq!(rt.state.state.ui.security.totp, Some(false));
+    // Whether an authenticator is on comes from the server's summary: nothing is probed.
+    assert_eq!(sent(&fake, |c| matches!(c, Command::BeginTotpSetup)), 0);
+    let summary = rt.state.state.ui.security.info.as_ref().unwrap().summary;
+    assert!(summary.has_password && summary.email_verified && !summary.totp_enabled);
+    assert_eq!(summary.passkey_count, 1);
 }
 
 #[test]
@@ -668,6 +749,11 @@ fn turning_on_two_factor_shows_the_recovery_codes_only_once() {
         .as_deref()
         .unwrap()
         .starts_with("That code didn't work"));
+    assert!(
+        app.state.ui.security.dialog.as_ref().unwrap().error.as_deref().unwrap().ends_with("9 tries left."),
+        "the server's count of checks left"
+    );
+    assert!(app.state.session.is_some(), "a wrong code never ends the session");
     app.state
         .ui
         .security
@@ -1023,7 +1109,7 @@ fn invite_by_email_is_offered_only_to_those_who_may_invite() {
 }
 
 #[test]
-fn inviting_by_email_shows_the_code_and_the_pending_invites() {
+fn inviting_by_email_shows_the_code_link_and_the_pending_invites() {
     let (mut app, fake) = booted(true);
     app.act(|s| s.open_dialog(DialogKind::InviteByEmail { guild: HIDEOUT }));
     app.pump();
@@ -1073,10 +1159,12 @@ fn inviting_by_email_shows_the_code_and_the_pending_invites() {
         .expect("the new invite");
     assert_eq!(created.email, "dana@example.com");
     assert!(created.code.is_some(), "its code is shown");
+    assert!(created.link.as_deref().is_some_and(|l| l.contains("/invite/")), "and its link");
     assert!(
-        app.state.ui.invites.list[0].code.is_none(),
-        "the list never keeps codes"
+        app.state.ui.invites.list[0].code.is_none() && app.state.ui.invites.list[0].link.is_none(),
+        "the list never keeps codes or links"
     );
+
     assert_eq!(
         sent(
             &fake,
@@ -1099,6 +1187,10 @@ fn inviting_by_email_shows_the_code_and_the_pending_invites() {
         .as_deref()
         .unwrap()
         .starts_with("RSND"));
+    assert!(
+        app.state.ui.invites.created.as_ref().unwrap().link.as_deref().is_some_and(|l| l.ends_with("tok-rsnd-9005")),
+        "a resend brings the new link"
+    );
     app.act(|s| s.revoke_invite(id));
     app.pump();
     assert_eq!(
@@ -1112,6 +1204,16 @@ fn inviting_by_email_shows_the_code_and_the_pending_invites() {
             .status,
         InviteStatus::Revoked
     );
+    // The last invite made or sent again stays on show: its link and code, each with Copy.
+    let link = app.state.ui.invites.created.as_ref().unwrap().link.clone().unwrap();
+    let mut rt = runtime(app);
+    settle(&mut rt, 6);
+    assert!(has(&rt, "invite-created-link"));
+    assert!(rt.elements().iter().any(|e| e.label.as_deref() == Some(format!("Invite link {link}").as_str())));
+    assert!(has(&rt, "invite-created-code-copy"));
+    click(&mut rt, "invite-created-link-copy");
+    settle(&mut rt, 2);
+    assert!(rt.state.state.ui.toasts.iter().any(|t| t.message == "Invite link copied"));
 }
 
 // ---- the admin Invites tab -----------------------------------------------------------------------
@@ -1157,6 +1259,7 @@ fn the_admin_invites_tab_lists_filters_creates_and_withdraws() {
         ad.invite_created.as_ref().unwrap().email,
         "hana@example.com"
     );
+    assert!(ad.invite_created.as_ref().unwrap().link.is_some());
     assert_eq!(app.state.admin_invite_rows()[0].email, "hana@example.com");
     assert_eq!(
         sent(
@@ -1177,6 +1280,7 @@ fn the_admin_invites_tab_lists_filters_creates_and_withdraws() {
     settle(&mut rt, 4);
     assert!(has(&rt, "admin-nav-Invites"));
     assert!(has(&rt, &format!("invite-row-{id}")));
+    assert!(has(&rt, "admin-invite-copy-link"), "the new invite's link can be copied");
     click(&mut rt, "admin-invite-create");
     settle(&mut rt, 6);
     assert!(has(&rt, "admin-invite-form"));

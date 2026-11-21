@@ -17,7 +17,7 @@ rune-kit = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 thehideout-api = { workspace = true }
 thehideout-design = { workspace = true }
-tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "net", "io-util"] }
 
 [dev-dependencies]
 serde_json = "1"
@@ -26,4 +26,5 @@ rand = "0.9"
 totp-rs = { version = "5", features = ["otpauth"] }
 scylla = { version = "1", features = ["chrono-04"] }
 thehideout-server = { path = "../../server" }
+webauthn-authenticator-rs = { version = "0.6.2", features = ["softpasskey"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }

@@ -635,53 +635,58 @@ fn invite_by_email(a: &App, k: &Kit, layer: &mut Vec<El>, max_h: f32, d: &Dialog
     let inv = &s.ui.invites;
     if let Some(created) = &inv.created {
         let code = created.code.clone().unwrap_or_default();
-        let copy_code = code.clone();
-        body = body.child(
-            col()
-                .key("invite-created")
+        // A copyable value: the code, or the link the email has (shared some other way too).
+        let value = |what: &'static str, key: &'static str, value: String, toast: &'static str| {
+            let copied = value.clone();
+            row()
                 .w_full()
                 .gap(8.0)
-                .padding(12.0)
-                .radius(radius::MD)
-                .fill(t.success_bg.color())
-                .child(
-                    text(format!("Invite sent to {}. The email has a link; they can also paste this code under \u{201c}I have an invite\u{201d}:", created.email))
-                        .font(type_::at(k, type_::CONTROL))
-                        .color(t.text.color())
-                        .wrap()
-                        .w_full(),
-                )
+                .center_y()
                 .child(
                     row()
-                        .w_full()
-                        .gap(8.0)
+                        .key(key)
+                        .grow(1.0)
+                        .shrink()
+                        .min_w(0.0)
+                        .h(32.0)
+                        .px(12.0)
                         .center_y()
-                        .child(
-                            row()
-                                .key("invite-created-code")
-                                .grow(1.0)
-                                .h(32.0)
-                                .px(12.0)
-                                .center_y()
-                                .radius(radius::MD)
-                                .fill(t.surface_raised.color())
-                                .border(1.0, t.control_border.color())
-                                .label(format!("Invite code {code}"))
-                                .child(text(code).font(type_::at(k, type_::CODE)).color(t.text.color()).a11y_hidden()),
-                        )
-                        .child(
-                            Button::new("Copy")
-                                .icon(&COPY)
-                                .variant(Variant::Secondary)
-                                .build(k)
-                                .key("invite-created-copy")
-                                .on_press_tx(move |a: &mut App, tx| {
-                                    tx.copy(copy_code.clone());
-                                    a.state.toast(ToastKind::Success, "Invite code copied");
-                                }),
-                        ),
-                ),
-        );
+                        .radius(radius::MD)
+                        .fill(t.surface_raised.color())
+                        .border(1.0, t.control_border.color())
+                        .label(format!("{what} {value}"))
+                        .child(text(value).font(type_::at(k, type_::CODE)).color(t.text.color()).truncate().a11y_hidden()),
+                )
+                .child(
+                    Button::new("Copy")
+                        .icon(&COPY)
+                        .variant(Variant::Secondary)
+                        .build(k)
+                        .key(format!("{key}-copy"))
+                        .on_press_tx(move |a: &mut App, tx| {
+                            tx.copy(copied.clone());
+                            a.state.toast(ToastKind::Success, toast);
+                        }),
+                )
+        };
+        let mut card = col()
+            .key("invite-created")
+            .w_full()
+            .gap(8.0)
+            .padding(12.0)
+            .radius(radius::MD)
+            .fill(t.success_bg.color())
+            .child(
+                text(format!("Invite sent to {}. Share the link, or the code to paste under \u{201c}I have an invite\u{201d}:", created.email))
+                    .font(type_::at(k, type_::CONTROL))
+                    .color(t.text.color())
+                    .wrap()
+                    .w_full(),
+            );
+        if let Some(link) = created.link.clone() {
+            card = card.child(value("Invite link", "invite-created-link", link, "Invite link copied"));
+        }
+        body = body.child(card.child(value("Invite code", "invite-created-code", code, "Invite code copied")));
     }
     let pending: Vec<_> = inv.list.iter().filter(|i| i.status == thehideout_api::InviteStatus::Pending).collect();
     let mut list = col().key("invite-pending").w_full().gap(2.0).child(
