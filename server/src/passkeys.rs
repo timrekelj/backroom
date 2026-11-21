@@ -9,10 +9,12 @@
 //! to `http://127.0.0.1:<port>/done`; the app polls Finish* with an empty
 //! credential, which picks up the stored result.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -182,7 +184,24 @@ struct CeremonyQuery {
     ceremony: String,
 }
 
-async fn page() -> Response {
+/// Requests per peer IP per [`CEREMONY_PAGE_WINDOW`] on the ceremony page
+/// routes (the RPCs that start/finish ceremonies have their own limits).
+const CEREMONY_PAGE_IP_MAX: usize = 120;
+const CEREMONY_PAGE_WINDOW: Duration = Duration::from_secs(15 * 60);
+
+/// `Some(429)` when the peer is over the limit.
+fn over_limit(state: &AppState, peer: &SocketAddr) -> Option<Response> {
+    state
+        .limiter
+        .check(&format!("passkey-page:{}", peer.ip()), CEREMONY_PAGE_IP_MAX, CEREMONY_PAGE_WINDOW)
+        .is_err()
+        .then(|| (StatusCode::TOO_MANY_REQUESTS, "too many requests").into_response())
+}
+
+async fn page(State(state): State<AppState>, ConnectInfo(peer): ConnectInfo<SocketAddr>) -> Response {
+    if let Some(response) = over_limit(&state, &peer) {
+        return response;
+    }
     (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
@@ -194,7 +213,10 @@ async fn page() -> Response {
         .into_response()
 }
 
-async fn options(State(state): State<AppState>, Query(q): Query<CeremonyQuery>) -> Response {
+async fn options(State(state): State<AppState>, ConnectInfo(peer): ConnectInfo<SocketAddr>, Query(q): Query<CeremonyQuery>) -> Response {
+    if let Some(response) = over_limit(&state, &peer) {
+        return response;
+    }
     let Some(ceremony) = state.auth.ceremonies.get(&q.ceremony) else {
         return (StatusCode::NOT_FOUND, "ceremony not found or expired").into_response();
     };
@@ -213,7 +235,15 @@ async fn options(State(state): State<AppState>, Query(q): Query<CeremonyQuery>) 
 /// Largest credential JSON the page may post.
 const MAX_RESULT_BYTES: usize = 32 * 1024;
 
-async fn result(State(state): State<AppState>, Query(q): Query<CeremonyQuery>, body: String) -> Response {
+async fn result(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Query(q): Query<CeremonyQuery>,
+    body: String,
+) -> Response {
+    if let Some(response) = over_limit(&state, &peer) {
+        return response;
+    }
     if body.len() > MAX_RESULT_BYTES || serde_json::from_str::<serde_json::Value>(&body).is_err() {
         return (StatusCode::BAD_REQUEST, "invalid credential").into_response();
     }

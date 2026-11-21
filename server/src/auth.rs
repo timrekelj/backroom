@@ -99,6 +99,11 @@ pub async fn session_exists(state: &AppState, token_hash: &str) -> Result<bool, 
         .is_some())
 }
 
+/// Most concurrent sessions one account may hold; past it the sign-in is
+/// refused (the user can revoke sessions in Settings) instead of letting the
+/// session table grow without bound.
+pub const MAX_SESSIONS_PER_USER: i64 = 50;
+
 /// Longest device name kept on a session.
 const MAX_DEVICE_NAME: usize = 64;
 
@@ -111,6 +116,20 @@ pub fn device_label(raw: &str) -> String {
 /// Creates a session for `user_id` and returns the plaintext token (only its
 /// hash is stored). The session is also listed under the user.
 pub async fn create_session(state: &AppState, user_id: u64, device_name: &str) -> Result<String, ConnectError> {
+    let (count,) = state
+        .session
+        .execute_unpaged("SELECT COUNT(*) FROM sessions_by_user WHERE user_id = ?", (id_to_db(user_id),))
+        .await
+        .map_err(internal)?
+        .into_rows_result()
+        .map_err(internal)?
+        .first_row::<(i64,)>()
+        .map_err(internal)?;
+    if count >= MAX_SESSIONS_PER_USER {
+        return Err(ConnectError::resource_exhausted(
+            "too many active sessions; revoke some in Settings and try again",
+        ));
+    }
     let token = generate_token();
     let token_hash = hash_token(&token);
     let session_id = id_to_db(state.snowflake.next_id());

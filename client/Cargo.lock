@@ -1022,14 +1022,18 @@ dependencies = [
  "http-body",
  "http-body-util",
  "hyper",
+ "hyper-rustls",
  "hyper-util",
  "percent-encoding",
  "pin-project",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sync_wrapper",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tower",
  "tracing",
@@ -4999,7 +5003,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -5919,12 +5925,14 @@ dependencies = [
  "http-body-util",
  "hyper",
  "rand 0.9.5",
+ "rustls",
  "scylla",
  "serde",
  "serde_json",
  "thehideout-server",
  "tokio",
  "webauthn-authenticator-rs",
+ "webpki-root-certs",
 ]
 
 [[package]]

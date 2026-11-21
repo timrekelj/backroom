@@ -1,12 +1,13 @@
 //! InviteService: email invites, the only way to create an account; plus the
 //! empty-install bootstrap invite and the `/invite/{token}` landing page.
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::Path;
-use axum::http::header;
-use axum::response::IntoResponse;
+use axum::extract::{ConnectInfo, Path, State};
+use axum::http::{HeaderName, StatusCode, header};
+use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::get;
 use chrono::{DateTime, Utc};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest, ServiceResult};
@@ -657,12 +658,19 @@ impl InviteService for InviteSvc {
     }
 }
 
+/// Requests per peer IP per [`LANDING_WINDOW`] on the public invite page.
+const LANDING_IP_MAX: usize = 60;
+const LANDING_WINDOW: Duration = Duration::from_secs(15 * 60);
+
 /// `GET /invite/{token}`: a landing page for the emailed link.
 pub fn routes() -> Router<AppState> {
     Router::new().route("/invite/{token}", get(landing))
 }
 
-async fn landing(Path(token): Path<String>) -> impl IntoResponse {
+async fn landing(State(state): State<AppState>, ConnectInfo(peer): ConnectInfo<SocketAddr>, Path(token): Path<String>) -> AxumResponse {
+    if state.limiter.check(&format!("invite-page:{}", peer.ip()), LANDING_IP_MAX, LANDING_WINDOW).is_err() {
+        return (StatusCode::TOO_MANY_REQUESTS, "too many requests").into_response();
+    }
     let token = encode_text(&token);
     let html = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">\
@@ -673,7 +681,17 @@ async fn landing(Path(token): Path<String>) -> impl IntoResponse {
          <p><code style=\"word-break:break-all;font-size:14px\">{token}</code></p></body></html>"
     );
     (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")],
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+            // No scripts, no frames, no external resources: the token in the URL
+            // must not leak anywhere.
+            (
+                HeaderName::from_static("content-security-policy"),
+                "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+            ),
+        ],
         html,
     )
+        .into_response()
 }
